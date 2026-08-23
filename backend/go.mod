@@ -2,7 +2,10 @@ module github.com/garinesaiajay/commerceos
 
 go 1.26.1
 
-require github.com/jackc/pgx/v5 v5.10.0
+require (
+	github.com/jackc/pgx/v5 v5.10.0
+	github.com/razorpay/razorpay-go v1.4.1
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
