@@ -93,9 +93,14 @@ const (
 //	DRAFT → AUTHORIZED → PAYMENT_PENDING → PAID → FULFILLMENT_PENDING → COMPLETED
 //	PAYMENT_PENDING → FAILED
 //	DRAFT → CANCELLED
+//
+// Note: the checkout path creates orders directly in PAYMENT_PENDING
+// (the cart is validated + inventory committed in one transaction), so
+// DRAFT → PAYMENT_PENDING is a legal edge to keep that entry consistent.
 func OrderTransitionTable() *TransitionTable {
 	return NewTransitionTable([][2]string{
 		{OrderDraft, OrderAuthorized},
+		{OrderDraft, OrderPaymentPending},
 		{OrderAuthorized, OrderPaymentPending},
 		{OrderPaymentPending, OrderPaid},
 		{OrderPaid, OrderFulfillmentPending},

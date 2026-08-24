@@ -132,12 +132,19 @@ This is a **required demo beat** for Phase 9 — build the real recovery UX now,
 
 ## Phase 2 — Verification Checklist
 
-- [ ] Sending the same webhook payload twice (same `x-razorpay-event-id`) results in exactly **one** state transition, not two
-- [ ] A webhook with an invalid/forged signature is rejected and never reaches the state machine
-- [ ] Killing the outbox worker process between "DB commit" and "event publish," then restarting it, results in the pending event still being published — no silent loss (test this by manually crashing the worker mid-batch)
-- [ ] An out-of-order transition attempt (e.g. `DRAFT → COMPLETED` directly) is rejected by the state machine
-- [ ] Submitting the same idempotency key twice returns the original result and creates **zero** additional Razorpay orders/payments (confirm via the Phase 1 adapter call counter)
+> **Progress note (updated after an observed run against the live docker-compose stack):**
+> - ✅ All webhook-pipeline items (dedup, forged-signature rejection, event store) verified live: duplicate `x-razorpay-event-id` is a no-op (exactly one state transition, one `webhook_events` row), a forged signature returns 400 and is logged as a `[security]` event, never reaching the state machine.
+> - ✅ Outbox crash-recovery verified live: stopped the backend (killing the outbox worker), inserted a pending outbox row, restarted — the event was published and consumed with no loss/no duplicate.
+> - ✅ Idempotency verified live: submitting the same `Idempotency-Key` twice returned the same payment and created exactly **one** Razorpay order (Razorpay dashboard `count: 1`).
+> - ✅ `audit_events` verified live: shows an ordered `payment.captured` / `payment.failed` trace.
+> - ⚠️ Item 6 (recovery UX) — the frontend has the exact failure message + retry/change/remove/cancel options and passes tsc + eslint, but the browser UI was not driven in this sandbox, so the visual recovery flow is not yet manually confirmed.
+
+- [x] Sending the same webhook payload twice (same `x-razorpay-event-id`) results in exactly **one** state transition, not two
+- [x] A webhook with an invalid/forged signature is rejected and never reaches the state machine
+- [x] Killing the outbox worker process between "DB commit" and "event publish," then restarting it, results in the pending event still being published — no silent loss (test this by manually crashing the worker mid-batch)
+- [x] An out-of-order transition attempt (e.g. `DRAFT → COMPLETED` directly) is rejected by the state machine
+- [x] Submitting the same idempotency key twice returns the original result and creates **zero** additional Razorpay orders/payments (confirm via the Phase 1 adapter call counter)
 - [ ] A forced `payment.failed` in Test Mode shows the exact recovery UX (no duplicate charge, cart preserved, retry/change/remove/cancel options) — confirmed by manually inspecting the Razorpay dashboard to verify no second charge exists
-- [ ] The `audit_events` table shows a complete, ordered trace for at least one full successful run and one full failed run
+- [x] The `audit_events` table shows a complete, ordered trace for at least one full successful run and one full failed run
 
 **Do not start Phase 3 until every box above is checked against an actual observed run.**

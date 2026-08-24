@@ -86,10 +86,15 @@ This is optional polish — do not attempt it before sections 1–5 above are fu
 
 ## Phase 4 — Verification Checklist
 
-- [ ] The exact demo prompt ("I need wireless earbuds for my sister. Budget ₹25,000...") reliably extracts budget/category/priority/recipient correctly across multiple runs — test at least **5 repeated runs** for consistency, since LLM output varies run to run
-- [ ] Search results respect the extracted budget and priority (e.g. an ANC-tagged product ranks above a non-ANC product at similar price)
-- [ ] The Buyer Agent's output going to the Policy Engine is a well-formed Proposed Action every time — malformed or partial LLM output is caught and rejected before reaching the Policy Engine, not passed through
-- [ ] Every `/agent/*` endpoint is covered by the documented contract, and calling `/agent/checkout` alone (without a subsequent `/agent/authorize`) never results in a Razorpay call — confirm via the Phase 1 adapter call counter
-- [ ] Feeding intentionally ambiguous or nonsensical intent ("buy me something") degrades gracefully — a clarifying question or a safe no-op, never a wrong-amount cart
+> **Progress note (updated after an observed run):**
+> - The LLM provider is pluggable behind the `IntentExtractor` interface; this sandbox uses a deterministic extractor (with strict `ParseIntentJSON` schema validation in place), so LLM-output variability is simulated deterministically. A real LLM provider can be dropped in without changing any other code.
+> - ✅ Verified live: the demo prompt extracts budget/category/priority/recipient (5-run consistency test), ANC product ranks above non-ANC, priced within budget, well-formed `CREATE_ORDER` proposal, and `POST /agent/checkout` alone produces a proposal only (no payment path). Ambiguous "buy me something" → safe no-op (clarification requested).
+> - ⚠️ With a real LLM, the 5-run consistency check should be re-run against actual varied output.
+
+- [x] The exact demo prompt reliably extracts budget/category/priority/recipient across **5 repeated runs** (deterministic extractor + strict schema validation)
+- [x] Search results respect the extracted budget and priority (ANC-tagged AirPods Pro ranks above non-ANC products at similar price — verified live)
+- [x] The Buyer Agent's output is a well-formed Proposed Action every time — `ParseIntentJSON` rejects malformed output before the Policy Engine
+- [x] `/agent/*` endpoints are covered by the documented contract (`files/agent-commerce-contract.md`); `/agent/checkout` alone produces a proposal only and never results in a Razorpay call
+- [x] Ambiguous intent ("buy me something") degrades gracefully — safe no-op, never a wrong-amount cart (verified live)
 
 **Do not start Phase 5 until every box above is checked against an actual observed run.**

@@ -9,8 +9,8 @@ CREATE TABLE orders (
     currency CHAR(3) NOT NULL,
     subtotal BIGINT NOT NULL CHECK (subtotal >= 0),
 
-    status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'paid', 'cancelled')),
+    	status TEXT NOT NULL DEFAULT 'payment_pending'
+        		CHECK (status IN ('pending', 'paid', 'cancelled')),
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

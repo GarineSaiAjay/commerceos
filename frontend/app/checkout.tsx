@@ -16,6 +16,9 @@ interface RazorpayOptions {
   description: string;
   order_id: string;
   handler: (response: RazorpayResponse) => void;
+  modal?: {
+    ondismiss?: () => void;
+  };
   prefill?: {
     name?: string;
     email?: string;
@@ -61,9 +64,11 @@ interface Cart {
 
 interface Order {
   order_id: string;
+  cart_id: string;
   status: string;
   subtotal: number;
   currency: string;
+  items: CartItem[];
 }
 
 interface Payment {
@@ -76,6 +81,29 @@ interface Payment {
   key_id: string;
 }
 
+interface Recovery {
+  order_id: string;
+  payment_status: string;
+  attempt_status: string;
+  error_code: string;
+  error_description: string;
+  safe_message: string;
+  reservation_expires_at: string;
+  retry_allowed: boolean;
+  cart: { subtotal: number; currency: string; items: { product_id: string; variant_id: string; title: string; quantity: number; unit_price: number; total: number }[] };
+}
+
+interface Mandate {
+  mandate_id: string;
+}
+
+interface Decision {
+  decision: string;
+  authorization_id: string;
+  approval_request_id: string;
+  reason: string;
+}
+
 const API_BASE = "http://localhost:8081";
 const MERCHANT_ID = "merchant_001";
 
@@ -86,7 +114,7 @@ function freshCartId() {
   return `cart_${Date.now()}`;
 }
 
-type Step = "catalog" | "cart" | "checkout" | "pay" | "complete";
+type Step = "catalog" | "cart" | "checkout" | "approval" | "pay" | "complete" | "failed";
 
 export default function CheckoutFlow({
   initialProducts,
@@ -99,8 +127,11 @@ export default function CheckoutFlow({
   const [cart, setCart] = useState<Cart | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
   const [payment, setPayment] = useState<Payment | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("");
+  	const [approvalRequestId, setApprovalRequestId] = useState("");
+  	const [approvalReason, setApprovalReason] = useState("");
+  	const [recovery, setRecovery] = useState<Recovery | null>(null);
+  	const [loading, setLoading] = useState(false);
+  	const [message, setMessage] = useState("");
 
   async function ensureCart() {
     try {
@@ -175,36 +206,163 @@ export default function CheckoutFlow({
     setLoading(true);
     setMessage("Creating payment...");
     try {
-      const res = await fetch(`${API_BASE}/orders/${order!.order_id}/payment`, {
+      const mandateRes = await fetch(`${API_BASE}/policy/mandates`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          buyer: "checkout_user",
+          merchant: MERCHANT_ID,
+          maximum_amount: order!.subtotal,
+          currency: order!.currency,
+          allowed_payment_methods: ["card", "upi"],
+          purpose: `Checkout ${order!.order_id}`,
+          cart_id: order!.cart_id,
+        }),
       });
-      if (!res.ok) throw new Error("Failed to create payment");
-      const pay = (await res.json()) as Payment;
-      setPayment(pay);
-      setStep("pay");
-      setLoading(false);
+      if (!mandateRes.ok) throw new Error(await mandateRes.text());
+      const mandate = (await mandateRes.json()) as Mandate;
 
-      // Open Razorpay Standard Checkout with the server-created order.
-      const options: RazorpayOptions = {
-        key: pay.key_id,
-        amount: pay.amount,
-        currency: pay.currency,
-        name: "CommerceOS",
-        description: `Order ${pay.order_id}`,
-        order_id: pay.provider_order_id,
-        handler: async (response) => {
-          await verifyPayment(response);
-        },
-        theme: { color: "#000000" },
-      };
+      		const authorizationRes = await fetch(`${API_BASE}/policy/propose`, {
+      			method: "POST",
+      			headers: { "Content-Type": "application/json" },
+      			body: JSON.stringify({
+      				action: "CREATE_ORDER",
+      				amount: order!.subtotal,
+      				currency: order!.currency,
+      				merchant: MERCHANT_ID,
+      				items: order!.items.map((item) => item.product_id),
+      				mandate_id: mandate.mandate_id,
+      				cart_id: order!.cart_id,
+      			}),
+      		});
+      		if (!authorizationRes.ok) throw new Error(await authorizationRes.text());
+      		const decision = (await authorizationRes.json()) as Decision;
 
-      const razorpay = new window.Razorpay(options);
-      razorpay.open();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Payment failed");
-      setLoading(false);
-    }
-  }
+      		// Level 2/3 → durable human approval required before an
+      		// authorization is issued.
+      		if (decision.decision === "PENDING_HUMAN_APPROVAL") {
+      			if (!decision.approval_request_id) {
+      				throw new Error("Approval required but no request was created");
+      			}
+      			setApprovalRequestId(decision.approval_request_id);
+      			setApprovalReason(decision.reason || "This purchase requires operator approval.");
+      			setStep("approval");
+      			setLoading(false);
+      			return;
+      		}
+
+      		if (decision.decision !== "APPROVED" || !decision.authorization_id) {
+      			throw new Error(decision.reason || "Payment was not authorized");
+      		}
+
+		await createPaymentWithLaunch(decision.authorization_id);
+	} catch (error) {
+      					const msg = error instanceof Error ? error.message : "Payment failed";
+      					setMessage(msg);
+      					setLoading(false);
+      				}
+      			}
+
+      			// Approve a Level 2/3 request, then continue to payment.
+      			async function approveAndPay() {
+      				setLoading(true);
+      				setMessage("Approving payment...");
+      				try {
+      					const res = await fetch(`${API_BASE}/approval-requests/${approvalRequestId}/approve`, {
+      						method: "POST",
+      						headers: { "Content-Type": "application/json" },
+      						body: JSON.stringify({ approver: "buyer" }),
+      					});
+      					if (!res.ok) throw new Error(await res.text());
+      					const decision = (await res.json()) as Decision;
+      					if (decision.decision !== "APPROVED" || !decision.authorization_id) {
+      						throw new Error(decision.reason || "Approval did not produce an authorization");
+      					}
+      					await createPaymentWithLaunch(decision.authorization_id);
+      				} catch (error) {
+      					setMessage(error instanceof Error ? error.message : "Approval failed");
+      					setLoading(false);
+      				}
+      			}
+
+      			// Reject a Level 2/3 request, returning to the catalog.
+      			async function rejectApproval() {
+      				setLoading(true);
+      				setMessage("");
+      				try {
+      					await fetch(`${API_BASE}/approval-requests/${approvalRequestId}/reject`, {
+      						method: "POST",
+      						headers: { "Content-Type": "application/json" },
+      						body: JSON.stringify({ by: "buyer", reason: "cancelled at approval screen" }),
+      					});
+      				} catch {
+      					// best-effort; the cart is abandoned either way
+      				}
+      				resetToCatalog("Purchase cancelled. The approval was not granted.");
+      			}
+
+      			// Create the Razorpay order and open the Standard Checkout UI.
+      			async function createPaymentWithLaunch(authId: string) {
+      				const res = await fetch(`${API_BASE}/orders/${order!.order_id}/payment`, {
+      					method: "POST",
+      					headers: {
+      						"Authorization-Id": authId,
+      						"Idempotency-Key": `payment_${order!.order_id}`,
+      					},
+      				});
+      				if (!res.ok) throw new Error("Failed to create payment");
+      				const pay = (await res.json()) as Payment;
+      				setPayment(pay);
+      				setStep("pay");
+      				setLoading(false);
+
+      				// Open Razorpay Standard Checkout with the server-created order.
+      				const options: RazorpayOptions = {
+      					key: pay.key_id,
+      					amount: pay.amount,
+      					currency: pay.currency,
+      					name: "CommerceOS",
+      					description: `Order ${pay.order_id}`,
+      					order_id: pay.provider_order_id,
+      					handler: async (response) => {
+      						await verifyPayment(response);
+      					},
+					modal: {
+						ondismiss: () => {
+							setStep("failed");
+							loadRecovery();
+							setLoading(false);
+						},
+					},
+      					theme: { color: "#000000" },
+      				};
+
+      				const razorpay = new window.Razorpay(options);
+      				razorpay.open();
+      			}
+
+      			// Fetch the authoritative recovery view from the server.
+			async function loadRecovery() {
+				if (!order) return;
+				try {
+					const res = await fetch(`${API_BASE}/orders/${order.order_id}/recovery`, { cache: "no-store" });
+					if (res.ok) {
+						setRecovery((await res.json()) as Recovery);
+					}
+				} catch {
+					// fall back to the static message; recovery stays null
+				}
+			}
+
+			async function resetToCatalog(messageText: string) {
+      				setStep("catalog");
+      				setCartId(freshCartId());
+      				setCart(null);
+      				setOrder(null);
+      				setPayment(null);
+      				setApprovalRequestId("");
+      				setMessage(messageText);
+      			}
 
   async function verifyPayment(response: RazorpayResponse) {
     setMessage("Verifying payment...");
@@ -366,6 +524,43 @@ export default function CheckoutFlow({
           </section>
         )}
 
+        {step === "approval" && (
+          <section>
+            <h2 className="mb-4 text-lg font-semibold text-zinc-900">
+              Purchase Requires Approval
+            </h2>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
+              <p className="text-sm text-amber-900">
+                This order is above the auto-approval threshold. An operator
+                must approve it before payment can be initiated. {approvalReason}
+              </p>
+              {order && (
+                <dl className="mt-4 grid gap-2 text-sm text-amber-900 sm:grid-cols-2">
+                  <div><dt className="font-medium">Order</dt><dd>{order.order_id}</dd></div>
+                  <div><dt className="font-medium">Total</dt><dd>{formatINR(order.subtotal)}</dd></div>
+                  <div><dt className="font-medium">Approval request</dt><dd className="font-mono">{approvalRequestId}</dd></div>
+                </dl>
+              )}
+            </div>
+            <div className="mt-6 space-y-3">
+              <button
+                onClick={approveAndPay}
+                disabled={loading}
+                className="w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50"
+              >
+                {loading ? "Approving..." : `Approve & Pay ${order ? formatINR(order.subtotal) : ""}`}
+              </button>
+              <button
+                onClick={rejectApproval}
+                disabled={loading}
+                className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+              >
+                Reject
+              </button>
+            </div>
+          </section>
+        )}
+
         {step === "pay" && payment && (
           <section>
             <h2 className="mb-4 text-lg font-semibold text-zinc-900">
@@ -396,6 +591,67 @@ export default function CheckoutFlow({
             </button>
           </section>
         )}
+
+	{step === "failed" && (
+		<section>
+			<h2 className="mb-4 text-lg font-semibold text-zinc-900">
+				Payment wasn&apos;t completed
+			</h2>
+			<div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
+				<p className="text-sm text-amber-900">
+					{recovery ? recovery.safe_message : "Razorpay reported that the payment failed. Your order has not been charged twice. The cart remains reserved for 9 minutes."}
+				</p>
+			</div>
+
+			{(payment || (recovery && recovery.cart.subtotal > 0)) && (
+				<div className="mt-6 rounded-xl border border-zinc-200 p-5">
+					<p className="text-sm text-zinc-500">Amount due</p>
+					<p className="text-2xl font-bold text-zinc-900">
+						{formatINR((payment ? payment.amount : recovery!.cart.subtotal) || 0)}
+					</p>
+				</div>
+			)}
+
+			<div className="mt-6 space-y-3">
+				<button
+					onClick={startPayment}
+					disabled={loading || (recovery ? !recovery.retry_allowed : false)}
+					className="w-full rounded-xl bg-black px-5 py-3 font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50"
+				>
+					{recovery && !recovery.retry_allowed ? "Reservation expired — start a new cart" : "Retry payment"}
+				</button>
+				<button
+					onClick={() => {
+						setStep("catalog");
+						setCartId(freshCartId());
+						setCart(null);
+						setOrder(null);
+						setPayment(null);
+						setRecovery(null);
+						setMessage("Choose a new payment method. Your order was not charged.");
+					}}
+					disabled={loading}
+					className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+				>
+					Change payment method
+				</button>
+				<button
+					onClick={() => {
+						setStep("catalog");
+						setCartId(freshCartId());
+						setCart(null);
+						setOrder(null);
+						setPayment(null);
+						setRecovery(null);
+						setMessage("Payment cancelled. Your cart was not charged.");
+					}}
+					className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+				>
+					Cancel
+				</button>
+			</div>
+		</section>
+	)}
 
         {step === "complete" && payment && (
           <section>

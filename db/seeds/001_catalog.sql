@@ -2,6 +2,18 @@ INSERT INTO merchants (id)
 VALUES ('merchant_001')
 ON CONFLICT (id) DO NOTHING;
 
+-- Monetary amounts are paise. This unbound demo mandate makes the policy
+-- endpoint usable immediately; checkout creates a narrower cart-bound mandate.
+INSERT INTO mandates (
+    id, buyer, merchant, allowed_categories, maximum_amount, currency,
+    requires_confirmation_above, allowed_payment_methods, expires_at, purpose, status
+)
+VALUES (
+    'mandate_demo', 'demo_buyer', 'merchant_001', '["electronics"]', 3000000, 'INR',
+    3000000, '["card", "upi"]', '2030-01-01T00:00:00Z', 'Demo checkout mandate', 'ACTIVE'
+)
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO products (
     id,
     merchant_id,
@@ -21,7 +33,7 @@ VALUES (
     'airpods-pro-2',
     'merchant_001',
     'AirPods Pro',
-    24900,
+    2490000,
     'INR',
     12,
     '["active_noise_cancellation", "transparency_mode"]',
@@ -46,7 +58,7 @@ VALUES (
     'airpods-pro-2-default',
     'airpods-pro-2',
     'AIRPODS-PRO-2',
-    24900,
+    2490000,
     12,
     '{"color": "white"}'
 )
@@ -62,7 +74,7 @@ VALUES (
     'airpods-case',
     'merchant_001',
     'AirPods Case',
-    1999,
+    199900,
     'INR',
     25,
     '["protective", "wireless_charging"]',
@@ -82,7 +94,7 @@ VALUES (
     'airpods-case-default',
     'airpods-case',
     'AIRPODS-CASE',
-    1999,
+    199900,
     25,
     '{"color": "black"}'
 )
@@ -99,7 +111,7 @@ VALUES (
     'applecare',
     'merchant_001',
     'AppleCare',
-    2500,
+    250000,
     'INR',
     50,
     '["extended_warranty", "technical_support"]',
@@ -119,7 +131,7 @@ VALUES (
     'applecare-default',
     'applecare',
     'APPLECARE',
-    2500,
+    250000,
     50,
     '{}'
 )
@@ -136,7 +148,7 @@ VALUES (
     'usb-c-adapter',
     'merchant_001',
     'USB-C Adapter',
-    1299,
+    129900,
     'INR',
     30,
     '["usb_c", "plug_and_play"]',
@@ -156,7 +168,7 @@ VALUES (
     'usb-c-adapter-default',
     'usb-c-adapter',
     'USB-C-ADAPTER',
-    1299,
+    129900,
     30,
     '{"connector": "usb_c"}'
 )

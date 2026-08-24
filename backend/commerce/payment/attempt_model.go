@@ -11,4 +11,5 @@ type PaymentAttempt struct {
 	Status            string `json:"status"`
 	ErrorCode         string `json:"error_code"`
 	ErrorDescription  string `json:"error_description"`
+	IdempotencyKey    string `json:"idempotency_key"`
 }

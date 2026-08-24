@@ -20,12 +20,19 @@ func (s *Service) Checkout(
 	cartID string,
 	orderID string,
 ) (Order, error) {
-	order, err := s.repo.CheckoutCart(ctx, cartID, orderID)
+	saga := NewCheckoutSaga(s.repo)
+
+	result, err := saga.Run(ctx, cartID, orderID)
 	if err != nil {
 		return Order{}, err
 	}
 
-	return order, nil
+	return result.Order, nil
+}
+
+// GetOrder reads an order by ID.
+func (s *Service) GetOrder(ctx context.Context, orderID string) (Order, error) {
+	return s.repo.GetOrder(ctx, orderID)
 }
 
 func NewOrderID(cartID string) string {

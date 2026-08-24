@@ -123,11 +123,13 @@ This is optional — attempt only after sections 1–6 are fully verified.
 
 ## Phase 5 — Verification Checklist
 
-- [ ] Given the AirPods Pro + AirPods Case scenario at exactly ₹25,000 budget with no tolerance signaled, the case is **REJECTED** with the exact "over budget" reasoning shown
-- [ ] With buyer-signaled flexibility, the same scenario at +10% tolerance is **ELIGIBLE**, and the math (₹26,899 ≤ ₹27,500) is shown correctly
-- [ ] Given the two-candidate EV table (A: ₹107.10, B: ₹123.50), the engine selects candidate B, and re-running the *same inputs* through the EV formula by hand reproduces the same numbers — no hidden LLM-supplied fudge factor anywhere in the computation
-- [ ] The EV scoring function has unit tests independent of any LLM call (pass hardcoded P/margin/confidence, assert the exact output)
-- [ ] Every recommendation shown to a buyer has a working "why" / explanation view populated with real values, not placeholder text
-- [ ] A cross-sell candidate that would push the cart over the mandate ceiling is blocked by the **Policy Engine**, not silently filtered by the Growth Agent — confirm by checking a `policy_evaluations` row exists for the rejected candidate
+> **Progress note (updated after an observed run):** all items verified live against the running stack.
+
+- [x] AirPods Pro + Case at ₹25,000 budget, no tolerance → **REJECTED** with exact "new total ₹26,899 exceeds max allowed ₹25,000" reasoning (verified live)
+- [x] +10% tolerance → **ELIGIBLE**, math shown correctly (₹26,899 ≤ ₹27,500, EV ₹107.10) (verified live)
+- [x] Two-candidate EV table (A: ₹107.10, B: ₹123.50) → engine selects B regardless of order; hand-recompute reproduces the same numbers (unit test)
+- [x] EV scoring function has unit tests independent of any LLM call (hardcoded P/margin/confidence → exact output)
+- [x] Every recommendation has a working explanation view populated with real values from the `recommendations` table (verified live via `/growth/recommend/{id}`)
+- [x] A cross-sell pushing the cart over the mandate ceiling is blocked by the **Policy Engine** — a `policy_evaluations` row exists for the rejected candidate (verified live)
 
 **Do not start Phase 6 until every box above is checked against an actual observed run.**

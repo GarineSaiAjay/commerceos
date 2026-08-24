@@ -7,11 +7,20 @@ import (
 	"os"
 	"strings"
 
+	"github.com/garinesaiajay/commerceos/agents"
+	"github.com/garinesaiajay/commerceos/analytics"
+	"github.com/garinesaiajay/commerceos/audit"
 	"github.com/garinesaiajay/commerceos/commerce/cart"
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 	"github.com/garinesaiajay/commerceos/commerce/order"
 	"github.com/garinesaiajay/commerceos/commerce/payment"
+	"github.com/garinesaiajay/commerceos/events"
+	"github.com/garinesaiajay/commerceos/growth"
 	db "github.com/garinesaiajay/commerceos/infra/db"
+	"github.com/garinesaiajay/commerceos/mcp"
+	"github.com/garinesaiajay/commerceos/policy"
+	"github.com/garinesaiajay/commerceos/safety"
+	"github.com/redis/go-redis/v9"
 )
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -21,9 +30,12 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The checkout flow sends Authorization-Id and Idempotency-Key
+		// headers on the payment call, so they must pass preflight.
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization-Id, Idempotency-Key")
+		w.Header().Set("Access-Control-Expose-Headers", "Authorization-Id, Idempotency-Key")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -40,6 +52,11 @@ func main() {
 		databaseURL = "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable"
 	}
 
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
 	ctx := context.Background()
 
 	dbPool, err := db.NewPostgresPool(ctx, databaseURL)
@@ -51,6 +68,15 @@ func main() {
 
 	fmt.Println("Connected to PostgreSQL")
 
+	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		fmt.Printf("failed to connect to redis: %v\n", err)
+		os.Exit(1)
+	}
+	defer redisClient.Close()
+
+	fmt.Println("Connected to Redis")
+
 	// -------------------------
 	// Catalog
 	// -------------------------
@@ -58,6 +84,36 @@ func main() {
 	catalogRepo := catalog.NewPostgresRepository(dbPool)
 	catalogService := catalog.NewService(catalogRepo)
 	catalogHandler := catalog.NewHandler(catalogService)
+
+	// -------------------------
+	// Phase 4: Buyer Agent
+	// -------------------------
+
+	// Use a real LLM extractor (OpenRouter) when configured; otherwise
+	// fall back to the deterministic extractor so the app and tests work
+	// without an API key.
+	var agentExtractor agents.IntentExtractor = agents.NewLLMExtractorFromEnv()
+	if agentExtractor == nil {
+		agentExtractor = agents.NewDeterministicExtractor()
+	}
+	agentSearcher := agents.NewSearcher(catalogRepo)
+	buyerAgent := agents.NewBuyerAgent(agentExtractor, agentSearcher)
+	agentHandler := agents.NewHandler(buyerAgent)
+
+	// -------------------------
+	// Phase 5: Growth Agent
+	// -------------------------
+
+	growthStore := growth.NewPostgresStore(dbPool)
+	growthAgent := growth.NewGrowthAgent(catalogRepo, growthStore)
+	growthHandler := growth.NewHandler(growthAgent, growthStore)
+
+	// -------------------------
+	// Phase 6: Analytics
+	// -------------------------
+
+	analyticsService := analytics.NewService(dbPool)
+	experimentService := analytics.NewExperimentService(dbPool)
 
 	// -------------------------
 	// Cart
@@ -92,21 +148,126 @@ func main() {
 		razorpayKeySecret,
 	)
 
+	// The RazorpayAdapter is the only code path that touches the Razorpay
+	// SDK. The Payment Service depends only on the narrow Provider surface,
+	// so swapping rails (mock, x402, …) is a one-line change.
+	razorpayAdapter := payment.NewRazorpayAdapter(razorpayClient)
+
 	paymentRepo := payment.NewPostgresRepository(dbPool)
 	paymentAttemptRepo := payment.NewPostgresAttemptRepository(dbPool)
 
-	paymentService := payment.NewServiceWithAttempts(
-		razorpayClient,
+	// Phase 3: Policy Engine — the hard chokepoint.
+	policyRepo := policy.NewPostgresRepository(dbPool)
+	policyEngine := policy.NewEngine(policy.DefaultConfig(), policyRepo)
+	riskEngine := policy.NewRiskEngine()
+	policyService := policy.NewService(policyEngine, riskEngine, policyRepo)
+
+	auditVerifier := audit.NewVerifier(dbPool)
+	policyHandler := policy.NewHandler(policyService, auditVerifier)
+	analyticsHandler := analytics.NewHandler(analyticsService, experimentService, auditVerifier)
+
+	// Phase 8: safety / red-team — the runner drives the real policy
+	// pipeline and reports provider-call deltas from the real counter.
+	safetyRunner := safety.NewRunner(policyService, razorpayAdapter)
+	safetyHandler := safety.NewHandler(safetyRunner, safety.NewStore(dbPool))
+
+	paymentService := payment.NewServiceWithAuthorizer(
+		razorpayAdapter,
 		paymentRepo,
 		paymentAttemptRepo,
+		orderRepo,
+		policyService,
 	)
 
 	paymentHandler := payment.NewHandler(
 		paymentService,
 		orderRepo,
+	).WithCallCounter(razorpayAdapter).WithRecoveryReaders(cartRepo, paymentAttemptRepo)
+
+	// -------------------------
+	// Phase 7: MCP server
+	// -------------------------
+
+	mcpServer := mcp.NewServer()
+	mcp.RegisterTools(mcpServer, mcp.Dependencies{
+		Catalog: catalogService,
+		Cart:    cartService,
+		Order:   orderService,
+		Payment: paymentService,
+		Policy:  policyService,
+		Growth:  growthAgent,
+		Explain: func(a policy.ProposedAction, m policy.Mandate, check string) string {
+			return policy.ExplainRejection(check, a, m)
+		},
+	})
+	mcpHandler := mcp.NewHTTPServer(mcpServer)
+
+	// -------------------------
+	// Phase 2: webhook pipeline
+	// -------------------------
+
+	// Razorpay signs webhooks with its own webhook secret (configured in
+	// the Razorpay dashboard), which may differ from the API Key Secret.
+	// Use RAZORPAY_WEBHOOK_SECRET when provided; fall back to the key
+	// secret for backward compatibility.
+	webhookSecret := os.Getenv("RAZORPAY_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		webhookSecret = razorpayKeySecret
+	}
+	webhookVerifier := payment.NewWebhookSignatureVerifier(webhookSecret)
+	webhookStore := payment.NewPostgresWebhookEventStore(dbPool)
+
+	auditWriter := audit.NewPostgresWriter(dbPool)
+	outboxRepo := events.NewPostgresOutboxRepository(dbPool)
+
+	webhookApplier := payment.NewWebhookApplier(
+		paymentRepo,
+		orderRepo,
+		auditWriter,
+		outboxRepo,
+	).WithAttempts(paymentAttemptRepo)
+
+	webhookProcessor := payment.NewWebhookProcessor(
+		webhookVerifier,
+		webhookStore,
+		webhookApplier,
 	)
 
-	webhookHandler := payment.NewWebhookHandler()
+	webhookHandler := payment.NewWebhookHandler(webhookProcessor)
+
+	// -------------------------
+	// Phase 2: outbox worker (Redis Streams event bus)
+	// -------------------------
+
+	eventBus := events.NewRedisStreamBus(redisClient)
+	outboxWorker := events.NewOutboxWorker(
+		outboxRepo,
+		eventBus,
+		"commerceos.events",
+	)
+
+	go func() {
+		fmt.Println("Outbox Worker started")
+
+		if err := outboxWorker.Run(ctx); err != nil {
+			fmt.Printf("Outbox Worker stopped: %v\n", err)
+		}
+	}()
+
+	// Placeholder stream consumer proving the event bus is wired.
+	streamConsumer := events.NewStreamConsumer(
+		redisClient,
+		"commerceos.events",
+		"commerceos-group",
+	)
+
+	go func() {
+		fmt.Println("Stream Consumer started")
+
+		if err := streamConsumer.Run(ctx); err != nil {
+			fmt.Printf("Stream Consumer stopped: %v\n", err)
+		}
+	}()
 
 	// -------------------------
 	// Service routers
@@ -192,6 +353,10 @@ func main() {
 				strings.HasSuffix(r.URL.Path, "/payment"):
 				paymentHandler.CreatePaymentOrder(w, r)
 
+			case r.Method == http.MethodGet &&
+				strings.HasSuffix(r.URL.Path, "/recovery"):
+				paymentHandler.Recovery(w, r)
+
 			default:
 				http.Error(
 					w,
@@ -203,8 +368,117 @@ func main() {
 	)
 
 	commerceMux.HandleFunc(
+		"/adapter/calls",
+		paymentHandler.CallCount,
+	)
+
+	commerceMux.HandleFunc(
 		"/webhooks/razorpay",
 		webhookHandler.HandleRazorpay,
+	)
+
+	// Phase 3: policy routes
+	commerceMux.HandleFunc(
+		"/policy/mandates",
+		policyHandler.CreateMandate,
+	)
+
+	commerceMux.HandleFunc(
+		"/policy/propose",
+		policyHandler.Propose,
+	)
+
+	// Level 2/3 durable human-approval requests.
+	commerceMux.HandleFunc("/approval-requests", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			policyHandler.ListApprovalRequests(w, r)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	commerceMux.HandleFunc(
+		"/approval-requests/",
+		func(w http.ResponseWriter, r *http.Request) {
+			path := strings.TrimPrefix(r.URL.Path, "/approval-requests/")
+			path = strings.Trim(path, "/")
+			switch {
+			case path == "":
+				// GET /approval-requests?status=... → list
+				if r.Method == http.MethodGet {
+					policyHandler.ListApprovalRequests(w, r)
+					return
+				}
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
+			case r.Method == http.MethodPost && strings.HasSuffix(path, "/approve"):
+				policyHandler.Approve(w, r)
+
+			case r.Method == http.MethodPost && strings.HasSuffix(path, "/reject"):
+				policyHandler.Reject(w, r)
+
+			case r.Method == http.MethodGet:
+				policyHandler.GetApprovalRequest(w, r)
+
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		},
+	)
+
+	commerceMux.HandleFunc(
+		"/audit/verify",
+		policyHandler.VerifyAuditChain,
+	)
+
+	// Phase 8: safety / red-team.
+	commerceMux.HandleFunc("/safety/attacks", safetyHandler.ListAttacks)
+	commerceMux.HandleFunc("/safety/evaluations", safetyHandler.ListEvaluations)
+	commerceMux.HandleFunc("/safety/evaluations/run", safetyHandler.RunSuite)
+	commerceMux.HandleFunc("/safety/evaluations/", safetyHandler.GetEvaluation)
+	commerceMux.HandleFunc("/safety/attacks/", safetyHandler.RunAttack)
+
+	// Replay: reconstructed agent runs.
+	commerceMux.HandleFunc("/runs", policyHandler.HandleListRuns)
+	commerceMux.HandleFunc("/runs/", policyHandler.HandleGetRun)
+
+	// Phase 4: agent contract (produces proposals only)
+	commerceMux.HandleFunc(
+		"/agent/checkout",
+		agentHandler.PlanCheckout,
+	)
+
+	// Phase 5: growth agent
+	commerceMux.HandleFunc(
+		"/growth/evaluate",
+		growthHandler.Evaluate,
+	)
+
+	commerceMux.HandleFunc(
+		"/growth/recommend/",
+		growthHandler.Explain,
+	)
+
+	// Phase 6: dashboard
+	commerceMux.HandleFunc(
+		"/dashboard/overview",
+		analyticsHandler.Overview,
+	)
+
+	commerceMux.HandleFunc(
+		"/dashboard/metrics",
+		analyticsHandler.Metrics,
+	)
+
+	commerceMux.HandleFunc(
+		"/dashboard/experiment",
+		analyticsHandler.Experiment,
+	)
+
+	// Phase 7: MCP endpoint
+	commerceMux.Handle(
+		"/mcp",
+		mcpHandler,
 	)
 
 	// -------------------------

@@ -1,3 +1,7 @@
+# CommerceOS local stack.
+# Reads values from infra/.env (gitignored). Copy infra/.env.example to
+# infra/.env and fill in Razorpay keys + OpenRouter key.
+
 services:
   postgres:
     image: postgres:17
@@ -5,12 +9,12 @@ services:
     restart: unless-stopped
 
     environment:
-      POSTGRES_DB: commerceos
-      POSTGRES_USER: commerceos
-      POSTGRES_PASSWORD: commerceos_dev_password
+      POSTGRES_DB: ${POSTGRES_DB:-commerceos}
+      POSTGRES_USER: ${POSTGRES_USER:-commerceos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-commerceos_dev_password}
 
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -21,7 +25,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
 
     volumes:
       - redis_data:/data
@@ -36,9 +40,23 @@ services:
     restart: unless-stopped
 
     environment:
-      DATABASE_URL: postgres://commerceos:commerceos_dev_password@postgres:5432/commerceos?sslmode=disable
+      # Postgres / Redis come from infra/.env; inside the compose network the
+      # hosts are the service names, not localhost.
+      DATABASE_URL: postgres://${POSTGRES_USER:-commerceos}:${POSTGRES_PASSWORD:-commerceos_dev_password}@postgres:5432/${POSTGRES_DB:-commerceos}?sslmode=disable
+      REDIS_ADDR: redis:6379
+
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
+      # Razorpay signs webhooks with its own webhook secret (may differ
+      # from the API Key Secret). Falls back to the key secret if unset.
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+
+      # LLM provider (OpenAI-compatible, e.g. OpenRouter). When unset the
+      # backend falls back to the deterministic intent extractor.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
+
       API_GATEWAY_PORT: "8080"
       COMMERCE_PORT: "8081"
       AGENT_API_PORT: "8082"

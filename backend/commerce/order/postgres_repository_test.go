@@ -30,10 +30,39 @@ func TestOrderImmutability(t *testing.T) {
 
 	cartID := "cart_immutability_test"
 	orderID := "order_immutability_test"
+	productID := "immutability-test-product"
+	variantID := "immutability-test-variant"
 
 	// Clean up in case the test was run before.
 	_, _ = pool.Exec(ctx, `DELETE FROM orders WHERE id = $1`, orderID)
 	_, _ = pool.Exec(ctx, `DELETE FROM carts WHERE id = $1`, cartID)
+	_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+
+	// Create a dedicated product so availability is deterministic
+	// (seeded products get decremented by checkout runs).
+	_, err = pool.Exec(ctx, `
+		INSERT INTO products (
+			id, merchant_id, title, price_amount, price_currency,
+			availability, features, compatibility, use_cases,
+			return_policy, shipping, attributes, purchase_constraints
+		)
+		VALUES (
+			$1, 'merchant_001', 'Immutability Test Product', 24900, 'INR',
+			100, '[]', '[]', '[]',
+			'{"days": 7}', '{"estimated_days": 3}', '{}', '{}'
+		)
+	`, productID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO product_variants (id, product_id, sku, price_amount, availability, attributes)
+		VALUES ($1, $2, 'IMMUTABILITY-TEST', 24900, 100, '{}')
+	`, variantID, productID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a cart with one item.
 	_, err = pool.Exec(ctx, `
@@ -49,8 +78,8 @@ func TestOrderImmutability(t *testing.T) {
 			cart_id, product_id, variant_id, title, quantity,
 			unit_price_amount, total_amount
 		)
-		VALUES ($1, 'airpods-pro-2', 'airpods-pro-2-default', 'AirPods Pro', 1, 24900, 24900)
-	`, cartID)
+		VALUES ($1, $2, $3, 'Immutability Test Product', 1, 24900, 24900)
+	`, cartID, productID, variantID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,4 +164,6 @@ func TestOrderImmutability(t *testing.T) {
 	// Clean up.
 	_, _ = pool.Exec(ctx, `DELETE FROM orders WHERE id = $1`, orderID)
 	_, _ = pool.Exec(ctx, `DELETE FROM carts WHERE id = $1`, cartID)
+	_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+	_, _ = pool.Exec(ctx, `DELETE FROM product_variants WHERE id = $1`, variantID)
 }

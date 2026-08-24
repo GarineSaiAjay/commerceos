@@ -13,4 +13,13 @@ type Repository interface {
 		ctx context.Context,
 		orderID string,
 	) (Order, error)
+
+	// TransitionStatus atomically moves the order from its current
+	// status to `to`, guarded by the centralized state machine. It
+	// returns ErrIllegalTransition if the edge is not allowed.
+	TransitionStatus(
+		ctx context.Context,
+		orderID string,
+		to string,
+	) (Order, error)
 }

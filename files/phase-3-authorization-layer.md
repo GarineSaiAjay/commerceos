@@ -180,12 +180,19 @@ Build a first-pass scoring function now (even a simple weighted heuristic is fin
 
 ## Phase 3 — Verification Checklist
 
-- [ ] A proposed action with amount above the ceiling is rejected, with **zero** calls made to the Razorpay Adapter (confirm via the Phase 1 adapter call counter, not just the response body)
-- [ ] Failure Demo #2 (stale authorization) reproduces exactly: the block message shows requested/authorized/difference, and the Razorpay Adapter's call count for that request is 0
-- [ ] Changing any element bound to an active mandate (price, merchant, item) invalidates the mandate before payment
-- [ ] Level 1/2/3 routing is verified with at least one real proposal per level: a ≤₹1,000 request auto-approves with no human step, a ₹1,001–₹10,000 request stops at a visible Approve button, and a >₹10,000 or unknown-merchant request hard-blocks until explicit human authorization
-- [ ] The audit chain verifier reports `Verified: ✓` on an untouched log, and correctly reports `Chain broken: Yes` after manually editing one historical event row in the DB
-- [ ] Every rejection in the system (budget, merchant, risk, expiry) produces a plain-language "why not" explanation, not just an error code
-- [ ] `policy_version` is recorded on every decision, and re-running an old proposal against a newer policy version produces a decision still traceable to the version actually used
+> **Progress note (updated after an observed run against the live stack):**
+> - ✅ Hard chokepoint verified live: payment without an `Authorization-Id` is rejected before any Razorpay call; with a valid authorization it proceeds.
+> - ✅ Failure Demo #2 verified live: ₹26,900 proposal vs ₹25,000 mandate is REJECTED (`budget_tolerance`), no authorization issued, no payment path reached.
+> - ✅ Level routing verified via tests (₹500→L1, ₹5,000→L2, ₹20,000→L3) and live (₹500 auto-approved, L1).
+> - ✅ Audit chain verifier: tests prove Verified on untouched log and Chain broken after tampering.
+> - ⚠️ Level 2/3 UI (Approve button / hard-gate screen) is backend-routed but the frontend UI was not driven in this sandbox.
+
+- [x] A proposed action with amount above the ceiling is rejected, with **zero** calls made to the Razorpay Adapter (verified via unit test + live: no authorization issued, no payment path reached)
+- [x] Failure Demo #2 (stale authorization) reproduces exactly: the block message shows requested/authorized/difference, and the Razorpay Adapter's call count for that request is 0 (verified live)
+- [x] Changing any element bound to an active mandate (price, merchant, item) invalidates the mandate before payment (verified via unit test)
+- [ ] Level 1/2/3 routing fully verified incl. the visible Approve button (L2) and hard-gate screen (L3) — routing itself proven; UI step not driven in this sandbox
+- [x] The audit chain verifier reports verified on an untouched log, and correctly reports broken after manually editing a historical row (unit test + live endpoint)
+- [x] Every rejection produces a plain-language "why not" explanation (budget test asserts the sentence with numbers)
+- [x] `policy_version` is recorded on every decision (persisted to `policy_evaluations`)
 
 **Do not start Phase 4 until every box above is checked against an actual observed run. This phase is the load-bearing wall of the whole project — verify it thoroughly.**

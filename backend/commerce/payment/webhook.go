@@ -1,24 +1,24 @@
 package payment
 
 import (
-	"encoding/json"
-	"fmt"
+	"context"
+	"errors"
+	"io"
+	"log"
 	"net/http"
 )
 
-// WebhookHandler is the Phase 1 basic Razorpay webhook receiver.
+// WebhookHandler is the Phase 2 Razorpay webhook receiver.
 //
-// It only logs inbound events — signature verification and
-// deduplication are Phase 2 work. Phase 2 upgrades this endpoint;
-// it does not create it from scratch.
-type WebhookHandler struct{}
-
-func NewWebhookHandler() *WebhookHandler {
-	return &WebhookHandler{}
+// Pipeline: signature verification → dedup → event store → state machine.
+// A forged signature is rejected as a security event and never reaches
+// the state machine. A duplicate delivery is a strict no-op.
+type WebhookHandler struct {
+	processor *WebhookProcessor
 }
 
-type razorpayWebhookEvent struct {
-	Event string `json:"event"`
+func NewWebhookHandler(processor *WebhookProcessor) *WebhookHandler {
+	return &WebhookHandler{processor: processor}
 }
 
 func (h *WebhookHandler) HandleRazorpay(
@@ -30,28 +30,38 @@ func (h *WebhookHandler) HandleRazorpay(
 		return
 	}
 
-	var ev razorpayWebhookEvent
-
-	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
-		http.Error(w, "invalid webhook payload", http.StatusBadRequest)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
 
-	// Phase 1: log only. Success and failure are logged distinctly so
-	// the end-to-end manual test can confirm both appear correctly.
-	switch ev.Event {
-	case "payment.captured":
-		fmt.Println("[webhook] payment.captured — payment succeeded")
+	eventID := r.Header.Get("x-razorpay-event-id")
+	signature := r.Header.Get("x-razorpay-signature")
 
-	case "payment.failed":
-		fmt.Println("[webhook] payment.failed — payment failed")
+	err = h.processor.Process(
+		r.Context(),
+		body,
+		eventID,
+		signature,
+	)
 
-	case "order.paid":
-		fmt.Println("[webhook] order.paid — order paid")
+	if err != nil {
+		// A duplicate delivery is a successful no-op at the HTTP layer.
+		if errors.Is(err, ErrWebhookEventDuplicate) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 
-	default:
-		fmt.Printf("[webhook] unhandled event: %s\n", ev.Event)
+		// Signature failures and processing errors are not acknowledged
+		// as success — Razorpay will retry, and the security log already
+		// recorded the forgery attempt.
+		log.Printf("[webhook] rejected: %v", err)
+		http.Error(w, "webhook rejected", http.StatusBadRequest)
+		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 }
+
+var _ = context.Background

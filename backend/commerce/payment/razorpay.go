@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sync/atomic"
 
 	"github.com/razorpay/razorpay-go"
@@ -75,10 +76,19 @@ func (c *RazorpayClient) CreatePayment(
 		)
 	}
 
+	// Razorpay returns amount as an integer number of paise.
+	// The SDK decodes numbers as float64; reject any fractional value
+	// rather than silently truncating a wrong amount.
 	responseAmount, ok := response["amount"].(float64)
 	if !ok {
 		return Payment{}, fmt.Errorf(
 			"razorpay response missing amount",
+		)
+	}
+	if responseAmount != math.Trunc(responseAmount) {
+		return Payment{}, fmt.Errorf(
+			"razorpay amount must be a whole number of paise, got %v",
+			responseAmount,
 		)
 	}
 

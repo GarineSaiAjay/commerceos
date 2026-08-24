@@ -2,15 +2,46 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/garinesaiajay/commerceos/commerce/order"
+	"github.com/garinesaiajay/commerceos/policy"
+	"github.com/garinesaiajay/commerceos/statemachine"
 )
 
 type Service struct {
-	provider Provider
-	repo     Repository
-	attempts AttemptRepository
+	provider   Provider
+	repo       Repository
+	attempts   AttemptRepository
+	orders     OrderStatusTransitioner
+	authorizer Authorizer
+}
+
+// Authorizer is the policy engine's verification surface. The payment
+// service requires a valid authorization before any money movement.
+type Authorizer interface {
+	VerifyAuthorization(
+		ctx context.Context,
+		authorizationID string,
+	) (policy.Authorization, error)
+}
+
+// AuthorizationConsumer marks an authorization as consumed AFTER a new
+// payment was created, so the same authorization cannot be replayed to
+// create a second payment. The idempotent-return path is unaffected.
+type AuthorizationConsumer interface {
+	MarkAuthorizationUsed(ctx context.Context, authorizationID string) error
+}
+
+// OrderStatusTransitioner is the subset of the order repository the
+// payment service needs to mark orders paid on verified capture.
+type OrderStatusTransitioner interface {
+	TransitionStatus(
+		ctx context.Context,
+		orderID string,
+		to string,
+	) (order.Order, error)
 }
 
 func NewService(
@@ -33,6 +64,44 @@ func NewServiceWithAttempts(
 		repo:     repo,
 		attempts: attempts,
 	}
+}
+
+func NewServiceWithOrderTransitioner(
+	provider Provider,
+	repo Repository,
+	attempts AttemptRepository,
+	orders OrderStatusTransitioner,
+) *Service {
+	return &Service{
+		provider: provider,
+		repo:     repo,
+		attempts: attempts,
+		orders:   orders,
+	}
+}
+
+func NewServiceWithAuthorizer(
+	provider Provider,
+	repo Repository,
+	attempts AttemptRepository,
+	orders OrderStatusTransitioner,
+	authorizer Authorizer,
+) *Service {
+	return &Service{
+		provider:   provider,
+		repo:       repo,
+		attempts:   attempts,
+		orders:     orders,
+		authorizer: authorizer,
+	}
+}
+
+// GetPayment reads a payment by order ID (read-only).
+func (s *Service) GetPayment(
+	ctx context.Context,
+	orderID string,
+) (Payment, error) {
+	return s.repo.GetByOrderID(ctx, orderID)
 }
 
 func (s *Service) CreatePayment(
@@ -68,10 +137,37 @@ func (s *Service) CreatePayment(
 func (s *Service) CreatePaymentOrder(
 	ctx context.Context,
 	ord order.Order,
+	idempotencyKey string,
+	authorizationID string,
 ) (Payment, error) {
-	// Idempotency:
-	// If a payment already exists for this CommerceOS order,
-	// return it instead of creating another Razorpay order.
+	// Hard chokepoint: no money movement without a valid authorization
+	// issued by the Policy Engine.
+	if s.authorizer == nil {
+		return Payment{}, fmt.Errorf("payment service requires an authorizer")
+	}
+
+	if _, err := s.authorizer.VerifyAuthorization(
+		ctx,
+		authorizationID,
+	); err != nil {
+		return Payment{}, fmt.Errorf("authorization required: %w", err)
+	}
+
+	// Idempotency: if a payment already exists for this idempotency
+	// key, return it — never create a second Razorpay order.
+	if idempotencyKey != "" {
+		existing, err := s.repo.GetByIdempotencyKey(ctx, idempotencyKey)
+		if err == nil {
+			return existing, nil
+		}
+
+		if err != ErrPaymentNotFound {
+			return Payment{}, err
+		}
+	}
+
+	// Idempotency: if a payment already exists for this CommerceOS
+	// order, return it instead of creating another Razorpay order.
 	existing, err := s.repo.GetByOrderID(ctx, ord.ID)
 	if err == nil {
 		return existing, nil
@@ -94,12 +190,26 @@ func (s *Service) CreatePaymentOrder(
 
 	payment.Provider = "razorpay"
 	payment.ProviderOrderID = payment.ID
+	payment.IdempotencyKey = idempotencyKey
+
+	// The Razorpay order now exists and awaits payment: the payment
+	// moves from created -> pending (per the Phase 2 state machine).
+	payment.Status = "pending"
 
 	// Use a deterministic internal ID for now.
 	payment.ID = fmt.Sprintf("payment_%s", ord.ID)
 
 	if err := s.repo.Create(ctx, payment); err != nil {
 		return Payment{}, err
+	}
+
+	// The authorization was genuinely consumed to create a NEW payment
+	// (not an idempotent repeat), so mark it used — a single
+	// authorization must not create a second payment.
+	if consumer, ok := s.authorizer.(AuthorizationConsumer); ok {
+		if err := consumer.MarkAuthorizationUsed(ctx, authorizationID); err != nil {
+			return Payment{}, fmt.Errorf("mark authorization used: %w", err)
+		}
 	}
 
 	// Record the initial payment attempt for this order.
@@ -115,6 +225,7 @@ func (s *Service) CreatePaymentOrder(
 			Amount:          ord.Subtotal,
 			Currency:        ord.Currency,
 			Status:          "attempted",
+			IdempotencyKey:  idempotencyKey,
 		})
 
 		if err != nil {
@@ -182,18 +293,55 @@ func (s *Service) VerifyPayment(
 		return Payment{}, err
 	}
 
-	paidPayment, err := s.repo.MarkPaid(
+	// Guarded transitions: pending -> authorized -> captured (the
+	// client-side signature verification is the capture proof in
+	// Phase 2).
+	if _, err := s.repo.TransitionStatus(
 		ctx,
 		orderID,
+		statemachine.PaymentAuthorized,
+		razorpayPaymentID,
+	); err != nil {
+		if errors.Is(err, statemachine.ErrIllegalTransition) {
+			// Already captured/paid — return the existing payment.
+			return payment, nil
+		}
+
+		return Payment{}, err
+	}
+
+	paidPayment, err := s.repo.TransitionStatus(
+		ctx,
+		orderID,
+		statemachine.PaymentCaptured,
 		razorpayPaymentID,
 	)
 
-	if err == ErrPaymentAlreadyPaid {
-		return paidPayment, nil
+	if errors.Is(err, statemachine.ErrIllegalTransition) {
+		// Already captured/paid — return the existing payment.
+		return payment, nil
 	}
 
 	if err != nil {
 		return Payment{}, err
+	}
+
+	// The order becomes paid on verified capture, mirroring the
+	// webhook path (Phase 2 state machine: payment_pending -> paid).
+	// If the webhook already marked it paid, the guarded transition is
+	// an illegal no-op, which we treat as already done.
+	if s.orders != nil {
+		_, orderErr := s.orders.TransitionStatus(
+			ctx,
+			orderID,
+			statemachine.OrderPaid,
+		)
+
+		if orderErr != nil &&
+			!errors.Is(orderErr, statemachine.ErrIllegalTransition) &&
+			!errors.Is(orderErr, order.ErrOrderNotFound) {
+			return Payment{}, orderErr
+		}
 	}
 
 	// Record the successful attempt.
