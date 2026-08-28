@@ -71,13 +71,30 @@ func (a *BuyerAgent) PlanCheckout(
 		Items:    []string{top.ID},
 	}
 
-	reasoning := fmt.Sprintf(
-		"Selected %s (₹%d) matching priority %s within budget ₹%d.",
-		top.Title,
-		top.Price.Amount/100, // paise → rupees for display
-		intent.Priority,
-		intent.Budget, // already rupees
-	)
+	// intent.Priority is optional (only budget + category are required --
+	// see ValidateIntent), so the sentence needs two honest shapes: most
+	// requests never name a specific priority, and "matching priority
+	// within budget ₹X" (empty %s) read as a broken sentence rather than
+	// explaining anything.
+	var reasoning string
+	if intent.Priority != "" {
+		reasoning = fmt.Sprintf(
+			"Selected %s (₹%d) — best match for your %s priority in %s, within budget ₹%d.",
+			top.Title,
+			top.Price.Amount/100, // paise → rupees for display
+			intent.Priority,
+			intent.Category,
+			intent.Budget, // already rupees
+		)
+	} else {
+		reasoning = fmt.Sprintf(
+			"Selected %s (₹%d) — best-priced match in %s within your ₹%d budget.",
+			top.Title,
+			top.Price.Amount/100,
+			intent.Category,
+			intent.Budget,
+		)
+	}
 
 	return CheckoutPlan{
 		Intent:     intent,
