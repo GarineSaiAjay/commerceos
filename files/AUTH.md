@@ -1,7 +1,11 @@
 # Operator Authentication (P0.3)
 
 This document is the demo credentials plus the design trade-offs for the
-merchant operator auth added to close `files/JUDGE-FACING-GAPS.md` P0.3.
+merchant operator auth added to close the "no authentication anywhere,
+including on the money-gating endpoints" gap this project's audit pass
+found: the approve/reject handlers used to read a client-supplied
+`approver`/`by` string from the request body and default it to the
+literal string `"operator"` if absent.
 
 ## Demo credentials
 

@@ -59,7 +59,12 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
    ```bash
    goose -dir db/migrations postgres "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" up
    psql "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" -f db/seeds/001_catalog.sql
+   psql "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" -f db/seeds/002_operator.sql
    ```
+   The second seed is the merchant dashboard's login (`files/AUTH.md` has
+   the demo credentials) -- skip it and every `/dashboard` login attempt
+   fails with "invalid email or password" because no operator row exists
+   yet, indistinguishable from an actually wrong password.
 
 4. **Frontend:**
    ```bash
@@ -92,7 +97,9 @@ cd frontend && npm run lint && npm run build
 
 ## Docs
 
-- `files/PROJECT-AUDIT.md` — full gap analysis + fix log.
-- `files/COMPLETION-PLAN.md` — step-by-step plan for 100% real completion (what needs a human vs. what's automated).
-- `files/phase-1..9-*.md` — the original phase specs.
+- `files/AUTH.md` — operator auth: demo credentials, what's gated vs. guest-accessible, and the PBKDF2 trade-off.
+- `files/GIT-WORKFLOW.md` — branching, commit, and PR conventions for this repo.
 - `files/agent-commerce-contract.md` — the agent API contract.
+- `files/trust-boundary.md` — the untrusted → trusted data flow and what re-validates each input.
+- `files/pitch-one-pager.md` — the one-page pitch.
+- `files/demo-script.md` — the five-minute live demo script.

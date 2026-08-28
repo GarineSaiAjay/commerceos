@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -27,6 +28,12 @@ func NewService(repo Repository) *Service {
 // email is unknown or the password is wrong, so a caller can't use this
 // endpoint to enumerate registered operator emails.
 func (s *Service) Login(ctx context.Context, email, password string) (token string, operator Operator, err error) {
+	// Normalize case/whitespace before lookup: emails are stored
+	// lowercase (see db/seeds/002_operator.sql), and Postgres TEXT
+	// equality is case-sensitive, so "Owner@..." or a trailing space
+	// picked up from a copy-paste would otherwise fail identically to a
+	// wrong password, with no way to tell the two apart from the UI.
+	email = strings.ToLower(strings.TrimSpace(email))
 	record, err := s.repo.GetOperatorByEmail(ctx, email)
 	if err != nil {
 		return "", Operator{}, ErrInvalidCredentials
