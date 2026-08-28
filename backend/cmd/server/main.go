@@ -401,6 +401,11 @@ func main() {
 				strings.HasSuffix(r.URL.Path, "/recovery"):
 				paymentHandler.Recovery(w, r)
 
+			// Order history / detail: GET /orders/{id}. Checked after the
+			// more specific suffix cases above so it never shadows them.
+			case r.Method == http.MethodGet:
+				orderHandler.GetOrder(w, r)
+
 			default:
 				http.Error(
 					w,
@@ -409,6 +414,14 @@ func main() {
 				)
 			}
 		},
+	)
+
+	// Order history list: GET /orders?merchant_id=... . Registered
+	// separately from "/orders/" (Go's ServeMux treats a trailing slash
+	// as a distinct subtree pattern).
+	commerceMux.HandleFunc(
+		"/orders",
+		orderHandler.ListOrders,
 	)
 
 	commerceMux.HandleFunc(
