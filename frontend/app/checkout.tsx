@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 declare global {
   interface Window {
@@ -91,6 +91,7 @@ interface Recovery {
   reservation_expires_at: string;
   retry_allowed: boolean;
   cart: { subtotal: number; currency: string; items: { product_id: string; variant_id: string; title: string; quantity: number; unit_price: number; total: number }[] };
+  removable_items: string[];
 }
 
 interface Mandate {
@@ -102,6 +103,64 @@ interface Decision {
   authorization_id: string;
   approval_request_id: string;
   reason: string;
+  level: number;
+}
+
+interface ApprovalRequestDetail {
+  approval_request_id: string;
+  mandate_id: string;
+  action: string;
+  amount: number;
+  currency: string;
+  merchant: string;
+  items: string[];
+  cart_id: string;
+  policy_version: string;
+  risk_score: number;
+  level: number;
+  status: string;
+  authorization_id: string;
+  reason: string;
+}
+
+interface Intent {
+  budget: number;
+  category: string;
+  priority: string;
+  recipient: string;
+  clarify?: string;
+}
+
+interface CheckoutPlan {
+  intent: Intent;
+  proposal: {
+    action: string;
+    amount: number;
+    currency: string;
+    merchant: string;
+    items: string[];
+  };
+  selected_product_id: string;
+  reasoning: string;
+}
+
+interface SuggestedProduct {
+  product_id: string;
+  title: string;
+  price: number;
+  currency: string;
+}
+
+interface SuggestionDetail {
+  expected_value: number;
+  reason: string;
+}
+
+interface SuggestResponse {
+  available: boolean;
+  recommendation?: SuggestionDetail;
+  product?: SuggestedProduct;
+  message?: string;
 }
 
 const API_BASE = "http://localhost:8081";
@@ -114,7 +173,7 @@ function freshCartId() {
   return `cart_${Date.now()}`;
 }
 
-type Step = "catalog" | "cart" | "checkout" | "approval" | "pay" | "complete" | "failed";
+type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed";
 
 export default function CheckoutFlow({
   initialProducts,
@@ -130,8 +189,19 @@ export default function CheckoutFlow({
   	const [approvalRequestId, setApprovalRequestId] = useState("");
   	const [approvalReason, setApprovalReason] = useState("");
   	const [recovery, setRecovery] = useState<Recovery | null>(null);
+  	const [approvalLevel, setApprovalLevel] = useState(0);
+  	const [approvalSnapshot, setApprovalSnapshot] = useState<ApprovalRequestDetail | null>(null);
+  	const [gateConfirmed, setGateConfirmed] = useState(false);
+  	const [gateError, setGateError] = useState("");
   	const [loading, setLoading] = useState(false);
   	const [message, setMessage] = useState("");
+  	const [agentPrompt, setAgentPrompt] = useState("");
+  	const [agentLoading, setAgentLoading] = useState(false);
+  	const [agentPlan, setAgentPlan] = useState<CheckoutPlan | null>(null);
+  	const [agentError, setAgentError] = useState("");
+  	const [suggestion, setSuggestion] = useState<SuggestResponse | null>(null);
+  	const [suggestionLoading, setSuggestionLoading] = useState(false);
+  	const [dismissedProductId, setDismissedProductId] = useState<string | null>(null);
 
   async function ensureCart() {
     try {
@@ -202,6 +272,117 @@ export default function CheckoutFlow({
     }
   }
 
+  // Conversational entry point: POST /agent/checkout. The agent only ever
+  // returns a proposal (a selected product_id plus its reasoning) -- it
+  // never creates a cart or moves money itself. Accepting the proposal
+  // below just calls the same addToCart the manual catalog uses, so the
+  // normal cart/policy/payment pipeline still runs unchanged.
+  async function askAgent() {
+    if (!agentPrompt.trim()) return;
+    setAgentLoading(true);
+    setAgentError("");
+    setAgentPlan(null);
+    try {
+      const res = await fetch(`${API_BASE}/agent/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: agentPrompt, merchant: MERCHANT_ID }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        if (text.includes("ambiguous intent")) {
+          setAgentError(
+            "Say a bit more -- what are you shopping for, and what is the budget?"
+          );
+        } else if (text.includes("no suitable product")) {
+          setAgentError("Nothing in the catalog matches that yet -- try browsing below instead.");
+        } else {
+          setAgentError("The assistant is temporarily unavailable -- you can browse the catalog manually below.");
+        }
+        return;
+      }
+      const plan = (await res.json()) as CheckoutPlan;
+      setAgentPlan(plan);
+    } catch {
+      setAgentError("The assistant is temporarily unavailable -- you can browse the catalog manually below.");
+    } finally {
+      setAgentLoading(false);
+    }
+  }
+
+  async function acceptAgentPlan() {
+    if (!agentPlan) return;
+    const matched = products.find((p) => p.product_id === agentPlan.selected_product_id);
+    if (!matched) {
+      setAgentError("That product is no longer available -- try browsing below.");
+      setAgentPlan(null);
+      return;
+    }
+    setAgentPlan(null);
+    setAgentPrompt("");
+    await addToCart(matched);
+  }
+
+  // Cross-sell surfaced in the cart: POST /growth/suggest. The backend
+  // picks the candidate and scores it (see backend/growth/suggest.go) --
+  // this only renders whatever it returns, it never invents a product.
+  async function fetchSuggestion() {
+    setSuggestionLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/growth/suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cart_id: cartId }),
+      });
+      if (!res.ok) {
+        setSuggestion(null);
+        return;
+      }
+      const data = (await res.json()) as SuggestResponse;
+      if (data.available && data.product && data.product.product_id !== dismissedProductId) {
+        setSuggestion(data);
+      } else {
+        setSuggestion(null);
+      }
+    } catch {
+      setSuggestion(null);
+    } finally {
+      setSuggestionLoading(false);
+    }
+  }
+
+  async function acceptSuggestion() {
+    if (!suggestion?.product) return;
+    const suggested = suggestion.product;
+    setSuggestion(null);
+    const matched = products.find((p) => p.product_id === suggested.product_id) ?? {
+      product_id: suggested.product_id,
+      title: suggested.title,
+      price: { amount: suggested.price, currency: suggested.currency },
+      availability: 1,
+    };
+    await addToCart(matched);
+  }
+
+  function dismissSuggestion() {
+    if (suggestion?.product) setDismissedProductId(suggestion.product.product_id);
+    setSuggestion(null);
+  }
+
+  // Re-check for a suggestion whenever the buyer lands on a non-empty
+  // cart, including right after accepting one (item count changes ->
+  // effect re-runs -> a fresh suggestion is computed over the new cart).
+  useEffect(() => {
+    if (step === "cart" && cart && cart.items.length > 0) {
+      // Fetching from an external system (the growth service) on a
+      // dependency change is exactly what useEffect is for; the
+      // setState calls happen inside fetchSuggestion, not here.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      fetchSuggestion();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, cart?.cart_id, cart?.items.length]);
+
   async function startPayment() {
     setLoading(true);
     setMessage("Creating payment...");
@@ -240,16 +421,21 @@ export default function CheckoutFlow({
 
       		// Level 2/3 → durable human approval required before an
       		// authorization is issued.
-      		if (decision.decision === "PENDING_HUMAN_APPROVAL") {
-      			if (!decision.approval_request_id) {
-      				throw new Error("Approval required but no request was created");
-      			}
-      			setApprovalRequestId(decision.approval_request_id);
-      			setApprovalReason(decision.reason || "This purchase requires operator approval.");
-      			setStep("approval");
-      			setLoading(false);
-      			return;
-      		}
+      if (decision.decision === "PENDING_HUMAN_APPROVAL") {
+        if (!decision.approval_request_id) {
+          throw new Error("Approval required but no request was created");
+        }
+        const detail = await fetchApprovalRequest(decision.approval_request_id);
+        setApprovalRequestId(decision.approval_request_id);
+        setApprovalReason(decision.reason || "This purchase requires operator approval.");
+        setApprovalLevel(decision.level);
+        setApprovalSnapshot(detail);
+        setGateConfirmed(false);
+        setGateError("");
+        setStep(decision.level >= 3 ? "gate" : "approval");
+        setLoading(false);
+        return;
+      }
 
       		if (decision.decision !== "APPROVED" || !decision.authorization_id) {
       			throw new Error(decision.reason || "Payment was not authorized");
@@ -354,6 +540,37 @@ export default function CheckoutFlow({
 				}
 			}
 
+			// Remove one removable item (e.g. an accessory) from a failed
+			// order, rebuild a fresh smaller cart with catalog-authoritative
+			// prices/availability, and re-checkout it server-side. The
+			// caller returns to the order screen with the smaller order;
+			// clicking Pay there re-proposes to the policy engine on the
+			// new total -- policy is never bypassed for the smaller cart.
+			async function removeAccessoryAndRetry(variantId: string) {
+				if (!order) return;
+				setLoading(true);
+				setMessage("Removing item and recomputing your order...");
+				try {
+					const res = await fetch(`${API_BASE}/orders/${order.order_id}/recovery/remove-item`, {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ variant_id: variantId }),
+					});
+					if (!res.ok) throw new Error(await res.text());
+					const newOrder = (await res.json()) as Order;
+					setOrder(newOrder);
+					setCartId(newOrder.cart_id);
+					setPayment(null);
+					setRecovery(null);
+					setMessage("Item removed. Review your updated order, then pay when ready.");
+					setStep("checkout");
+				} catch (error) {
+					setMessage(error instanceof Error ? error.message : "Could not remove that item");
+				} finally {
+					setLoading(false);
+				}
+			}
+
 			async function resetToCatalog(messageText: string) {
       				setStep("catalog");
       				setCartId(freshCartId());
@@ -361,8 +578,79 @@ export default function CheckoutFlow({
       				setOrder(null);
       				setPayment(null);
       				setApprovalRequestId("");
+      				setApprovalLevel(0);
+      				setApprovalSnapshot(null);
+      				setGateConfirmed(false);
+      				setGateError("");
       				setMessage(messageText);
       			}
+
+  // Fetch the current state of an approval request from the server. Used
+  // both to build the confirmation snapshot and, for Level 3, to detect
+  // drift immediately before acting on stale data.
+  async function fetchApprovalRequest(id: string) {
+    const res = await fetch(`${API_BASE}/approval-requests/${id}`, { cache: "no-store" });
+    if (!res.ok) throw new Error("Failed to load approval request");
+    return (await res.json()) as ApprovalRequestDetail;
+  }
+
+  // Level 3 hard gate: re-fetch the approval request immediately before
+  // acting. Refuses to proceed if it is no longer PENDING or if the
+  // amount/items/merchant/cart/policy version have drifted from what was
+  // shown on this screen -- never trust cached state for a hard gate.
+  async function approveGateAndPay() {
+    if (!approvalSnapshot) return;
+    setLoading(true);
+    setGateError("");
+    setMessage("Re-checking approval request...");
+    try {
+      const fresh = await fetchApprovalRequest(approvalRequestId);
+      if (fresh.status !== "PENDING") {
+        throw new Error(`This approval request is now ${fresh.status.toLowerCase()}, not pending. Go back and start over.`);
+      }
+      const drifted =
+        fresh.amount !== approvalSnapshot.amount ||
+        fresh.currency !== approvalSnapshot.currency ||
+        fresh.merchant !== approvalSnapshot.merchant ||
+        fresh.cart_id !== approvalSnapshot.cart_id ||
+        fresh.policy_version !== approvalSnapshot.policy_version ||
+        fresh.items.join("|") !== approvalSnapshot.items.join("|");
+      if (drifted) {
+        throw new Error("The order changed since this approval was requested. Go back and start over.");
+      }
+      setMessage("Approving payment...");
+      const res = await fetch(`${API_BASE}/approval-requests/${approvalRequestId}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approver: "buyer" }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const decision = (await res.json()) as Decision;
+      if (decision.decision !== "APPROVED" || !decision.authorization_id) {
+        throw new Error(decision.reason || "Approval did not produce an authorization");
+      }
+      await createPaymentWithLaunch(decision.authorization_id);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Approval failed";
+      setGateError(msg);
+      setMessage("");
+      setLoading(false);
+    }
+  }
+
+  // Return to the order screen after a Level 3 gate is invalidated
+  // (drifted or no longer pending) so the buyer can re-propose cleanly.
+  function backToOrderFromGate() {
+    setStep("checkout");
+    setApprovalRequestId("");
+    setApprovalReason("");
+    setApprovalLevel(0);
+    setApprovalSnapshot(null);
+    setGateConfirmed(false);
+    setGateError("");
+    setMessage("That approval request is no longer valid. Review your order and try again.");
+  }
+
 
   async function verifyPayment(response: RazorpayResponse) {
     setMessage("Verifying payment...");
@@ -410,6 +698,61 @@ export default function CheckoutFlow({
 
         {step === "catalog" && (
           <section>
+            <div className="mb-6 rounded-xl border border-zinc-200 bg-zinc-50 p-5">
+              <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+                Ask the shopping agent
+              </h2>
+              <p className="mb-3 text-sm text-zinc-600">
+                Say what you want and the budget. It reads the catalog and proposes one item -- it never places an order itself; the normal checkout below still runs.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={agentPrompt}
+                  onChange={(e) => setAgentPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") askAgent();
+                  }}
+                  placeholder="earbuds for my sister, budget 25000, good battery life"
+                  className="flex-1 rounded-lg border border-zinc-300 px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+                  disabled={agentLoading}
+                />
+                <button
+                  onClick={askAgent}
+                  disabled={agentLoading || !agentPrompt.trim()}
+                  className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  {agentLoading ? "Thinking..." : "Ask"}
+                </button>
+              </div>
+
+              {agentError && <p className="mt-3 text-sm text-amber-700">{agentError}</p>}
+
+              {agentPlan && (
+                <div className="mt-4 rounded-lg border border-zinc-300 bg-white p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Agent proposes
+                  </p>
+                  <p className="mt-1 text-sm text-zinc-700">{agentPlan.reasoning}</p>
+                  <div className="mt-3 flex gap-3">
+                    <button
+                      onClick={acceptAgentPlan}
+                      disabled={loading}
+                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                    >
+                      Add to cart
+                    </button>
+                    <button
+                      onClick={() => setAgentPlan(null)}
+                      className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
+                    >
+                      Never mind
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <h2 className="mb-4 text-lg font-semibold text-zinc-900">
               Browse Catalog
             </h2>
@@ -470,6 +813,39 @@ export default function CheckoutFlow({
                 </li>
               ))}
             </ul>
+
+            {suggestion?.available && suggestion.product && (
+              <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-5">
+                <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
+                  Agent suggests
+                </p>
+                <p className="mt-1 font-semibold text-zinc-900">
+                  Add {suggestion.product.title} -- {formatINR(suggestion.product.price)}
+                </p>
+                {suggestion.recommendation && (
+                  <p className="mt-1 text-sm text-indigo-800">{suggestion.recommendation.reason}</p>
+                )}
+                <div className="mt-3 flex gap-3">
+                  <button
+                    onClick={acceptSuggestion}
+                    disabled={loading}
+                    className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    Add to cart
+                  </button>
+                  <button
+                    onClick={dismissSuggestion}
+                    className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-800 hover:bg-indigo-100"
+                  >
+                    No thanks
+                  </button>
+                </div>
+              </div>
+            )}
+            {suggestionLoading && !suggestion && (
+              <p className="mt-3 text-xs text-zinc-400">Checking for a complementary item...</p>
+            )}
+
             <div className="mt-4 flex items-center justify-between rounded-xl border border-zinc-200 p-5">
               <p className="font-semibold text-zinc-900">Subtotal</p>
               <p className="text-lg font-semibold text-zinc-900">
@@ -530,7 +906,10 @@ export default function CheckoutFlow({
               Purchase Requires Approval
             </h2>
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
-              <p className="text-sm text-amber-900">
+              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                Level {approvalLevel} confirmation
+              </p>
+              <p className="mt-1 text-sm text-amber-900">
                 This order is above the auto-approval threshold. An operator
                 must approve it before payment can be initiated. {approvalReason}
               </p>
@@ -560,6 +939,81 @@ export default function CheckoutFlow({
             </div>
           </section>
         )}
+
+        {step === "gate" && (
+          <section>
+            <div className="mb-6 rounded-xl border-2 border-red-600 bg-red-50 p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-red-700">
+                Level {approvalLevel} &middot; Hard Gate
+              </p>
+              <h2 className="mt-1 text-xl font-bold text-red-900">
+                This purchase cannot proceed without your explicit, deliberate approval
+              </h2>
+              <p className="mt-2 text-sm text-red-800">
+                {approvalReason} This screen cannot be dismissed or skipped &mdash;
+                there is no background action, keyboard shortcut, or cached
+                authorization that bypasses it, and the request below is
+                re-verified against the server the instant you approve it.
+              </p>
+            </div>
+
+            {approvalSnapshot && (
+              <dl className="grid gap-2 rounded-xl border border-zinc-200 p-5 text-sm text-zinc-900 sm:grid-cols-2">
+                <div><dt className="font-medium text-zinc-500">Merchant</dt><dd>{approvalSnapshot.merchant}</dd></div>
+                <div><dt className="font-medium text-zinc-500">Amount</dt><dd>{formatINR(approvalSnapshot.amount)}</dd></div>
+                <div className="sm:col-span-2"><dt className="font-medium text-zinc-500">Items</dt><dd>{approvalSnapshot.items.join(", ")}</dd></div>
+                <div><dt className="font-medium text-zinc-500">Policy version</dt><dd className="font-mono">{approvalSnapshot.policy_version}</dd></div>
+                <div><dt className="font-medium text-zinc-500">Risk score</dt><dd>{approvalSnapshot.risk_score.toFixed(2)}</dd></div>
+                <div className="sm:col-span-2"><dt className="font-medium text-zinc-500">Approval request</dt><dd className="font-mono">{approvalRequestId}</dd></div>
+              </dl>
+            )}
+
+            {gateError && (
+              <div className="mt-4 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800">
+                {gateError}
+              </div>
+            )}
+
+            <label className="mt-6 flex items-start gap-3 rounded-xl border border-zinc-300 p-4 text-sm text-zinc-800">
+              <input
+                type="checkbox"
+                checked={gateConfirmed}
+                onChange={(e) => setGateConfirmed(e.target.checked)}
+                disabled={loading}
+                className="mt-0.5 h-4 w-4"
+              />
+              I have reviewed the merchant, amount, and items above and I
+              deliberately approve this exact purchase.
+            </label>
+
+            <div className="mt-4 space-y-3">
+              <button
+                onClick={approveGateAndPay}
+                disabled={loading || !gateConfirmed}
+                className="w-full rounded-xl bg-red-700 px-5 py-3.5 font-medium text-white transition hover:bg-red-800 disabled:opacity-50"
+              >
+                {loading ? "Re-verifying..." : `Approve this exact purchase \u2014 ${approvalSnapshot ? formatINR(approvalSnapshot.amount) : ""}`}
+              </button>
+              <button
+                onClick={rejectApproval}
+                disabled={loading}
+                className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+              >
+                Reject
+              </button>
+              {gateError && (
+                <button
+                  onClick={backToOrderFromGate}
+                  disabled={loading}
+                  className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+                >
+                  Back to order
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+
 
         {step === "pay" && payment && (
           <section>
@@ -612,6 +1066,35 @@ export default function CheckoutFlow({
 				</div>
 			)}
 
+			{recovery && recovery.removable_items.length > 0 && (
+				<div className="mt-6 rounded-xl border border-zinc-200 p-5">
+					<p className="text-sm font-semibold text-zinc-900">Remove an item to reduce the total</p>
+					<p className="mt-1 text-xs text-zinc-500">
+						Removing an item recomputes your total from the catalog and
+						re-runs policy on the smaller order before payment.
+					</p>
+					<ul className="mt-3 divide-y divide-zinc-200">
+						{recovery.cart.items
+							.filter((item) => recovery.removable_items.includes(item.variant_id))
+							.map((item) => (
+								<li key={item.variant_id} className="flex items-center justify-between py-3">
+									<div>
+										<p className="text-sm font-medium text-zinc-900">{item.title}</p>
+										<p className="text-xs text-zinc-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
+									</div>
+									<button
+										onClick={() => removeAccessoryAndRetry(item.variant_id)}
+										disabled={loading}
+										className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+									>
+										Remove
+									</button>
+								</li>
+							))}
+					</ul>
+				</div>
+			)}
+
 			<div className="mt-6 space-y-3">
 				<button
 					onClick={startPayment}
@@ -622,15 +1105,16 @@ export default function CheckoutFlow({
 				</button>
 				<button
 					onClick={() => {
-						setStep("catalog");
-						setCartId(freshCartId());
-						setCart(null);
-						setOrder(null);
-						setPayment(null);
-						setRecovery(null);
-						setMessage("Choose a new payment method. Your order was not charged.");
+						// Reopen the Razorpay method selector against THIS SAME
+						// order -- Standard Checkout always shows all payment
+						// methods when it opens, so re-proposing/relaunching for
+						// the existing (idempotent) payment is what actually
+						// changes the payment method. It must not discard the
+						// cart: that would silently become a full restart.
+						setMessage("Reopening payment method selection for this order...");
+						startPayment();
 					}}
-					disabled={loading}
+					disabled={loading || (recovery ? !recovery.retry_allowed : false)}
 					className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
 				>
 					Change payment method

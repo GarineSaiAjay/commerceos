@@ -7,16 +7,37 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var ErrProductNotFound = errors.New("product not found")
+
+// ErrProductAlreadyExists is returned when creating a product whose ID is
+// already taken (products.id is the primary key).
+var ErrProductAlreadyExists = errors.New("product already exists")
+
+// ErrProductInUse is returned when deleting a product that is still
+// referenced by an existing cart_items row -- cart_items.product_id has
+// no ON DELETE CASCADE, unlike product_variants, so historical carts are
+// never silently orphaned by a catalog edit.
+var ErrProductInUse = errors.New("product is referenced by an existing cart or order")
 
 type Repository interface {
 	CreateProduct(ctx context.Context, product Product) error
 	GetProduct(ctx context.Context, id string) (Product, error)
 	ListProducts(ctx context.Context) ([]Product, error)
 	GetVariant(ctx context.Context, id string) (ProductVariant, error)
+
+	// UpdateProduct replaces the editable fields of an existing product
+	// (everything except id/merchant_id/created_at). Returns
+	// ErrProductNotFound if no such product exists.
+	UpdateProduct(ctx context.Context, product Product) error
+
+	// DeleteProduct removes a product. product_variants cascade-delete
+	// automatically; a product still referenced by cart_items returns
+	// ErrProductInUse instead of silently breaking that history.
+	DeleteProduct(ctx context.Context, id string) error
 }
 
 type PostgresRepository struct {
@@ -101,10 +122,125 @@ func (r *PostgresRepository) CreateProduct(ctx context.Context, product Product)
 		purchaseConstraints,
 	)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrProductAlreadyExists
+		}
 		return fmt.Errorf("create product: %w", err)
 	}
 
 	return nil
+}
+
+// UpdateProduct replaces every editable field of an existing product.
+func (r *PostgresRepository) UpdateProduct(ctx context.Context, product Product) error {
+	features, err := json.Marshal(product.Features)
+	if err != nil {
+		return fmt.Errorf("marshal features: %w", err)
+	}
+
+	compatibility, err := json.Marshal(product.Compatibility)
+	if err != nil {
+		return fmt.Errorf("marshal compatibility: %w", err)
+	}
+
+	useCases, err := json.Marshal(product.UseCases)
+	if err != nil {
+		return fmt.Errorf("marshal use cases: %w", err)
+	}
+
+	attributes, err := json.Marshal(product.Attributes)
+	if err != nil {
+		return fmt.Errorf("marshal attributes: %w", err)
+	}
+
+	purchaseConstraints, err := json.Marshal(product.PurchaseConstraints)
+	if err != nil {
+		return fmt.Errorf("marshal purchase constraints: %w", err)
+	}
+
+	returnPolicy, err := json.Marshal(product.ReturnPolicy)
+	if err != nil {
+		return fmt.Errorf("marshal return policy: %w", err)
+	}
+
+	shipping, err := json.Marshal(product.Shipping)
+	if err != nil {
+		return fmt.Errorf("marshal shipping: %w", err)
+	}
+
+	tag, err := r.db.Exec(
+		ctx,
+		`
+		UPDATE products SET
+			title = $2,
+			price_amount = $3,
+			price_currency = $4,
+			availability = $5,
+			features = $6,
+			compatibility = $7,
+			use_cases = $8,
+			return_policy = $9,
+			shipping = $10,
+			attributes = $11,
+			purchase_constraints = $12,
+			updated_at = NOW()
+		WHERE id = $1
+		`,
+		product.ID,
+		product.Title,
+		product.Price.Amount,
+		product.Price.Currency,
+		product.Availability,
+		features,
+		compatibility,
+		useCases,
+		returnPolicy,
+		shipping,
+		attributes,
+		purchaseConstraints,
+	)
+	if err != nil {
+		return fmt.Errorf("update product: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrProductNotFound
+	}
+
+	return nil
+}
+
+// DeleteProduct removes a product. Its variants cascade-delete at the DB
+// level; a product still referenced by a cart_items row returns
+// ErrProductInUse instead of a raw constraint-violation error.
+func (r *PostgresRepository) DeleteProduct(ctx context.Context, id string) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM products WHERE id = $1`, id)
+	if err != nil {
+		if isForeignKeyViolation(err) {
+			return ErrProductInUse
+		}
+		return fmt.Errorf("delete product: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrProductNotFound
+	}
+
+	return nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
+}
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23503"
+	}
+	return false
 }
 
 func (r *PostgresRepository) GetProduct(ctx context.Context, id string) (Product, error) {

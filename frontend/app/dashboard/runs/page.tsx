@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatINR, formatTime, actionLabel } from "../../../lib/format";
 
+type RunStep = {
+  stage: string;
+  detail: string;
+  timestamp: string;
+};
+
 type Run = {
   run_id: string;
   action: string;
@@ -15,6 +21,15 @@ type Run = {
   authorization_id: string;
   authorization_status: string;
   created_at: string;
+  steps?: RunStep[];
+};
+
+const STAGE_LABEL: Record<string, string> = {
+  proposed: "Proposed",
+  risk_assessed: "Risk assessed",
+  policy_evaluated: "Policy evaluated",
+  authorized: "Authorized",
+  authorization_consumed: "Authorization consumed",
 };
 
 const API = "http://localhost:8081";
@@ -107,6 +122,21 @@ export default function RunsPage() {
               )}
               <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Occurred at</dt><dd className="mt-1">{formatTime(selected.created_at)}</dd></div>
             </dl>
+          )}
+          {selected && selected.steps && selected.steps.length > 0 && (
+            <div className="mt-6 border-t border-slate-100 pt-5">
+              <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">Timeline</h3>
+              <ol className="mt-3 space-y-3 border-l-2 border-slate-200 pl-4">
+                {selected.steps.map((step, i) => (
+                  <li key={`${step.stage}-${i}`} className="relative">
+                    <span className="absolute -left-[1.32rem] top-1 h-2 w-2 rounded-full bg-slate-400" />
+                    <p className="text-sm font-medium text-slate-900">{STAGE_LABEL[step.stage] || step.stage}</p>
+                    <p className="mt-0.5 text-xs text-slate-600">{step.detail}</p>
+                    <p className="mt-0.5 text-xs text-slate-400">{formatTime(step.timestamp)}</p>
+                  </li>
+                ))}
+              </ol>
+            </div>
           )}
         </section>
       </div>

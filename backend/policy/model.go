@@ -5,8 +5,14 @@ import (
 	"fmt"
 )
 
-// Policy version — bump whenever policy logic changes.
-const PolicyVersion = "v1"
+// PolicyVersion tags the deterministic checkout/authorization policy
+// logic (merchant/currency/ceiling/product/budget/mandate checks in
+// engine.go). Bump whenever that logic changes. Named to the same
+// "<domain>_policy_v<N>" scheme as growth.PolicyVersion so the two
+// policies -- what's allowed to be authorized vs. what's recommended --
+// are clearly distinct, intentionally versioned identifiers rather than
+// an accidental "v1" vs "cross_sell_policy_v4" inconsistency.
+const PolicyVersion = "checkout_policy_v1"
 
 // Decision outcomes.
 const (

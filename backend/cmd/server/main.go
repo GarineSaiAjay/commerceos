@@ -182,7 +182,9 @@ func main() {
 	paymentHandler := payment.NewHandler(
 		paymentService,
 		orderRepo,
-	).WithCallCounter(razorpayAdapter).WithRecoveryReaders(cartRepo, paymentAttemptRepo)
+	).WithCallCounter(razorpayAdapter).
+		WithRecoveryReaders(cartRepo, paymentAttemptRepo).
+		WithRecoveryActions(cartService, orderService)
 
 	// -------------------------
 	// Phase 7: MCP server
@@ -275,6 +277,19 @@ func main() {
 
 	apiGatewayMux := http.NewServeMux()
 	commerceMux := http.NewServeMux()
+	// agentAPIMux and dashboardMux are intentional, not unfinished: Phase 1
+	// envisioned four separate services (API Gateway :8080, Commerce :8081,
+	// Agent API :8082, Dashboard API :8083), but every real route -- agent
+	// checkout, growth, policy, payment, catalog, cart, order, dashboard
+	// overview/metrics/experiment -- lives on commerceMux/:8081 today. Each
+	// mux still gets its own port and health check below so the original
+	// service boundary is one config change away if it's ever needed, but
+	// collapsing four network hops into one process for a prototype this
+	// size is a feature, not a gap -- splitting them now would be exactly
+	// the "seven microservices for architecture theatre" anti-pattern this
+	// project explicitly rejects (see files/phase-9-presentation-demo.md
+	// §4). Revisit only if the single-service design becomes a real
+	// constraint (see PROJECT-AUDIT.md §3.13 / Fix Log).
 	agentAPIMux := http.NewServeMux()
 	dashboardMux := http.NewServeMux()
 
@@ -293,12 +308,37 @@ func main() {
 	// Catalog
 	commerceMux.HandleFunc(
 		"/products",
-		catalogHandler.ListProducts,
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost:
+				catalogHandler.CreateProduct(w, r)
+
+			case http.MethodGet:
+				catalogHandler.ListProducts(w, r)
+
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		},
 	)
 
 	commerceMux.HandleFunc(
 		"/products/",
-		catalogHandler.GetProduct,
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				catalogHandler.GetProduct(w, r)
+
+			case http.MethodPatch:
+				catalogHandler.UpdateProduct(w, r)
+
+			case http.MethodDelete:
+				catalogHandler.DeleteProduct(w, r)
+
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		},
 	)
 
 	commerceMux.HandleFunc(
@@ -352,6 +392,10 @@ func main() {
 			case r.Method == http.MethodPost &&
 				strings.HasSuffix(r.URL.Path, "/payment"):
 				paymentHandler.CreatePaymentOrder(w, r)
+
+			case r.Method == http.MethodPost &&
+				strings.HasSuffix(r.URL.Path, "/recovery/remove-item"):
+				paymentHandler.RemoveItemAndRecheckout(w, r)
 
 			case r.Method == http.MethodGet &&
 				strings.HasSuffix(r.URL.Path, "/recovery"):
@@ -457,6 +501,17 @@ func main() {
 	commerceMux.HandleFunc(
 		"/growth/recommend/",
 		growthHandler.Explain,
+	)
+
+	// Phase 5b: cross-sell suggestion for the checkout UI. Wraps the same
+	// GrowthAgent.EvaluateCandidate path /growth/evaluate uses, but picks
+	// the candidate and its EV inputs deterministically instead of
+	// requiring the caller to supply them (see growth/suggest.go).
+	growthSuggestHandler := growth.NewSuggestHandler(catalogRepo, cartService, growthAgent)
+
+	commerceMux.HandleFunc(
+		"/growth/suggest",
+		growthSuggestHandler.Suggest,
 	)
 
 	// Phase 6: dashboard

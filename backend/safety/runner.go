@@ -67,12 +67,18 @@ func NewRunner(proposer Proposer, counter CallCounter) *Runner {
 func (r *Runner) RunAttack(ctx context.Context, attack Attack, mandateID string) (AttackResult, error) {
 	before := r.counter.CallCount()
 
+	// The proposal comes from the attack definition itself, not a single
+	// shared shape — otherwise every attack would be "blocked" for the
+	// same trivial reason (an unknown merchant) regardless of what threat
+	// it claims to exercise, and ExpectedGuard would be documentation
+	// nobody actually verified.
 	action := policy.ProposedAction{
-		Action:   "CREATE_ORDER",
-		Amount:   10_000_000, // ₹1,00,000 — attacks push an excessive amount
-		Currency: "INR",
-		Merchant: "merchant_evil", // unknown merchant
-		Items:    []string{"airpods-pro-2"},
+		Action:   attack.Action,
+		Amount:   attack.Amount,
+		Currency: attack.Currency,
+		Merchant: attack.Merchant,
+		Items:    attack.Items,
+		CartID:   attack.CartID,
 	}
 
 	decision, err := r.proposer.Propose(ctx, action, mandateID)

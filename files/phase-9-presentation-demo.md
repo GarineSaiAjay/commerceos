@@ -1,13 +1,10 @@
 # Phase 9 — Presentation (Dashboard Polish & Demo Readiness)
 
-**Prerequisite:** Phase 8 fully verified (100-scenario suite passes clean, all red-team attacks blocked, replay system works).
+**Prerequisite:** Phase 8 mostly verified (see remaining items there).
+
+**Status: artifacts drafted 2026-08-26.** `files/demo-script.md` (the timed five-minute script below, refined against the current build) and `files/pitch-one-pager.md` (the one-page pitch) now exist. **What remains is entirely yours**: the live rehearsal itself. No agent can run a stopwatch against a real conversation with a judge — see the Rehearsal Log in `files/demo-script.md` for where to record your 3 practice runs.
+
 **Governing principle:** the system must be demonstrable end-to-end, live, in under five minutes, with every claim backed by something a judge can see happen in real time — not a slide, not a canned screenshot.
-
----
-
-## 0. Objective of This Phase
-
-Assemble everything built in Phases 1–8 into one coherent, rehearsed, live demo. No new backend capability should be needed at this point — this phase is about polish, rehearsal, and making sure the pitch framing matches what was actually built.
 
 ---
 
@@ -26,15 +23,11 @@ Audit Integrity: Events 127 · Verified ✓ · Chain broken: No · Root hash 8d3
 Agent Safety Evaluation: 100 scenarios · 0 unauthorized · 0 duplicate · 98% graceful failure
 ```
 
-1. Pull "Revenue / AI-attributed revenue / Conversion / AOV" from the Phase 6 Analytics service.
-2. Pull "AI Actions" and "Audit Trail" from Phase 3/6 artifacts.
-3. Pull "Audit Integrity" from the Phase 3 hash-chain verifier.
-4. Pull "Agent Safety Evaluation" from the Phase 8 evaluation suite's last run.
-5. Give each section clear visual hierarchy — this is the single screen judges will look at most, so prioritize legibility over density.
+The dashboard's Overview screen already sources revenue/AI-attributed revenue/conversion/AOV, AI Actions, Audit Trail, Audit Integrity, and the Agent Safety Evaluation summary from the real Phase 3/6/8 endpoints — this section is largely satisfied structurally. What's left is a final pass for visual hierarchy so this is legible as the single screen judges look at most.
 
 ## 2. Rehearse the Closing Framing
 
-Do **not** pitch this as "we built an AI payment agent" — there will be dozens of those at any hackathon in this space. Pitch it as:
+Do **not** pitch this as "we built an AI payment agent." Pitch it as:
 
 > **"We built the trust layer for agentic commerce."**
 
@@ -120,19 +113,21 @@ Walk the finished system against this list and confirm none of these crept in an
 
 ## Phase 9 — Full Artifact List
 
-- Finished, polished dashboard (single coherent screen)
-- Rehearsed demo script with actual timing notes from practice runs
-- One-page pitch summary mapping components to their conceptual roles
+- Finished, polished dashboard (single coherent screen) — mostly built, needs a final visual pass
+- Demo script written — `files/demo-script.md` (2026-08-26). **🫵 you**: rehearse it live 3+ times and fill in the Rehearsal Log at the bottom with actual timings.
+- One-page pitch summary mapping components to their conceptual roles — `files/pitch-one-pager.md` (2026-08-26)
 
 ---
 
 ## Phase 9 — Verification Checklist
 
-- [ ] The Five-Minute Demo Script runs live, start to finish, without a single manual DB edit or "pretend this worked" moment
+- [ ] The Five-Minute Demo Script (`files/demo-script.md`) runs live, start to finish, without a single manual DB edit or "pretend this worked" moment
 - [ ] Every dashboard number shown during the demo is real (either a live Test Mode transaction or a clearly labeled simulated experiment — nothing ambiguous)
 - [ ] The failure-recovery beat (forced `payment.failed`) and the red-team beat (blocked ₹90,000 attempt) both fire correctly in the live run-through, at least twice in rehearsal
 - [ ] None of the six anti-patterns above are present in the final build
 - [ ] A person unfamiliar with the project can watch the demo once and correctly state, afterward, "the LLM never directly moved money" — if they can't, the presentation isn't done yet
+
+**Do not start the demo rehearsal until Phase 8's remaining threat-coverage gaps are closed — a judge red-teaming this live is exactly what Phase 8 needs to withstand.**
 
 ---
 
@@ -141,37 +136,37 @@ Walk the finished system against this list and confirm none of these crept in an
 Before calling the build complete, confirm every item below in one continuous session — ideally by literally running the Five-Minute Demo Script live:
 
 **Commerce Core**
-- [ ] Real Razorpay Test Mode transaction completes successfully, end to end
-- [ ] A forced payment failure is handled gracefully with zero duplicate charge
+- [x] Real Razorpay Test Mode transaction completes successfully, end to end
+- [ ] A forced payment failure is handled gracefully with zero duplicate charge — recovery works but the "remove accessory" option (Phase 2) is still missing
 
 **Reliability**
-- [ ] Duplicate webhook delivery is deduplicated correctly
-- [ ] Outbox pattern prevents event loss on a simulated crash
-- [ ] Idempotent payment commands never create a second payment
+- [x] Duplicate webhook delivery is deduplicated correctly
+- [x] Outbox pattern prevents event loss on a simulated crash
+- [x] Idempotent payment commands never create a second payment
 
 **Authorization**
-- [ ] An over-limit action is rejected before any Razorpay call is made
-- [ ] Stale-authorization scenario blocks correctly with a clear explanation
-- [ ] All three authorization levels (auto-approve, confirm, hard gate) are demonstrated correctly
-- [ ] The audit log's hash chain verifies, and a tampered entry is detected
+- [x] An over-limit action is rejected before any Razorpay call is made
+- [x] Stale-authorization scenario blocks correctly with a clear explanation
+- [ ] All three authorization levels (auto-approve, confirm, hard gate) are demonstrated correctly — L1/L2 yes, L3's distinct hard-gate screen is still missing (Phase 3)
+- [x] The audit log's hash chain verifies, and a tampered entry is detected
 
 **Intelligence**
-- [ ] The Buyer Agent correctly extracts intent and builds a compliant cart from a natural-language prompt
-- [ ] The Growth Agent's cross-sell decision matches the deterministic expected-value calculation, not an LLM guess
-- [ ] Every recommendation has a working, accurate explanation view
+- [x] The Buyer Agent correctly extracts intent and builds a compliant cart from a natural-language prompt
+- [x] The Growth Agent's cross-sell decision matches the deterministic expected-value calculation, not an LLM guess
+- [x] Every recommendation has a working, accurate explanation view
 
 **Analytics**
-- [ ] Dashboard numbers are traceable to real data; simulated figures are clearly labeled as simulated
+- [x] Dashboard numbers are traceable to real data; simulated figures are clearly labeled as simulated
 
 **Agent Interface**
-- [ ] An external MCP client can call the Commerce MCP tools and get correct results
-- [ ] No MCP tool calls Razorpay directly — all route through the Policy Engine
+- [ ] An external MCP client can call the Commerce MCP tools and get correct results — not yet driven from Claude Desktop/Inspector (Phase 7)
+- [x] No MCP tool calls Razorpay directly — all route through the Policy Engine
 
 **Security**
-- [ ] All red-team attacks are blocked with zero Razorpay API calls
-- [ ] The 100-scenario evaluation suite reports 0 unauthorized payments, 0 duplicate payments, 0 policy bypasses
+- [ ] All red-team attacks are blocked with zero Razorpay API calls — the 10 canned attacks pass; 3 threat categories (tool injection, data exfiltration, goal hijacking) have no dedicated test yet (Phase 8)
+- [x] The 100-scenario evaluation suite reports 0 unauthorized payments, 0 duplicate payments, 0 policy bypasses
 
 **Presentation**
-- [ ] The full five-minute script runs live without manual intervention
+- [ ] The full five-minute script (`files/demo-script.md`, written 2026-08-26) runs live without manual intervention — not yet rehearsed
 
 If every box above is checked against a real, observed run — not assumed — the build is complete.

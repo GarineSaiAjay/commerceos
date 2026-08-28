@@ -21,6 +21,23 @@ type Run struct {
 	Authorization string    `json:"authorization_id,omitempty"`
 	AuthStatus    string    `json:"authorization_status,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
+
+	// Steps is the run's forensic timeline, one entry per persisted
+	// stage (proposed -> risk-assessed -> policy-evaluated -> authorized
+	// -> consumed). Only GetRun populates it -- ListRuns stays a flat
+	// summary row, since building every run's timeline on every list
+	// call would be a real N+1 query cost for no benefit until someone
+	// opens that specific run. There is no persisted search/filter/rank
+	// trail from the buyer/growth agents to add here yet; this is the
+	// honest granularity the system actually captures today.
+	Steps []RunStep `json:"steps,omitempty"`
+}
+
+// RunStep is one timestamped stage in a run's timeline.
+type RunStep struct {
+	Stage     string    `json:"stage"`
+	Detail    string    `json:"detail"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // HandleListRuns serves GET /runs (replay list).

@@ -7,23 +7,31 @@ import (
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 )
 
-// PolicyVersion tags the cross-sell policy logic.
+// PolicyVersion tags the cross-sell recommendation policy logic (which
+// bundle/accessory to recommend), distinct from the deterministic
+// checkout/authorization policy versioned as policy.PolicyVersion -- the
+// two use the same "<domain>_policy_v<N>" naming scheme on purpose.
 const PolicyVersion = "cross_sell_policy_v4"
 
-// Recommendation is a persisted, explainable cross-sell decision.
+// Recommendation is a persisted, explainable cross-sell decision. JSON
+// tags match the recommendations table column names (postgres_store.go)
+// so the same struct serializes consistently everywhere it is returned
+// (/growth/evaluate, /growth/recommend/{id}, /growth/suggest, the
+// recommend_bundle MCP tool) instead of falling back to Go's default
+// PascalCase field-name keys.
 type Recommendation struct {
-	ID                  string
-	CartID              string
-	ProductID           string
-	Price               int64
-	PurchaseProbability float64
-	IncrementalMargin   int64
-	Confidence          float64
-	RiskCost            int64
-	ExpectedValue       float64
-	Decision            string
-	PolicyVersion       string
-	Reason              string
+	ID                  string  `json:"id"`
+	CartID              string  `json:"cart_id"`
+	ProductID           string  `json:"product_id"`
+	Price               int64   `json:"price"`
+	PurchaseProbability float64 `json:"purchase_probability"`
+	IncrementalMargin   int64   `json:"incremental_margin"`
+	Confidence          float64 `json:"confidence"`
+	RiskCost            int64   `json:"risk_cost"`
+	ExpectedValue       float64 `json:"expected_value"`
+	Decision            string  `json:"decision"`
+	PolicyVersion       string  `json:"policy_version"`
+	Reason              string  `json:"reason"`
 }
 
 // CatalogReader is the catalog surface the growth agent needs.

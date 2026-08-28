@@ -80,8 +80,9 @@ func (a *BuyerAgent) PlanCheckout(
 	)
 
 	return CheckoutPlan{
-		Intent:    intent,
-		Proposal:  proposal,
-		Reasoning: reasoning,
+		Intent:     intent,
+		Proposal:   proposal,
+		SelectedID: top.ID,
+		Reasoning:  reasoning,
 	}, nil
 }

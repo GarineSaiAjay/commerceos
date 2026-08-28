@@ -9,9 +9,44 @@ jobs:
     name: Backend
     runs-on: ubuntu-latest
 
+    # Postgres 17 / Redis 8 mirror infra/docker-compose.yml exactly (same
+    # image majors, same DB name/user/password, same 5433 host port) so the
+    # integration tests -- which hardcode
+    # postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos
+    # rather than reading DATABASE_URL -- connect to the same thing in CI
+    # that they do locally.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: commerceos
+          POSTGRES_USER: commerceos
+          POSTGRES_PASSWORD: commerceos_dev_password
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U commerceos -d commerceos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     defaults:
       run:
         working-directory: backend
+
+    env:
+      DATABASE_URL: postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable
+      REDIS_ADDR: localhost:6379
 
     steps:
       - name: Checkout repository
@@ -31,6 +66,29 @@ jobs:
             echo "$files"
             exit 1
           fi
+
+      # goose isn't a go.mod dependency (it's only ever invoked as a CLI,
+      # per README.md's own "Getting started" instructions), so it has to
+      # be installed explicitly here rather than picked up by `go mod
+      # download`. Pinned (not @latest) so a new goose release can't
+      # silently change what CI runs.
+      - name: Install goose (migration runner)
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@v3.27.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Migrations + seed live at the repo root (db/migrations, db/seeds),
+      # not under backend/, so these two steps override the job's
+      # `backend` default working directory.
+      - name: Apply migrations
+        working-directory: .
+        run: |
+          goose -dir db/migrations postgres "$DATABASE_URL" up
+
+      - name: Seed catalog data
+        working-directory: .
+        run: |
+          PGPASSWORD=commerceos_dev_password psql -h localhost -p 5433 -U commerceos -d commerceos -f db/seeds/001_catalog.sql
 
       - name: Run go vet
         run: go vet ./...

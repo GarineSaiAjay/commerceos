@@ -38,8 +38,10 @@ func TestPostgresRepositoryGetProduct(t *testing.T) {
 		t.Fatalf("expected title %q, got %q", "AirPods Pro", product.Title)
 	}
 
-	if product.Price.Amount != 24900 {
-		t.Fatalf("expected price 24900, got %d", product.Price.Amount)
+	// Amounts are paise (README.md, db/migrations/20260822160000_normalize_money_to_paise.sql):
+	// AirPods Pro is seeded at ₹24,900 = 2490000 paise.
+	if product.Price.Amount != 2490000 {
+		t.Fatalf("expected price 2490000, got %d", product.Price.Amount)
 	}
 
 	if product.Price.Currency != "INR" {
@@ -80,8 +82,10 @@ func TestPostgresRepositoryListProducts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(products) != 4 {
-		t.Fatalf("expected 4 products, got %d", len(products))
+	// db/seeds/001_catalog.sql seeds 5 products as of the wireless-charging-pad
+	// addition (PROJECT-AUDIT.md Fix Log, 2026-08-26, att_14 prompt-injection fixture).
+	if len(products) != 5 {
+		t.Fatalf("expected 5 products, got %d", len(products))
 	}
 }
 

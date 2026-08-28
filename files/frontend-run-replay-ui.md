@@ -1,45 +1,34 @@
 # Agent Run Replay UI — Implementation Specification
 
-## Product outcome
+**Status: basic version done, the full forensic event model is not.** `/dashboard/runs` and its detail view exist and work: a list of past agent actions with decision/amount/merchant, and a detail panel showing the proposed action, policy outcome, reason, and authorization — reconstructed read-only from `agent_actions` joined to `policy_evaluations` and `authorizations`. This satisfies "reconstruct a past run at the proposal/decision/authorization level" and cannot execute anything.
 
-Build `/dashboard/runs` and `/dashboard/runs/[runId]` so a merchant or reviewer can reconstruct what an agent did, why a policy allowed/blocked it, and whether money moved. Replay is read-only forensic playback, never a mechanism to execute the original action again.
+What's below — the fine-grained, step-by-step event model — is not built yet.
 
-## Event model
+## Remaining — event model
 
-Create a `run_id` at every buyer/growth/checkout entry point and propagate it through proposal, policy decision, authorization request, payment attempt, webhook, audit event, outbox event, and evaluation scenario. Persist ordered immutable run events:
+There is no dedicated `run_id` created at every buyer/growth/checkout entry point and propagated through proposal → policy decision → authorization request → payment attempt → webhook → audit event → outbox event → evaluation scenario as its own correlation ID; today the "run" is really just the underlying agent-action row. Building the full model means a new ordered, immutable run-events table:
 
 ```text
 run_id, sequence, occurred_at, type, actor, correlation_id,
 safe_input, safe_output, decision, policy_version, references, latency_ms
 ```
 
-Store raw untrusted input only after redaction and with access controls. Keep catalog/product snapshots or content hashes, policy version/config reference, and authoritative price/cart snapshot so replay is reproducible even after catalog changes. Do not store API secrets, full card/payment details, webhook signatures, or unrestricted personal data.
+with raw untrusted input stored only after redaction, and catalog/product snapshots or content hashes kept so replay stays reproducible even after catalog changes.
 
-## UX
+## Remaining — UX
 
-The runs list supports search by run/order/cart/authorization ID, date and outcome filters, and paginated results. Each detail screen has: a summary header (outcome, amount, merchant, provider-call result); a vertical sequence timeline; a step inspector; a policy evidence card; linked audit integrity; and a copyable, redacted run ID.
+Search by run/order/cart/authorization ID, date and outcome filters, and pagination don't exist yet (today it's a flat, unfiltered list capped at 50). The detail screen needs a vertical sequence timeline and step inspector (input received → catalog search → filtering → ranking → recommendation → cart change → policy proposal → approval request → approval/rejection → authorization issued → payment attempt → webhook outcome → recovery/action blocked) — today it shows only the start and end of that chain, not the middle steps, because those steps aren't persisted as discrete events yet.
 
-Timeline events use stable names: input received, catalog search, filtering, ranking, recommendation, cart change, policy proposal, approval request, approval/rejection, authorization issued, payment attempt, webhook outcome, recovery/action blocked. Selecting a step reveals inputs, outputs, source, timestamp, latency, and related IDs. Visually distinguish untrusted input from validated command and payment truth.
-
-## Replay API
+## Remaining — API
 
 ```text
 GET /runs?query=&cursor=&from=&to=&outcome=
-GET /runs/{run_id}
 GET /runs/{run_id}/events
 GET /runs/{run_id}/integrity
 ```
 
-The server authenticates merchant scope, applies redaction, returns cursor pagination, and exposes data provenance. Integrity verifies sequence continuity, referenced audit records, and snapshot hashes. A missing historical artifact yields `partially reproducible` with the exact missing dependency; it must not silently invent a step.
+`GET /runs` and `GET /runs/{run_id}` exist; the query/filter parameters, the `/events` sub-resource, and the `/integrity` endpoint (sequence continuity, referenced audit records, snapshot hashes, and a `partially reproducible` response when a historical artifact is missing) do not.
 
-## Implementation stages
+## Acceptance criteria (partially met)
 
-1. Define event taxonomy, schema migration, correlation middleware, and redaction policy.
-2. Instrument existing agent, policy, payment, webhook, and audit paths.
-3. Implement list/detail APIs and contract tests.
-4. Build timeline and inspector with loading, empty, unauthorized, not-found, and partial-replay states.
-5. Add E2E tests for successful payment, rejected policy, failed recovery, and red-team blocked runs.
-
-## Acceptance criteria
-
-Three arbitrary historical runs reproduce the recorded sequence in order; a reviewer can identify the exact policy version and provider outcome; replay cannot cause a payment; and tampered/missing records are visibly reported rather than masked.
+Three arbitrary historical runs can already be pulled up and show a consistent decision/authorization outcome — but "reproduce the recorded sequence of steps" in the fuller sense (the granular timeline above) still needs the event model built first.

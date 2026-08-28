@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -548,13 +549,18 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, limit int) ([]Run, er
 	return out, rows.Err()
 }
 
-// GetRun reconstructs one run and its policy/authorization trail.
+// GetRun reconstructs one run and its policy/authorization trail, plus a
+// step-by-step timeline built from the same persisted rows (agent_actions,
+// risk_assessments, policy_evaluations, authorizations).
 func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (Run, error) {
 	var run Run
 	var items []byte
+	var policyVersion string
+	var evaluatedAt *time.Time
 	err := r.db.QueryRow(ctx, `
 		SELECT aa.id, aa.action, aa.amount, aa.currency, aa.merchant, aa.items,
 			COALESCE(pe.decision, ''), COALESCE(pe.reason, ''),
+			COALESCE(pe.policy_version, ''), pe.created_at,
 			COALESCE(a.id, ''), COALESCE(a.status, ''), aa.created_at
 		FROM agent_actions aa
 		LEFT JOIN policy_evaluations pe ON pe.action_id = aa.id
@@ -562,12 +568,65 @@ func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (Run, err
 		WHERE aa.id = $1
 	`, runID).Scan(
 		&run.ID, &run.Action, &run.Amount, &run.Currency, &run.Merchant, &items,
-		&run.Decision, &run.Reason,
+		&run.Decision, &run.Reason, &policyVersion, &evaluatedAt,
 		&run.Authorization, &run.AuthStatus, &run.CreatedAt,
 	)
 	if err != nil {
 		return Run{}, fmt.Errorf("get run: %w", err)
 	}
 	_ = json.Unmarshal(items, &run.Items)
+
+	run.Steps = append(run.Steps, RunStep{
+		Stage:     "proposed",
+		Detail:    fmt.Sprintf("%s proposed for %s %d %s: %s", run.Action, run.Merchant, run.Amount, run.Currency, strings.Join(run.Items, ", ")),
+		Timestamp: run.CreatedAt,
+	})
+
+	var riskScore float64
+	var riskCreatedAt time.Time
+	if err := r.db.QueryRow(ctx, `
+		SELECT risk_score, created_at FROM risk_assessments
+		WHERE action_id = $1 ORDER BY created_at ASC LIMIT 1
+	`, runID).Scan(&riskScore, &riskCreatedAt); err == nil {
+		run.Steps = append(run.Steps, RunStep{
+			Stage:     "risk_assessed",
+			Detail:    fmt.Sprintf("risk score %.2f", riskScore),
+			Timestamp: riskCreatedAt,
+		})
+	}
+
+	if evaluatedAt != nil {
+		detail := fmt.Sprintf("%s (policy %s)", run.Decision, policyVersion)
+		if run.Reason != "" {
+			detail += ": " + run.Reason
+		}
+		run.Steps = append(run.Steps, RunStep{
+			Stage:     "policy_evaluated",
+			Detail:    detail,
+			Timestamp: *evaluatedAt,
+		})
+	}
+
+	if run.Authorization != "" {
+		var authStatus string
+		var authCreatedAt, authUpdatedAt time.Time
+		if err := r.db.QueryRow(ctx, `
+			SELECT status, created_at, updated_at FROM authorizations WHERE id = $1
+		`, run.Authorization).Scan(&authStatus, &authCreatedAt, &authUpdatedAt); err == nil {
+			run.Steps = append(run.Steps, RunStep{
+				Stage:     "authorized",
+				Detail:    fmt.Sprintf("authorization %s issued", run.Authorization),
+				Timestamp: authCreatedAt,
+			})
+			if authStatus == "USED" && authUpdatedAt.After(authCreatedAt) {
+				run.Steps = append(run.Steps, RunStep{
+					Stage:     "authorization_consumed",
+					Detail:    "authorization used to create a payment",
+					Timestamp: authUpdatedAt,
+				})
+			}
+		}
+	}
+
 	return run, nil
 }

@@ -1,39 +1,23 @@
 # Red-Team & Safety UI — Implementation Specification
 
-## Product outcome
+**Status: mostly done.** `/dashboard/safety` exists and is a real operator surface, not a scripted "blocked" screen: the attack library (10 canned attacks including prompt injection), the attack runner (per-attack "Run" button hitting `POST /safety/attacks/{id}/run`), the evidence panel (blocked/not-blocked, policy check, reason, provider-call delta), and evaluation history (`GET /safety/evaluations`, `POST /safety/evaluations/run`) are all wired to the real pipeline and the real adapter call counter — no hardcoded "BLOCKED" text.
 
-Build `/dashboard/safety` as an operator-only evidence surface for adversarial testing. It must run real requests through the same trusted pipeline, show the resulting policy evidence, and prove that no provider call occurred. It must never be a scripted “blocked” theatre screen.
+## Remaining UI polish
 
-## UI composition
+- No confirmation dialog before running the full suite, and no visible guard against a second concurrent run.
+- No duration/environment display on a suite run (how long it took, that it ran against Test Mode / isolated data).
+- No "isolated test data" notice reassuring an operator this can't touch real orders.
+- No downloadable machine-readable report for a past evaluation.
+- No links from an evaluation or attack result to its replay (`/dashboard/runs/{run_id}`) — the evidence panel shows a `run_id` conceptually but the current UI doesn't surface one per attack result, so there's nothing to link yet (see the attack-runner backend note below).
 
-1. Safety summary: latest evaluation run, scenario count, unauthorized payments, duplicate payments, policy bypasses, wrong merchant count, graceful-failure rate, and pass/fail state.
-2. Attack library: the eight required canned attacks plus category, expected guard, and severity.
-3. Attack runner: prompt input, selected test fixture, explicit `Run attack` button, progress state, and cancel only before dispatch.
-4. Evidence panel: `ATTACK DETECTED`, normalized attack classification, policy ID/check, decision, explanation, authorization result, provider call delta, audit/run ID, and timestamp.
-5. Evaluation history: immutable suite results, filters, downloadable machine-readable report, and links to replay.
+## Remaining backend/data gap
 
-## Backend and data requirements
+Each attack execution should receive its own `run_id` and persist inputs, the normalized proposal, the policy result, audit references, latency, and assertion results as a discrete, retrievable record — today `RunAttack` returns the evidence inline but doesn't appear to hand back a stable `run_id` for later lookup via `/runs/{id}`. Add that so "click through from a red-team result to its replay" is possible.
 
-Create server-owned scenario fixtures and endpoints:
+## Remaining threat coverage
 
-```text
-GET  /safety/attacks
-POST /safety/attacks/{id}/run
-GET  /safety/evaluations
-POST /safety/evaluations/run
-GET  /safety/evaluations/{id}
-```
+See `files/phase-8-red-team-security.md` — three threat categories (tool injection, data exfiltration, goal hijacking) have no dedicated attack in the library, and the prompt-injection attack should also be planted in an actual catalog product description, not just sent as a user prompt.
 
-Each execution receives a `run_id`, uses an isolated test buyer/cart/database transaction or disposable environment, captures the Razorpay adapter counter before/after, and persists inputs, normalized proposal, policy result, audit references, latency, and assertion results. The API must report provider delta from the adapter, never from client-side expectation. Restrict this route to authorized internal operators and Test Mode; rate-limit it and redact secrets/PII.
+## Acceptance (verify once the above lands)
 
-## Attack library
-
-Include the eight Phase 8 strings, mapped to expected defenses: spending-limit override, excessive amount, merchant metadata manipulation, hidden add, failed-payment retry, merchant swap, price manipulation, and approval bypass. Also include product-description prompt injection, stale authorization, duplicate checkout, duplicate webhook, expired authorization, and unavailable inventory.
-
-## Evaluation suite
-
-Implement roughly 100 deterministic scenarios in Go, runnable in CI and via the operator endpoint. Categorize normal, policy, reliability, adversarial, and recovery cases. A run fails when unauthorized payments, duplicate payments, or policy bypasses are nonzero. Show individual failures and aggregate metrics; never suppress failures behind a percentage score.
-
-## UX and acceptance
-
-Require a confirmation before running a suite, show duration and environment, and prevent concurrent suite runs. Use clear non-color pass/fail labels, keyboard navigation, copyable evidence, and an explicit notice that attacks run only against isolated test data. Acceptance requires all canned attacks to show `BLOCKED` and real provider-call delta `0`, with a linked audit trail and replay for every run.
+Require a confirmation before running a suite, show duration and environment, and prevent concurrent suite runs. Acceptance requires all canned attacks to show `BLOCKED` and real provider-call delta `0` (already true today), with a linked audit trail and replay for every run (not yet true).

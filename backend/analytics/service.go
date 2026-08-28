@@ -93,9 +93,9 @@ func (s *Service) Compute(ctx context.Context) (Metrics, error) {
 	}
 
 	// AI-attributed revenue: orders whose cart has a RECOMMEND
-	// recommendation. recommendations.cart_id is a loose link (not an FK),
-	// so this is a best-effort attribution from the persisted cross-sell
-	// decisions, matching the Phase 6 dashboard semantics.
+	// recommendation. recommendations.cart_id is a real FK to carts(id)
+	// (see 20260826180000_add_recommendations_cart_fk.sql), so this join
+	// is over referentially-intact data, not a loose string match.
 	err = s.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(o.subtotal), 0)
 		FROM orders o

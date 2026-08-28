@@ -31,6 +31,10 @@ func (f fakeCatalogRepo) GetVariant(ctx context.Context, id string) (catalog.Pro
 	return catalog.ProductVariant{}, nil
 }
 
+func (f fakeCatalogRepo) UpdateProduct(ctx context.Context, p catalog.Product) error { return nil }
+
+func (f fakeCatalogRepo) DeleteProduct(ctx context.Context, id string) error { return nil }
+
 // TestToolsList proves the MCP server lists all 10 narrow tools.
 func TestToolsList(t *testing.T) {
 	srv := NewServer()

@@ -8,6 +8,13 @@ import (
 // MerchantSimulator generates a reproducible synthetic dataset with a
 // fixed seed — 10,000 customers, 50,000 sessions, purchases, clicks,
 // cart additions, abandoned carts, returns. Feeds Phase 6 experiments.
+//
+// There is deliberately no standalone CLI/generator script wrapping this --
+// the dataset is regenerated in-process, on demand, by whatever calls
+// NewMerchantSimulator(seed).Generate() (see analytics/experiment.go), which
+// keeps the seed and the consuming code from drifting apart. A separate
+// script would just be a thinner, duplicate way to call the same two lines.
+// See files/PROJECT-AUDIT.md §3.12 / Fix Log.
 type MerchantSimulator struct {
 	seed int64
 }

@@ -94,6 +94,14 @@ func BuildRecovery(
 		}
 	}
 
+	// A removable item only makes sense when at least one other item
+	// would remain -- removing the last item is what Cancel is for.
+	if len(ord.Items) > 1 {
+		for _, item := range ord.Items {
+			view.RemovableItems = append(view.RemovableItems, item.VariantID)
+		}
+	}
+
 	if attempts != nil {
 		if a, err := attempts.GetLatestForOrder(ctx, orderID); err == nil {
 			view.AttemptStatus = a.Status
