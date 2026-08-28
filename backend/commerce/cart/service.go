@@ -182,6 +182,15 @@ func (s *Service) GetCart(
 		return Cart{}, err
 	}
 
+	// A checked-out cart has already become an order (see
+	// order/postgres_repository.go CheckoutCart) and is single-use --
+	// treat it the same as a cart that was never created so callers
+	// (including the frontend's reload-restore check) never resume
+	// shopping into an already-purchased cart.
+	if cart.Status == "checked_out" {
+		return Cart{}, ErrCartNotFound
+	}
+
 	if s.now().After(cart.ExpiresAt) {
 		return Cart{}, errors.New("cart reservation expired")
 	}

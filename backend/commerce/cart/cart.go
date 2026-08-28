@@ -8,7 +8,12 @@ type Cart struct {
 	Items      []CartItem `json:"items"`
 	Subtotal   int64      `json:"subtotal"`
 	Currency   string     `json:"currency"`
-	ExpiresAt  time.Time  `json:"expires_at"`
+	// Status is "active" or "checked_out" (set by the order checkout
+	// saga -- see order/postgres_repository.go CheckoutCart). A
+	// checked-out cart is single-use and must never be resumed for
+	// further shopping; Service.GetCart treats one as not-found.
+	Status    string    `json:"status"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type CartItem struct {
