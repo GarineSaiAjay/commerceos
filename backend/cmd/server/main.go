@@ -10,6 +10,7 @@ import (
 	"github.com/garinesaiajay/commerceos/agents"
 	"github.com/garinesaiajay/commerceos/analytics"
 	"github.com/garinesaiajay/commerceos/audit"
+	"github.com/garinesaiajay/commerceos/auth"
 	"github.com/garinesaiajay/commerceos/commerce/cart"
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 	"github.com/garinesaiajay/commerceos/commerce/order"
@@ -34,7 +35,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		// headers on the payment call, so they must pass preflight.
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization-Id, Idempotency-Key")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Authorization-Id, Idempotency-Key")
 		w.Header().Set("Access-Control-Expose-Headers", "Authorization-Id, Idempotency-Key")
 
 		if r.Method == http.MethodOptions {
@@ -165,6 +166,13 @@ func main() {
 	auditVerifier := audit.NewVerifier(dbPool)
 	policyHandler := policy.NewHandler(policyService, auditVerifier)
 	analyticsHandler := analytics.NewHandler(analyticsService, experimentService, auditVerifier)
+
+	// Phase 9: operator authentication -- gates the merchant dashboard and
+	// the approve/reject/safety endpoints. Buyer checkout stays guest; see
+	// files/JUDGE-FACING-GAPS.md P0.3 and files/AUTH.md.
+	authRepo := auth.NewPostgresRepository(dbPool)
+	authService := auth.NewService(authRepo)
+	authHandler := auth.NewHandler(authService)
 
 	// Phase 8: safety / red-team — the runner drives the real policy
 	// pipeline and reports provider-call deltas from the real counter.
@@ -434,6 +442,10 @@ func main() {
 		webhookHandler.HandleRazorpay,
 	)
 
+	// Phase 9: operator authentication.
+	commerceMux.HandleFunc("/auth/login", authHandler.Login)
+	commerceMux.HandleFunc("/auth/logout", authHandler.Logout)
+
 	// Phase 3: policy routes
 	commerceMux.HandleFunc(
 		"/policy/mandates",
@@ -445,24 +457,37 @@ func main() {
 		policyHandler.Propose,
 	)
 
-	// Level 2/3 durable human-approval requests.
-	commerceMux.HandleFunc("/approval-requests", func(w http.ResponseWriter, r *http.Request) {
+	// Level 2/3 durable human-approval requests. Listing is merchant-only
+	// (it exposes every buyer's pending approvals); fetching or acting on
+	// a single request by ID stays reachable by the buyer who owns it --
+	// see the /approval-requests/ subtree below and files/JUDGE-FACING-GAPS.md P0.3.
+	commerceMux.HandleFunc("/approval-requests", authService.RequireOperator(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			policyHandler.ListApprovalRequests(w, r)
 			return
 		}
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	})
+	}))
 
+	// OptionalOperator attaches a verified operator to the context (or
+	// leaves it anonymous) so Approve/Reject can resolve either legitimate
+	// caller -- see resolveApprover in backend/policy/service.go. Listing
+	// is merchant-only, enforced explicitly below since only part of this
+	// subtree needs it.
 	commerceMux.HandleFunc(
 		"/approval-requests/",
-		func(w http.ResponseWriter, r *http.Request) {
+		authService.OptionalOperator(func(w http.ResponseWriter, r *http.Request) {
 			path := strings.TrimPrefix(r.URL.Path, "/approval-requests/")
 			path = strings.Trim(path, "/")
 			switch {
 			case path == "":
-				// GET /approval-requests?status=... → list
+				// GET /approval-requests?status=... → list (merchant-only:
+				// exposes every buyer's pending approvals).
 				if r.Method == http.MethodGet {
+					if _, ok := auth.OperatorFromContext(r.Context()); !ok {
+						http.Error(w, "authentication required", http.StatusUnauthorized)
+						return
+					}
 					policyHandler.ListApprovalRequests(w, r)
 					return
 				}
@@ -480,23 +505,25 @@ func main() {
 			default:
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			}
-		},
+		}),
 	)
 
 	commerceMux.HandleFunc(
 		"/audit/verify",
-		policyHandler.VerifyAuditChain,
+		authService.RequireOperator(policyHandler.VerifyAuditChain),
 	)
 
-	// Phase 8: safety / red-team.
-	commerceMux.HandleFunc("/safety/attacks", safetyHandler.ListAttacks)
-	commerceMux.HandleFunc("/safety/evaluations", safetyHandler.ListEvaluations)
-	commerceMux.HandleFunc("/safety/evaluations/run", safetyHandler.RunSuite)
-	commerceMux.HandleFunc("/safety/evaluations/", safetyHandler.GetEvaluation)
-	commerceMux.HandleFunc("/safety/attacks/", safetyHandler.RunAttack)
+	// Phase 8: safety / red-team -- merchant-only (files/JUDGE-FACING-GAPS.md P0.3).
+	commerceMux.HandleFunc("/safety/attacks", authService.RequireOperator(safetyHandler.ListAttacks))
+	commerceMux.HandleFunc("/safety/evaluations", authService.RequireOperator(safetyHandler.ListEvaluations))
+	commerceMux.HandleFunc("/safety/evaluations/run", authService.RequireOperator(safetyHandler.RunSuite))
+	commerceMux.HandleFunc("/safety/evaluations/", authService.RequireOperator(safetyHandler.GetEvaluation))
+	commerceMux.HandleFunc("/safety/attacks/", authService.RequireOperator(safetyHandler.RunAttack))
 
-	// Replay: reconstructed agent runs.
-	commerceMux.HandleFunc("/runs", policyHandler.HandleListRuns)
+	// Replay: reconstructed agent runs. Listing every run is merchant-only;
+	// fetching a single run by its own ID stays reachable without login so
+	// checkout.tsx can show the buyer their own audit trail inline (P0.4).
+	commerceMux.HandleFunc("/runs", authService.RequireOperator(policyHandler.HandleListRuns))
 	commerceMux.HandleFunc("/runs/", policyHandler.HandleGetRun)
 
 	// Phase 4: agent contract (produces proposals only)
@@ -527,20 +554,20 @@ func main() {
 		growthSuggestHandler.Suggest,
 	)
 
-	// Phase 6: dashboard
+	// Phase 6: dashboard -- merchant-only (files/JUDGE-FACING-GAPS.md P0.3).
 	commerceMux.HandleFunc(
 		"/dashboard/overview",
-		analyticsHandler.Overview,
+		authService.RequireOperator(analyticsHandler.Overview),
 	)
 
 	commerceMux.HandleFunc(
 		"/dashboard/metrics",
-		analyticsHandler.Metrics,
+		authService.RequireOperator(analyticsHandler.Metrics),
 	)
 
 	commerceMux.HandleFunc(
 		"/dashboard/experiment",
-		analyticsHandler.Experiment,
+		authService.RequireOperator(analyticsHandler.Experiment),
 	)
 
 	// Phase 7: MCP endpoint
