@@ -6,6 +6,77 @@ from code), verified against the code, fixed, and committed on
 turned up while chasing those down. Everything below is either fixed (with
 the commit that fixed it) or explicitly still open — nothing in between.
 
+## Why the fixes didn't show up after pulling this branch
+
+All three of bugs 1, 2, and 3 below were re-reported as still happening
+*after* the commits that fixed them, plus a new one: `go test ./...`
+passed locally but the identical test failed twice in GitHub Actions
+(`TestPostgresRepositoryListProducts: expected 5 products, got 10`). All
+four turned out to have the same root cause, not four separate bugs:
+
+- **The local Postgres container has a persistent volume**
+  (`infra/docker-compose.yml`'s `postgres_data`). It survives
+  `docker compose down` / `up` / restarts — only `down -v` or deleting
+  the volume wipes it. So a local DB seeded once, weeks ago, keeps
+  whatever it had, forever, regardless of what's in `db/seeds/*.sql` now.
+- **The seed files are intentionally idempotent** (`ON CONFLICT (id) DO
+  NOTHING`) so they're safe to re-run. But "do nothing on conflict" means
+  exactly that: re-running `db/seeds/001_catalog.sql` against a DB that
+  already has `airpods-pro-2`, `airpods-case`, `applecare`, and
+  `usb-c-adapter` will **not** apply this pass's retrofitted
+  `use_cases`/`features` tags to those existing rows — it only inserts
+  the 5 brand-new products. The catalog fix for bug 2 needs those 4 rows
+  *updated*, and a plain re-run of the seed can't do that.
+- **The backend runs as a Docker image** (`infra/docker-compose.yml`'s
+  `backend` service, built from `backend/Dockerfile`). `docker compose
+  up -d` alone reuses whatever image was last built — it does not pick
+  up new Go source until you pass `--build`. That's why the agent's
+  reasoning text came back byte-for-byte identical: the container
+  serving requests was still running pre-fix code.
+- **CI, by contrast, always starts from nothing** — a fresh Postgres
+  service container, `goose up`, then `001_catalog.sql` once, on every
+  run. So CI genuinely got 10 fresh products and caught a real bug
+  (`repository_test.go` hardcoded 5) that a long-lived local DB with
+  only 5 rows never could.
+
+**Fix: reset the local stack from scratch**, so it matches what CI does
+and picks up both the new code and the new/updated seed data:
+
+```bash
+docker compose -f infra/docker-compose.yml down -v
+docker compose -f infra/docker-compose.yml up -d --build
+goose -dir db/migrations postgres "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" up
+psql "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" -f db/seeds/001_catalog.sql
+psql "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" -f db/seeds/002_operator.sql
+```
+
+`down -v` is what actually matters here — it drops the Postgres volume,
+so the reseed starts from an empty `products` table instead of one
+where the old 4 rows silently block the retrofit. `--build` on the way
+back up is what makes the backend container run the current branch's
+Go code instead of whatever was last built. Skipping either one
+reproduces exactly the "still broken" symptoms reported after this
+branch's first pass.
+
+### 7. CI failing: `TestPostgresRepositoryListProducts` hardcoded 5 products
+
+**Cause:** adding 5 products to `db/seeds/001_catalog.sql` (bug 4, below)
+without checking for tests that hardcode the seed's exact size.
+`repository_test.go`'s `TestPostgresRepositoryListProducts` asserted
+`len(products) != 5` — true before this branch, false after. CI's fresh
+DB always has exactly what the seed says (10, now), so it failed
+deterministically on every run; a local DB seeded before this branch
+(see above) still had 5 rows and passed, which is why `go test ./...`
+looked clean locally while CI failed twice on the identical test.
+
+**Fix:** the test now asserts each seeded product ID is present
+(`t.Errorf("expected seeded product %q to be present, was missing", id)`)
+instead of a bare count, so it fails with a specific missing-product
+error on a real seed regression but no longer breaks every time the
+catalog grows.
+
+Commit: `7d260ea`
+
 ## Fixed
 
 ### 1. "Ask the shopping agent" input text was invisible while typing
@@ -202,4 +273,7 @@ Commit: `d4d61a1`
 - **Bugs 2 and 3 above have fixes for every root cause found by reading
   the code, but neither was re-verified by actually running the app** —
   I don't have a way to run this stack end-to-end from here. Please
-  re-test both with the backend restarted and the seeds re-applied.
+  re-test both after the full reset above (`down -v`, `--build`,
+  re-seed) — a restart alone isn't enough for either the code or the
+  data to actually change; see "Why the fixes didn't show up" at the
+  top of this doc.
