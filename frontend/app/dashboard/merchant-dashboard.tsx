@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { actionLabel, formatINR, formatPct, formatTime, Skeleton } from "../../lib/format";
+import { authFetch } from "../../lib/auth";
 
 export type Overview = {
   metrics: {
@@ -39,7 +40,7 @@ export default function MerchantDashboard({ initialOverview, initialError }: { i
     let mounted = true;
     (async () => {
       try {
-        const res = await fetch("http://localhost:8081/dashboard/overview", { cache: "no-store" });
+        const res = await authFetch("/dashboard/overview", { cache: "no-store" });
         if (!res.ok) throw new Error("Dashboard data is unavailable.");
         const data = (await res.json()) as Overview;
         if (mounted) {
@@ -66,7 +67,7 @@ export default function MerchantDashboard({ initialOverview, initialError }: { i
     setRefreshing(true);
     setError(undefined);
     try {
-      const res = await fetch("http://localhost:8081/dashboard/overview", { cache: "no-store" });
+      const res = await authFetch("/dashboard/overview", { cache: "no-store" });
       if (!res.ok) throw new Error("Dashboard data is unavailable.");
       const data = (await res.json()) as Overview;
       setOverview(data);

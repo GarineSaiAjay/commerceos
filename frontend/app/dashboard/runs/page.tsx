@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatINR, formatTime, actionLabel } from "../../../lib/format";
+import { authFetch } from "../../../lib/auth";
 
 type RunStep = {
   stage: string;
@@ -32,15 +33,17 @@ const STAGE_LABEL: Record<string, string> = {
   authorization_consumed: "Authorization consumed",
 };
 
-const API = "http://localhost:8081";
-
 export default function RunsPage() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [selected, setSelected] = useState<Run | null>(null);
   const [error, setError] = useState("");
 
+  // GET /runs (list) is merchant-only -- it exposes every buyer's runs.
+  // GET /runs/{id} stays reachable without auth so checkout.tsx can show a
+  // buyer their own audit trail; authFetch works for it too, since it
+  // simply adds a header the unguarded endpoint ignores.
   const loadRuns = useCallback(() => {
-    fetch(`${API}/runs?limit=50`, { cache: "no-store" })
+    authFetch("/runs?limit=50", { cache: "no-store" })
       .then((r) => r.json())
       .then((d: Run[]) => setRuns(d))
       .catch(() => setError("Could not load agent runs."));
@@ -53,7 +56,7 @@ export default function RunsPage() {
   async function selectRun(id: string) {
     setError("");
     try {
-      const res = await fetch(`${API}/runs/${id}`, { cache: "no-store" });
+      const res = await authFetch(`/runs/${id}`, { cache: "no-store" });
       if (!res.ok) throw new Error("run not found");
       setSelected((await res.json()) as Run);
     } catch {

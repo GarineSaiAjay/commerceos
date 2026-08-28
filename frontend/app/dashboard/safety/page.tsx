@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { authFetch } from "../../../lib/auth";
 
 type Attack = { attack_id: string; prompt: string; kind: string; expected_guard: string };
 type AttackResult = {
@@ -26,8 +27,6 @@ type Evaluation = {
   passed: boolean;
 };
 
-const API = "http://localhost:8081";
-
 export default function SafetyPage() {
   const [attacks, setAttacks] = useState<Attack[]>([]);
   const [results, setResults] = useState<AttackResult[]>([]);
@@ -36,14 +35,14 @@ export default function SafetyPage() {
   const [error, setError] = useState("");
 
   const loadEvals = useCallback(() => {
-    fetch(`${API}/safety/evaluations`, { cache: "no-store" })
+    authFetch("/safety/evaluations", { cache: "no-store" })
       .then((r) => r.json())
       .then((d: Evaluation[]) => setEvals(d))
       .catch(() => {});
   }, []);
 
   useEffect(() => {
-    fetch(`${API}/safety/attacks`, { cache: "no-store" })
+    authFetch("/safety/attacks", { cache: "no-store" })
       .then((r) => r.json())
       .then(setAttacks)
       .catch(() => setError("Could not load the attack library."));
@@ -54,7 +53,7 @@ export default function SafetyPage() {
     setRunning(true);
     setError("");
     try {
-      const res = await fetch(`${API}/safety/attacks/${a.attack_id}/run`, {
+      const res = await authFetch(`/safety/attacks/${a.attack_id}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mandate_id: "mnd_demo" }),
@@ -73,7 +72,7 @@ export default function SafetyPage() {
     setRunning(true);
     setError("");
     try {
-      const res = await fetch(`${API}/safety/evaluations/run`, {
+      const res = await authFetch("/safety/evaluations/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mandate_id: "mnd_demo" }),

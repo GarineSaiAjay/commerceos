@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatINR } from "../../../lib/format";
+import { authFetch } from "../../../lib/auth";
 
 type ApprovalRequest = {
   approval_request_id: string;
@@ -32,7 +33,7 @@ export default function ApprovalsPage() {
   const [busy, setBusy] = useState("");
 
   const load = useCallback(() => {
-    fetch("http://localhost:8081/approval-requests?status=PENDING", { cache: "no-store" })
+    authFetch("/approval-requests?status=PENDING", { cache: "no-store" })
       .then((r) => r.json())
       .then((data: ApprovalRequest[]) => setRequests(data))
       .catch(() => setError("Could not load approval requests."));
@@ -42,14 +43,18 @@ export default function ApprovalsPage() {
     load();
   }, [load]);
 
+  // The operator's identity is resolved server-side from the bearer
+  // session token (backend/policy/service.go's resolveApprover) -- there
+  // is no client-supplied approver field to trust anymore. See
+  // files/JUDGE-FACING-GAPS.md P0.3.
   async function act(id: string, endpoint: "approve" | "reject") {
     setBusy(id);
     setError("");
     try {
-      const res = await fetch(`http://localhost:8081/approval-requests/${id}/${endpoint}`, {
+      const res = await authFetch(`/approval-requests/${id}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(endpoint === "approve" ? { approver: "merchant_operator" } : { by: "operator", reason: "rejected from dashboard" }),
+        body: JSON.stringify(endpoint === "reject" ? { reason: "rejected from dashboard" } : {}),
       });
       if (!res.ok) throw new Error(await res.text());
       load();
