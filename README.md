@@ -92,7 +92,9 @@ cd frontend && npm run lint && npm run build
 
 ## Docs
 
-- `files/PROJECT-AUDIT.md` — full gap analysis + fix log.
-- `files/COMPLETION-PLAN.md` — step-by-step plan for 100% real completion (what needs a human vs. what's automated).
-- `files/phase-1..9-*.md` — the original phase specs.
+- `files/AUTH.md` — operator auth: demo credentials, what's gated vs. guest-accessible, and the PBKDF2 trade-off.
+- `files/GIT-WORKFLOW.md` — branching, commit, and PR conventions for this repo.
 - `files/agent-commerce-contract.md` — the agent API contract.
+- `files/trust-boundary.md` — the untrusted → trusted data flow and what re-validates each input.
+- `files/pitch-one-pager.md` — the one-page pitch.
+- `files/demo-script.md` — the five-minute live demo script.
