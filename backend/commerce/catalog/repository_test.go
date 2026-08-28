@@ -82,10 +82,37 @@ func TestPostgresRepositoryListProducts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// db/seeds/001_catalog.sql seeds 5 products as of the wireless-charging-pad
-	// addition (PROJECT-AUDIT.md Fix Log, 2026-08-26, att_14 prompt-injection fixture).
-	if len(products) != 5 {
-		t.Fatalf("expected 5 products, got %d", len(products))
+	// db/seeds/001_catalog.sql seeds these products. Assert on the
+	// presence of each known ID (rather than a bare len() check) so this
+	// test fails with "missing product X" instead of an opaque count
+	// mismatch every time the seed grows, while still catching a seed
+	// regression that silently drops a product.
+	expectedIDs := []string{
+		"airpods-pro-2",
+		"airpods-case",
+		"applecare",
+		"usb-c-adapter",
+		"wireless-charging-pad",
+		"airpods-max",
+		"airpods-3",
+		"magsafe-charger",
+		"lightning-usbc-cable",
+		"airpods-eartips",
+	}
+
+	seen := make(map[string]bool, len(products))
+	for _, p := range products {
+		seen[p.ID] = true
+	}
+
+	for _, id := range expectedIDs {
+		if !seen[id] {
+			t.Errorf("expected seeded product %q to be present, was missing", id)
+		}
+	}
+
+	if len(products) < len(expectedIDs) {
+		t.Fatalf("expected at least %d products, got %d", len(expectedIDs), len(products))
 	}
 }
 
