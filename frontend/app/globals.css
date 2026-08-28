@@ -1,6 +1,19 @@
 @import "tailwindcss";
 
+/* This app has no real dark theme -- every screen (checkout, dashboard)
+   uses explicit light-palette Tailwind classes (bg-white, text-zinc-900,
+   border-slate-300, ...). The old @media (prefers-color-scheme: dark)
+   block below only ever touched body's inherited text color, which meant
+   the one or two elements without an explicit text-color class (notably
+   the "Ask the shopping agent" <input>) silently went near-white-on-white
+   -- readable text you type disappears -- on any OS/browser set to dark
+   mode. Forcing color-scheme: light instead makes native form controls
+   (inputs, the OS-drawn parts of <select>, scrollbars) render with their
+   light palette unconditionally, matching every other element on the
+   page, rather than opting the app into a dark mode it was never
+   designed for. */
 :root {
+  color-scheme: light;
   --background: #ffffff;
   --foreground: #171717;
 }
@@ -10,13 +23,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
