@@ -237,6 +237,7 @@ export default function CheckoutFlow({
   	const [dismissedProductId, setDismissedProductId] = useState<string | null>(null);
   	const [orders, setOrders] = useState<Order[]>([]);
   	const [ordersLoading, setOrdersLoading] = useState(false);
+  	const [ordersError, setOrdersError] = useState("");
   	const [runId, setRunId] = useState("");
   	const [run, setRun] = useState<Run | null>(null);
   	const [runLoading, setRunLoading] = useState(false);
@@ -484,13 +485,20 @@ export default function CheckoutFlow({
   // order for this single-merchant demo qualifies as "history".
   async function fetchOrders() {
     setOrdersLoading(true);
+    setOrdersError("");
     try {
       const res = await fetch(`${API_BASE}/orders?merchant_id=${MERCHANT_ID}`);
       if (!res.ok) throw new Error("Failed to load orders");
       const data = (await res.json()) as Order[];
       setOrders(data ?? []);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to load orders");
+      // Its own state, not the page-wide `message` banner: a failed
+      // fetch and a genuinely empty order list need to render as two
+      // different things, not stack on top of each other.
+      setOrders([]);
+      setOrdersError(
+        error instanceof Error ? error.message : "Failed to load orders"
+      );
     } finally {
       setOrdersLoading(false);
     }
@@ -1418,7 +1426,18 @@ export default function CheckoutFlow({
         {step === "orders" && (
           <section>
             {ordersLoading && <p className="text-sm text-zinc-500">Loading orders...</p>}
-            {!ordersLoading && orders.length === 0 && (
+            {!ordersLoading && ordersError && (
+              <p className="text-sm text-rose-700">
+                {ordersError} --{" "}
+                <button
+                  onClick={fetchOrders}
+                  className="underline underline-offset-2 hover:text-rose-900"
+                >
+                  try again
+                </button>
+              </p>
+            )}
+            {!ordersLoading && !ordersError && orders.length === 0 && (
               <p className="text-sm text-zinc-500">
                 No orders yet -- completed checkouts will show up here.
               </p>
