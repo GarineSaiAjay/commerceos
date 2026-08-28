@@ -59,7 +59,12 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
    ```bash
    goose -dir db/migrations postgres "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" up
    psql "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" -f db/seeds/001_catalog.sql
+   psql "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" -f db/seeds/002_operator.sql
    ```
+   The second seed is the merchant dashboard's login (`files/AUTH.md` has
+   the demo credentials) -- skip it and every `/dashboard` login attempt
+   fails with "invalid email or password" because no operator row exists
+   yet, indistinguishable from an actually wrong password.
 
 4. **Frontend:**
    ```bash
