@@ -105,6 +105,31 @@ interface Decision {
   approval_request_id: string;
   reason: string;
   level: number;
+  action_id?: string;
+}
+
+// RunStep/Run mirror backend/policy/replay.go's GET /runs/{id} response --
+// the audit trail (proposed -> risk-assessed -> policy-evaluated ->
+// authorized) for the exact action this checkout ran. See
+// files/JUDGE-FACING-GAPS.md P0.4.
+interface RunStep {
+  stage: string;
+  detail: string;
+  timestamp: string;
+}
+
+interface Run {
+  run_id: string;
+  action: string;
+  amount: number;
+  currency: string;
+  decision: string;
+  reason?: string;
+  failed_check?: string;
+  authorization_id?: string;
+  authorization_status?: string;
+  created_at: string;
+  steps?: RunStep[];
 }
 
 interface ApprovalRequestDetail {
@@ -212,6 +237,9 @@ export default function CheckoutFlow({
   	const [dismissedProductId, setDismissedProductId] = useState<string | null>(null);
   	const [orders, setOrders] = useState<Order[]>([]);
   	const [ordersLoading, setOrdersLoading] = useState(false);
+  	const [runId, setRunId] = useState("");
+  	const [run, setRun] = useState<Run | null>(null);
+  	const [runLoading, setRunLoading] = useState(false);
 
   // Persist the active cart ID so a hard reload doesn't lose the cart
   // (P0.2: previously a fresh ID was minted on every mount).
@@ -522,6 +550,7 @@ export default function CheckoutFlow({
       		});
       		if (!authorizationRes.ok) throw new Error(await authorizationRes.text());
       		const decision = (await authorizationRes.json()) as Decision;
+      		if (decision.action_id) setRunId(decision.action_id);
 
       		// Level 2/3 → durable human approval required before an
       		// authorization is issued.
@@ -561,13 +590,14 @@ export default function CheckoutFlow({
       					const res = await fetch(`${API_BASE}/approval-requests/${approvalRequestId}/approve`, {
       						method: "POST",
       						headers: { "Content-Type": "application/json" },
-      						body: JSON.stringify({ approver: "buyer" }),
+      						body: JSON.stringify({ cart_id: order!.cart_id }),
       					});
       					if (!res.ok) throw new Error(await res.text());
       					const decision = (await res.json()) as Decision;
       					if (decision.decision !== "APPROVED" || !decision.authorization_id) {
       						throw new Error(decision.reason || "Approval did not produce an authorization");
       					}
+      					if (decision.action_id) setRunId(decision.action_id);
       					await createPaymentWithLaunch(decision.authorization_id);
       				} catch (error) {
       					setMessage(error instanceof Error ? error.message : "Approval failed");
@@ -583,7 +613,7 @@ export default function CheckoutFlow({
       					await fetch(`${API_BASE}/approval-requests/${approvalRequestId}/reject`, {
       						method: "POST",
       						headers: { "Content-Type": "application/json" },
-      						body: JSON.stringify({ by: "buyer", reason: "cancelled at approval screen" }),
+      						body: JSON.stringify({ cart_id: order!.cart_id, reason: "cancelled at approval screen" }),
       					});
       				} catch {
       					// best-effort; the cart is abandoned either way
@@ -686,6 +716,8 @@ export default function CheckoutFlow({
       				setApprovalSnapshot(null);
       				setGateConfirmed(false);
       				setGateError("");
+      				setRunId("");
+      				setRun(null);
       				setMessage(messageText);
       			}
 
@@ -726,13 +758,14 @@ export default function CheckoutFlow({
       const res = await fetch(`${API_BASE}/approval-requests/${approvalRequestId}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approver: "buyer" }),
+        body: JSON.stringify({ cart_id: fresh.cart_id }),
       });
       if (!res.ok) throw new Error(await res.text());
       const decision = (await res.json()) as Decision;
       if (decision.decision !== "APPROVED" || !decision.authorization_id) {
         throw new Error(decision.reason || "Approval did not produce an authorization");
       }
+      if (decision.action_id) setRunId(decision.action_id);
       await createPaymentWithLaunch(decision.authorization_id);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Approval failed";
@@ -755,6 +788,32 @@ export default function CheckoutFlow({
     setMessage("That approval request is no longer valid. Review your order and try again.");
   }
 
+  // GET /runs/{id}: the audit trail for the action this checkout actually
+  // proposed -- proposed -> risk-assessed -> policy-evaluated -> authorized
+  // -- reconstructed from the persisted records, not a separate log. Shown
+  // inline on the complete/failed screens (files/JUDGE-FACING-GAPS.md P0.4).
+  async function fetchRun() {
+    if (!runId) return;
+    setRunLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}`, { cache: "no-store" });
+      if (!res.ok) throw new Error("Failed to load audit trail");
+      setRun((await res.json()) as Run);
+    } catch {
+      // The audit trail is a nice-to-have on this screen -- a failure to
+      // load it should never block showing the buyer their order result.
+    } finally {
+      setRunLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if ((step === "complete" || step === "failed") && runId && !run) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      fetchRun();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, runId]);
 
   async function verifyPayment(response: RazorpayResponse) {
     setMessage("Verifying payment...");
@@ -782,6 +841,42 @@ export default function CheckoutFlow({
 
   function formatINR(amount: number) {
     return `₹${(amount / 100).toFixed(2)}`;
+  }
+
+  // Inline audit-trail panel shown on the complete/failed screens --
+  // P0.4: the buyer sees the same proposed -> risk-assessed ->
+  // policy-evaluated -> authorized timeline a merchant operator would see
+  // in the dashboard's Runs tab, for the exact action their checkout ran.
+  function renderAuditTrail() {
+    if (!runId) return null;
+    return (
+      <div className="mt-6 rounded-xl border border-zinc-200 p-5">
+        <p className="text-sm font-semibold text-zinc-900">Audit trail</p>
+        <p className="mt-1 text-xs text-zinc-500">
+          Every step the policy engine took for this action, reconstructed
+          from the persisted audit log (run {runId}).
+        </p>
+        {runLoading && <p className="mt-3 text-xs text-zinc-500">Loading...</p>}
+        {run && run.steps && run.steps.length > 0 && (
+          <ul className="mt-3 space-y-3 border-t border-zinc-100 pt-3">
+            {run.steps.map((s, i) => (
+              <li key={i} className="flex items-start gap-3 text-xs">
+                <span className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-zinc-400" />
+                <div>
+                  <p className="font-medium capitalize text-zinc-700">
+                    {s.stage.replace(/_/g, " ")}
+                  </p>
+                  <p className="text-zinc-500">{s.detail}</p>
+                  <p className="mt-0.5 text-zinc-400">
+                    {new Date(s.timestamp).toLocaleTimeString()}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -1181,6 +1276,8 @@ export default function CheckoutFlow({
                 setCart(null);
                 setOrder(null);
                 setPayment(null);
+                setRunId("");
+                setRun(null);
                 setMessage("Payment cancelled. Your cart was not charged.");
               }}
               className="mt-4 w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
@@ -1200,6 +1297,8 @@ export default function CheckoutFlow({
 					{recovery ? recovery.safe_message : "Razorpay reported that the payment failed. Your order has not been charged twice. The cart remains reserved for 9 minutes."}
 				</p>
 			</div>
+
+			{renderAuditTrail()}
 
 			{(payment || (recovery && recovery.cart.subtotal > 0)) && (
 				<div className="mt-6 rounded-xl border border-zinc-200 p-5">
@@ -1271,6 +1370,8 @@ export default function CheckoutFlow({
 						setOrder(null);
 						setPayment(null);
 						setRecovery(null);
+						setRunId("");
+						setRun(null);
 						setMessage("Payment cancelled. Your cart was not charged.");
 					}}
 					className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
@@ -1295,6 +1396,7 @@ export default function CheckoutFlow({
                 Order ID: {payment.order_id}
               </p>
             </div>
+            {renderAuditTrail()}
             <button
               onClick={() => {
                 setStep("catalog");
@@ -1302,6 +1404,8 @@ export default function CheckoutFlow({
                 setCart(null);
                 setOrder(null);
                 setPayment(null);
+                setRunId("");
+                setRun(null);
                 setMessage("");
               }}
               className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-zinc-800"

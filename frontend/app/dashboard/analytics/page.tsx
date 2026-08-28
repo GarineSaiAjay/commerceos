@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { authFetch } from "../../../lib/auth";
 
 type ExperimentReport = {
   experiment_id: string;
@@ -33,7 +34,7 @@ export default function AnalyticsPage() {
     setError("");
     setReport(null);
     try {
-      const response = await fetch("http://localhost:8081/dashboard/experiment", {
+      const response = await authFetch("/dashboard/experiment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, seed: Number(seed), treatment_multiplier: Number(treatment) }),

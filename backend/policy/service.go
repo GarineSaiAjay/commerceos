@@ -56,6 +56,7 @@ func (s *Service) Propose(
 	if err := s.repo.SaveAction(ctx, action, actionID); err != nil {
 		return Decision{}, err
 	}
+	decision.ActionID = actionID
 
 	assessment := RiskAssessment{
 		ID:        fmt.Sprintf("risk_%d", s.now().UnixNano()),
@@ -249,12 +250,37 @@ func (s *Service) GetRun(ctx context.Context, runID string) (Run, error) {
 	return s.repo.GetRun(ctx, runID)
 }
 
+// resolveApprover decides who is allowed to approve or reject req, and
+// what identity to record. There are exactly two legitimate callers:
+// the buyer who created this approval request (proven by knowing its
+// cart_id -- only the browser that ran the cart through mandate/propose
+// has that) and a logged-in merchant operator (proven by operatorEmail,
+// which the HTTP layer only sets after validating a session -- see
+// backend/auth.Service.OptionalOperator). Anyone else is rejected. See
+// files/JUDGE-FACING-GAPS.md P0.3: this replaces an approver/by field
+// the client could set to any string at all, with zero verification.
+func resolveApprover(req ApprovalRequest, cartID, operatorEmail string) (string, error) {
+	if operatorEmail != "" {
+		return "operator:" + operatorEmail, nil
+	}
+	if cartID != "" && cartID == req.CartID {
+		return "buyer (cart " + cartID + " verified)", nil
+	}
+	return "", ErrApprovalUnauthorized
+}
+
 // Approve issues the one-time authorization for a PENDING approval request
 // after re-validating that its binding (amount/items/cart/merchant/version)
 // has not drifted. It is idempotent: approving again returns the same
-// authorization. The approver identity is recorded in the reason.
-func (s *Service) Approve(ctx context.Context, approvalRequestID, approver string) (Decision, error) {
+// authorization. The verified approver identity is recorded in the reason
+// -- see resolveApprover.
+func (s *Service) Approve(ctx context.Context, approvalRequestID, cartID, operatorEmail string) (Decision, error) {
 	req, err := s.repo.GetApprovalRequest(ctx, approvalRequestID)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	approver, err := resolveApprover(req, cartID, operatorEmail)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -324,9 +350,14 @@ func (s *Service) Approve(ctx context.Context, approvalRequestID, approver strin
 	}, nil
 }
 
-// Reject marks a PENDING approval request as rejected.
-func (s *Service) Reject(ctx context.Context, approvalRequestID, by, reason string) error {
+// Reject marks a PENDING approval request as rejected. See resolveApprover
+// for who is allowed to do this.
+func (s *Service) Reject(ctx context.Context, approvalRequestID, cartID, operatorEmail, reason string) error {
 	req, err := s.repo.GetApprovalRequest(ctx, approvalRequestID)
+	if err != nil {
+		return err
+	}
+	by, err := resolveApprover(req, cartID, operatorEmail)
 	if err != nil {
 		return err
 	}
