@@ -9,6 +9,16 @@
 -- Demo credentials (files/AUTH.md):
 --   email:    owner@commerceos.demo
 --   password: CommerceOS!2026
+-- Self-contained: don't depend on 001_catalog.sql having run first.
+-- Without this, applying this seed before 001_catalog.sql fails the
+-- INSERT below on the merchant_id foreign key -- silently, from the
+-- operator's point of view: the table stays empty and every login
+-- attempt afterward gets the generic "invalid email or password" with
+-- no indication that no operator row exists at all.
+INSERT INTO merchants (id)
+VALUES ('merchant_001')
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO operators (id, merchant_id, email, password_hash)
 VALUES (
     'operator_merchant_001_owner',
