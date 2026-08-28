@@ -69,6 +69,7 @@ interface Order {
   subtotal: number;
   currency: string;
   items: CartItem[];
+  created_at?: string;
 }
 
 interface Payment {
@@ -173,7 +174,14 @@ function freshCartId() {
   return `cart_${Date.now()}`;
 }
 
-type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed";
+// Persisted so a hard reload restores whatever the buyer was still
+// shopping (see the restore/persist effects below). Only ever holds an
+// ACTIVE cart's ID -- GET /carts/{id} now 404s for a checked-out cart
+// (backend/commerce/cart/service.go), so a stale ID from a completed
+// order is never resurrected.
+const CART_STORAGE_KEY = "commerceos_cart_id";
+
+type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed" | "orders";
 
 export default function CheckoutFlow({
   initialProducts,
@@ -202,6 +210,43 @@ export default function CheckoutFlow({
   	const [suggestion, setSuggestion] = useState<SuggestResponse | null>(null);
   	const [suggestionLoading, setSuggestionLoading] = useState(false);
   	const [dismissedProductId, setDismissedProductId] = useState<string | null>(null);
+  	const [orders, setOrders] = useState<Order[]>([]);
+  	const [ordersLoading, setOrdersLoading] = useState(false);
+
+  // Persist the active cart ID so a hard reload doesn't lose the cart
+  // (P0.2: previously a fresh ID was minted on every mount).
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CART_STORAGE_KEY, cartId);
+    } catch {
+      // localStorage unavailable (private browsing, etc.) -- shopping
+      // still works for this tab, it just won't survive a reload.
+    }
+  }, [cartId]);
+
+  // Restore a cart the buyer left mid-shop, once, on first mount. Must
+  // read localStorage before the effect above has a chance to overwrite
+  // it with the fresh cartId already in state -- effects run in the
+  // order they're declared, so this being declared first is what makes
+  // that ordering safe.
+  useEffect(() => {
+    const saved =
+      typeof window !== "undefined" ? window.localStorage.getItem(CART_STORAGE_KEY) : null;
+    if (!saved || saved === cartId) return;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/carts/${saved}`);
+        if (!res.ok) return; // gone, expired, or already checked out -- keep the fresh cart
+        const restored = (await res.json()) as Cart;
+        setCartId(saved);
+        setCart(restored);
+        if (restored.items.length > 0) setStep("cart");
+      } catch {
+        // ignore -- keep shopping with the fresh cart already in state
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function ensureCart() {
     try {
@@ -404,6 +449,28 @@ export default function CheckoutFlow({
   function dismissSuggestion() {
     if (suggestion?.product) setDismissedProductId(suggestion.product.product_id);
     setSuggestion(null);
+  }
+
+  // GET /orders?merchant_id=... -- merchant-scoped for now since there
+  // is no buyer identity yet (files/JUDGE-FACING-GAPS.md P0.3); every
+  // order for this single-merchant demo qualifies as "history".
+  async function fetchOrders() {
+    setOrdersLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/orders?merchant_id=${MERCHANT_ID}`);
+      if (!res.ok) throw new Error("Failed to load orders");
+      const data = (await res.json()) as Order[];
+      setOrders(data ?? []);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to load orders");
+    } finally {
+      setOrdersLoading(false);
+    }
+  }
+
+  function viewOrderHistory() {
+    setStep("orders");
+    fetchOrders();
   }
 
   // Re-check for a suggestion whenever the buyer lands on a non-empty
@@ -720,11 +787,21 @@ export default function CheckoutFlow({
   return (
     <main className="min-h-screen bg-zinc-100">
       <div className="mx-auto max-w-3xl px-6 py-10">
-        <header className="mb-8">
-          <p className="text-sm font-medium text-zinc-500">CommerceOS</p>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight text-zinc-900">
-            {step === "complete" ? "Order Complete" : "Checkout"}
-          </h1>
+        <header className="mb-8 flex items-start justify-between">
+          <div>
+            <p className="text-sm font-medium text-zinc-500">CommerceOS</p>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight text-zinc-900">
+              {step === "complete" ? "Order Complete" : step === "orders" ? "Order History" : "Checkout"}
+            </h1>
+          </div>
+          {(step === "catalog" || step === "cart" || step === "orders") && (
+            <button
+              onClick={() => (step === "orders" ? setStep("catalog") : viewOrderHistory())}
+              className="mt-1 text-sm font-medium text-zinc-600 underline underline-offset-4 hover:text-zinc-900"
+            >
+              {step === "orders" ? "Back to shopping" : "Order history"}
+            </button>
+          )}
         </header>
 
         {message && (
@@ -1231,6 +1308,52 @@ export default function CheckoutFlow({
             >
               Start a new order
             </button>
+          </section>
+        )}
+
+        {step === "orders" && (
+          <section>
+            {ordersLoading && <p className="text-sm text-zinc-500">Loading orders...</p>}
+            {!ordersLoading && orders.length === 0 && (
+              <p className="text-sm text-zinc-500">
+                No orders yet -- completed checkouts will show up here.
+              </p>
+            )}
+            <ul className="space-y-4">
+              {orders.map((o) => (
+                <li key={o.order_id} className="rounded-xl border border-zinc-200 p-5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="font-semibold text-zinc-900">{o.order_id}</p>
+                      {o.created_at && (
+                        <p className="text-xs text-zinc-500">
+                          {new Date(o.created_at).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                        {o.status}
+                      </p>
+                      <p className="font-semibold text-zinc-900">{formatINR(o.subtotal)}</p>
+                    </div>
+                  </div>
+                  <ul className="mt-3 divide-y divide-zinc-100 border-t border-zinc-100 pt-3">
+                    {o.items.map((item) => (
+                      <li
+                        key={item.variant_id}
+                        className="flex items-center justify-between py-1.5 text-sm"
+                      >
+                        <span className="text-zinc-700">
+                          {item.title} × {item.quantity}
+                        </span>
+                        <span className="text-zinc-500">{formatINR(item.total)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 
