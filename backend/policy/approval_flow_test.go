@@ -98,7 +98,7 @@ func TestApprovalFlowLevel2(t *testing.T) {
 	}
 
 	// Approve → issues one-time authorization.
-	approved, err := svc.Approve(ctx, first.ApprovalRequestID, "merchant_operator")
+	approved, err := svc.Approve(ctx, first.ApprovalRequestID, "", "merchant_operator")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestApprovalFlowLevel2(t *testing.T) {
 	}
 
 	// Approving again is idempotent → same authorization, still 1 auth.
-	again, err := svc.Approve(ctx, first.ApprovalRequestID, "merchant_operator")
+	again, err := svc.Approve(ctx, first.ApprovalRequestID, "", "merchant_operator")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestApprovalFlowReject(t *testing.T) {
 	}
 
 	// Reject → no authorization, marking REJECTED.
-	if err := svc.Reject(ctx, first.ApprovalRequestID, "operator", "buyer changed mind"); err != nil {
+	if err := svc.Reject(ctx, first.ApprovalRequestID, "", "operator", "buyer changed mind"); err != nil {
 		t.Fatal(err)
 	}
 	if len(repo.authorizations) != 0 {
@@ -153,8 +153,48 @@ func TestApprovalFlowReject(t *testing.T) {
 	}
 
 	// Approving a rejected request must fail.
-	if _, err := svc.Approve(ctx, first.ApprovalRequestID, "operator"); err == nil {
+	if _, err := svc.Approve(ctx, first.ApprovalRequestID, "", "operator"); err == nil {
 		t.Fatal("expected error approving a rejected request")
+	}
+}
+
+func TestApprovalRequiresVerifiedCaller(t *testing.T) {
+	ctx := context.Background()
+	repo := newApprovalRepo()
+	svc := NewService(NewEngine(DefaultConfig(), repo), NewRiskEngine(), repo)
+
+	action := ProposedAction{
+		Action: "CREATE_ORDER", Amount: 2_000_000, Currency: "INR",
+		Merchant: "merchant_001", Items: []string{"airpods-pro-2"}, CartID: "cart_c",
+	}
+	first, err := svc.Propose(ctx, action, "mand")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No cart_id and no operator email: the caller is neither the buyer who
+	// created the request nor an authenticated operator, so both actions
+	// must be refused.
+	if _, err := svc.Approve(ctx, first.ApprovalRequestID, "", ""); err != ErrApprovalUnauthorized {
+		t.Fatalf("expected ErrApprovalUnauthorized approving with no identity, got %v", err)
+	}
+	if err := svc.Reject(ctx, first.ApprovalRequestID, "", "", "no reason"); err != ErrApprovalUnauthorized {
+		t.Fatalf("expected ErrApprovalUnauthorized rejecting with no identity, got %v", err)
+	}
+
+	// A cart_id that doesn't belong to this request proves nothing.
+	if _, err := svc.Approve(ctx, first.ApprovalRequestID, "some_other_cart", ""); err != ErrApprovalUnauthorized {
+		t.Fatalf("expected ErrApprovalUnauthorized approving with a mismatched cart_id, got %v", err)
+	}
+
+	// The buyer who owns the cart the request was created for can approve
+	// it without an operator session.
+	approved, err := svc.Approve(ctx, first.ApprovalRequestID, "cart_c", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Decision != DecisionApproved || approved.AuthorizationID == "" {
+		t.Fatalf("expected the verified buyer's approval to succeed, got %+v", approved)
 	}
 }
 
