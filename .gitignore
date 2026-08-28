@@ -1,6 +1,14 @@
 .env
 .env.local
 .env.*
+# The two lines above correctly keep real secrets (.env, infra/.env, any
+# .env.local) out of git -- but .env.* also matched .env.example and
+# infra/.env.example, the two template files README.md's "Getting
+# started" tells a fresh clone to copy from. Neither file was ever
+# actually in the repository because of this: `git log --all` has zero
+# commits touching either path. Un-ignore them explicitly.
+!.env.example
+!infra/.env.example
 node_modules/
 
 # Go build cache (used for sandboxed builds)
