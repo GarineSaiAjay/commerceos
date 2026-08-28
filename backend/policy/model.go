@@ -106,6 +106,11 @@ type Decision struct {
 	RiskScore         float64 `json:"risk_score"`
 	FailedCheck       string  `json:"failed_check"`
 	Reason            string  `json:"reason"`
+	// ActionID is the run_id GET /runs/{id} takes -- the caller's own
+	// audit trail (proposed -> risk-assessed -> policy-evaluated ->
+	// authorized), regardless of whether this proposal auto-approved or
+	// went through Level 2/3 human approval first.
+	ActionID string `json:"action_id,omitempty"`
 }
 
 var ErrInvalidProposal = errors.New("invalid proposal")

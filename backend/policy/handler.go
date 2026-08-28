@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/garinesaiajay/commerceos/audit"
+	"github.com/garinesaiajay/commerceos/auth"
 )
 
 // Handler exposes the policy engine over HTTP: propose an action and
@@ -183,7 +184,12 @@ func (h *Handler) GetApprovalRequest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, req)
 }
 
-// Approve serves POST /approval-requests/{id}/approve.
+// Approve serves POST /approval-requests/{id}/approve. The caller must be
+// either the buyer who created this request (proven by sending back the
+// cart_id it was created for) or a logged-in merchant operator (proven by
+// a valid bearer session, attached to the request context by
+// auth.Service.OptionalOperator -- see main.go's route wiring). See
+// files/JUDGE-FACING-GAPS.md P0.3 and Service.resolveApprover.
 func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -196,21 +202,27 @@ func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Approver string `json:"approver"`
+		CartID string `json:"cart_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.Approver == "" {
-		req.Approver = "operator"
+	operatorEmail := ""
+	if operator, ok := auth.OperatorFromContext(r.Context()); ok {
+		operatorEmail = operator.Email
 	}
-	decision, err := h.service.Approve(r.Context(), id, req.Approver)
+	decision, err := h.service.Approve(r.Context(), id, req.CartID, operatorEmail)
 	if err != nil {
+		if errors.Is(err, ErrApprovalUnauthorized) {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusOK, decision)
 }
 
-// Reject serves POST /approval-requests/{id}/reject.
+// Reject serves POST /approval-requests/{id}/reject. See Approve for who
+// is allowed to call this.
 func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -223,14 +235,19 @@ func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		By     string `json:"by"`
+		CartID string `json:"cart_id"`
 		Reason string `json:"reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.By == "" {
-		req.By = "operator"
+	operatorEmail := ""
+	if operator, ok := auth.OperatorFromContext(r.Context()); ok {
+		operatorEmail = operator.Email
 	}
-	if err := h.service.Reject(r.Context(), id, req.By, req.Reason); err != nil {
+	if err := h.service.Reject(r.Context(), id, req.CartID, operatorEmail, req.Reason); err != nil {
+		if errors.Is(err, ErrApprovalUnauthorized) {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
