@@ -35,6 +35,11 @@ func (s *Service) GetOrder(ctx context.Context, orderID string) (Order, error) {
 	return s.repo.GetOrder(ctx, orderID)
 }
 
+// ListOrders returns a merchant's order history, most recent first.
+func (s *Service) ListOrders(ctx context.Context, merchantID string) ([]Order, error) {
+	return s.repo.ListOrders(ctx, merchantID)
+}
+
 func NewOrderID(cartID string) string {
 	return fmt.Sprintf("order_%s", cartID)
 }

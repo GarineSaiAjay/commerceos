@@ -333,6 +333,117 @@ func (r *PostgresRepository) GetOrder(
 	return order, nil
 }
 
+// ListOrders returns a merchant's orders, most recent first, each with
+// its items attached. Two queries (orders, then their items in bulk)
+// instead of one GetOrder call per order, so this stays O(1) round
+// trips regardless of how many orders the merchant has.
+func (r *PostgresRepository) ListOrders(
+	ctx context.Context,
+	merchantID string,
+) ([]Order, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT
+			id,
+			merchant_id,
+			cart_id,
+			currency,
+			subtotal,
+			status,
+			created_at
+		FROM orders
+		WHERE merchant_id = $1
+		ORDER BY created_at DESC
+	`, merchantID)
+	if err != nil {
+		return nil, fmt.Errorf("list orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []Order
+	orderIndex := make(map[string]int)
+
+	for rows.Next() {
+		var o Order
+
+		if err := rows.Scan(
+			&o.ID,
+			&o.MerchantID,
+			&o.CartID,
+			&o.Currency,
+			&o.Subtotal,
+			&o.Status,
+			&o.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan order: %w", err)
+		}
+
+		o.Items = []OrderItem{}
+		orderIndex[o.ID] = len(orders)
+		orders = append(orders, o)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate orders: %w", err)
+	}
+
+	if len(orders) == 0 {
+		return []Order{}, nil
+	}
+
+	orderIDs := make([]string, 0, len(orders))
+	for _, o := range orders {
+		orderIDs = append(orderIDs, o.ID)
+	}
+
+	itemRows, err := r.db.Query(ctx, `
+		SELECT
+			order_id,
+			product_id,
+			variant_id,
+			title,
+			quantity,
+			unit_price,
+			total
+		FROM order_items
+		WHERE order_id = ANY($1)
+		ORDER BY id
+	`, orderIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list order items: %w", err)
+	}
+	defer itemRows.Close()
+
+	for itemRows.Next() {
+		var orderID string
+		var item OrderItem
+
+		if err := itemRows.Scan(
+			&orderID,
+			&item.ProductID,
+			&item.VariantID,
+			&item.Title,
+			&item.Quantity,
+			&item.UnitPrice,
+			&item.Total,
+		); err != nil {
+			return nil, fmt.Errorf("scan order item: %w", err)
+		}
+
+		idx, ok := orderIndex[orderID]
+		if !ok {
+			continue
+		}
+
+		orders[idx].Items = append(orders[idx].Items, item)
+	}
+
+	if err := itemRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate order items: %w", err)
+	}
+
+	return orders, nil
+}
+
 // TransitionStatus moves the order to `to` only if the edge is legal in
 // the centralized order state machine. It reads the current status and
 // updates atomically in one transaction.

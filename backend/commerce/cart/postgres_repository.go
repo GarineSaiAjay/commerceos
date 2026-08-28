@@ -55,6 +55,7 @@ func (r *PostgresRepository) GetCart(ctx context.Context, id string) (Cart, erro
 			merchant_id,
 			currency,
 			subtotal_amount,
+			status,
 			expires_at
 		FROM carts
 		WHERE id = $1
@@ -63,6 +64,7 @@ func (r *PostgresRepository) GetCart(ctx context.Context, id string) (Cart, erro
 		&cart.MerchantID,
 		&cart.Currency,
 		&cart.Subtotal,
+		&cart.Status,
 		&cart.ExpiresAt,
 	)
 
