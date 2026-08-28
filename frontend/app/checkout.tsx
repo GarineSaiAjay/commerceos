@@ -254,6 +254,43 @@ export default function CheckoutFlow({
     }
   }
 
+  // Both endpoints already existed on the backend (commerce/cart) and
+  // were fully wired -- only the UI to call them was missing.
+  async function updateItemQuantity(variantId: string, quantity: number) {
+    if (quantity < 1) return;
+    setLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API_BASE}/carts/${cartId}/items/${variantId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setCart(await fetch(`${API_BASE}/carts/${cartId}`).then((r) => r.json()));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to update quantity");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function removeCartItem(variantId: string) {
+    setLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API_BASE}/carts/${cartId}/items/${variantId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setCart(await fetch(`${API_BASE}/carts/${cartId}`).then((r) => r.json()));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to remove item");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function proceedToCheckout() {
     setLoading(true);
     setMessage("");
@@ -804,12 +841,42 @@ export default function CheckoutFlow({
                   <div>
                     <p className="font-semibold text-zinc-900">{item.title}</p>
                     <p className="text-sm text-zinc-500">
-                      Qty {item.quantity} × {formatINR(item.unit_price)}
+                      {formatINR(item.unit_price)} each
                     </p>
                   </div>
-                  <p className="font-semibold text-zinc-900">
-                    {formatINR(item.total)}
-                  </p>
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => updateItemQuantity(item.variant_id, item.quantity - 1)}
+                        disabled={loading || item.quantity <= 1}
+                        aria-label={`Decrease quantity of ${item.title}`}
+                        className="h-7 w-7 rounded border border-zinc-300 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
+                      >
+                        −
+                      </button>
+                      <span className="w-5 text-center text-sm font-medium text-zinc-900">
+                        {item.quantity}
+                      </span>
+                      <button
+                        onClick={() => updateItemQuantity(item.variant_id, item.quantity + 1)}
+                        disabled={loading}
+                        aria-label={`Increase quantity of ${item.title}`}
+                        className="h-7 w-7 rounded border border-zinc-300 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <p className="w-20 text-right font-semibold text-zinc-900">
+                      {formatINR(item.total)}
+                    </p>
+                    <button
+                      onClick={() => removeCartItem(item.variant_id)}
+                      disabled={loading}
+                      className="text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-40"
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
