@@ -126,6 +126,31 @@ cart-linked) list and a "My Orders" page.
 
 ### P0.3 — No authentication or authorization anywhere — including on the money-gating endpoints themselves
 
+> **Status: implemented 2026-08-28.** Real operator authentication now
+> gates the merchant dashboard and the money-authority actions:
+> `POST /auth/login`/`logout` (PBKDF2-HMAC-SHA256 password hashing, bearer
+> session tokens, `backend/auth/`), and a `RequireOperator` middleware on
+> `/dashboard/*`, `/safety/*`, `/audit/verify`, and the *list* endpoints
+> for `/approval-requests` and `/runs`. The higher-stakes fix is on
+> `POST /approval-requests/{id}/approve` and `/reject` themselves
+> (`backend/policy/service.go`'s new `resolveApprover`): the
+> client-supplied `approver`/`by` string described below is gone,
+> replaced by exactly two verified callers -- the buyer who created the
+> request (proven by returning the `cart_id` it was created for) or a
+> logged-in merchant operator (proven by a valid bearer session, attached
+> via `OptionalOperator`) -- anyone else gets 403. This scoped design was
+> a deliberate choice over gating the endpoint to operators only: the
+> buyer's own self-confirmation flow in `checkout.tsx` and the merchant's
+> review flow in `dashboard/approvals/page.tsx` both call the same two
+> endpoints, and only one of those callers can ever hold an operator
+> session. Buyer checkout deliberately stays guest -- buyer accounts were
+> explicitly out of scope for this pass. `tsc --noEmit` and `eslint` are
+> clean on the frontend change; the Go changes could not be compiled in
+> this environment (no Go toolchain here) and were hand-verified instead,
+> same caveat as P0.1 -- build/test this locally before the demo. See
+> `files/AUTH.md` for the demo operator credentials and the auth design's
+> trade-offs (notably: PBKDF2 instead of bcrypt, and why).
+
 Your point #3. Verified: the only middleware in the entire backend is
 `corsMiddleware` (`backend/cmd/server/main.go:31`). There is no JWT layer,
 no API-key check, no session, no login — not on the frontend, not on the
@@ -173,6 +198,20 @@ it directly undercuts the strongest claim in your existing docs.
    track's "why now" paragraph is actually about.
 
 ### P0.4 — The audit trail exists but is buried; it should be the headline, not a side tab
+
+> **Status: implemented 2026-08-28.** The audit trail is now inline on
+> the checkout screen itself, not only in the merchant `/dashboard/runs`
+> tab described below. `policy.Decision` gained an `action_id` field --
+> the same ID `GET /runs/{id}` already used to key its replay, just never
+> returned to the caller that ran the action -- and `checkout.tsx`
+> captures it from every propose/approve response and renders the
+> resulting `proposed -> risk-assessed -> policy-evaluated -> authorized`
+> timeline on both the order-complete screen and the payment-failed
+> screen, covering the "show the audit trail and one failure handled
+> gracefully" bar in the same breath as the transaction, no side tab
+> required. No new subsystem was needed: the replay reconstruction
+> already existed in `backend/policy/replay.go` (see below) -- it just
+> wasn't wired back to the client that triggered the action it describes.
 
 You already have a hash-chained audit ledger (`backend/audit/`), a policy
 explain endpoint (`backend/policy/explain.go`, MCP tool `explain_decision`),
