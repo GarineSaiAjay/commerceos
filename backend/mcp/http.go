@@ -33,6 +33,14 @@ func (h *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A nil response means body was a JSON-RPC notification (e.g.
+	// "notifications/initialized") -- per the JSON-RPC 2.0 spec the
+	// server must not reply to one, so there's no JSON body to send.
+	if resp == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(resp)

@@ -46,8 +46,16 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
 
 1. **Copy and fill the environment:**
    ```bash
-   cp .env.example .env   # add RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET (Test Mode)
+   cp infra/.env.example infra/.env   # add RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET (Test Mode)
    ```
+   `infra/.env` is what `docker compose` in step 2 actually reads (see
+   that file's own header comment) -- the backend binary itself never
+   reads a `.env` file directly, it reads process environment variables.
+   The root `.env.example` is for a different workflow: running the Go
+   backend directly on the host instead of inside docker-compose (e.g.
+   `export $(cat .env | xargs) && go run ./cmd/server`, against the same
+   Postgres/Redis containers from step 2). If you're following this
+   guide as written, `infra/.env` is the one you need.
 
 2. **Bring up the stack:**
    ```bash

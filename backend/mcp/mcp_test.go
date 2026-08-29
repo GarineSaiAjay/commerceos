@@ -154,3 +154,93 @@ func assertNoError(t *testing.T, resp []byte) {
 		t.Fatalf("tool returned error: %s", out.Error.Message)
 	}
 }
+
+// TestInitializeHandshake proves the MCP handshake returns the spec's
+// InitializeResult shape (protocolVersion/capabilities/serverInfo), not
+// the tool-call Result{Content: ...} envelope this server used to send.
+// A strict MCP SDK client validates this shape before ever calling
+// tools/list; a shape mismatch here fails the handshake even though
+// tools/list and tools/call work fine on their own.
+func TestInitializeHandshake(t *testing.T) {
+	srv := NewServer()
+
+	req := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	resp, err := srv.Handle(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out struct {
+		Result struct {
+			ProtocolVersion string         `json:"protocolVersion"`
+			Capabilities    map[string]any `json:"capabilities"`
+			ServerInfo      struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"serverInfo"`
+			// Content would only be present under the old, wrong
+			// tool-call-shaped response.
+			Content []Content `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	if out.Result.ProtocolVersion != "2025-06-18" {
+		t.Fatalf("expected the client's requested protocolVersion echoed back, got %q", out.Result.ProtocolVersion)
+	}
+	if out.Result.ServerInfo.Name == "" {
+		t.Fatal("expected a non-empty serverInfo.name")
+	}
+	if _, ok := out.Result.Capabilities["tools"]; !ok {
+		t.Fatal("expected capabilities.tools to be present")
+	}
+	if len(out.Result.Content) != 0 {
+		t.Fatal("initialize must not return the tool-call Result{Content} envelope")
+	}
+}
+
+// TestInitializeHandshakeDefaultsProtocolVersion proves a client that
+// omits protocolVersion (or sends unparseable params) gets this
+// server's own baseline version rather than an error -- initialize
+// params aren't otherwise validated.
+func TestInitializeHandshakeDefaultsProtocolVersion(t *testing.T) {
+	srv := NewServer()
+
+	req := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	resp, err := srv.Handle(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out struct {
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Result.ProtocolVersion == "" {
+		t.Fatal("expected a default protocolVersion when the client didn't send one")
+	}
+}
+
+// TestNotificationGetsNoResponse proves a JSON-RPC notification (no
+// response expected, per spec) -- specifically "notifications/initialized",
+// which every compliant MCP client sends right after a successful
+// initialize -- gets no response body and no error, rather than falling
+// through to "method not found".
+func TestNotificationGetsNoResponse(t *testing.T) {
+	srv := NewServer()
+
+	req := []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	resp, err := srv.Handle(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp != nil {
+		t.Fatalf("expected no response to a notification, got %s", resp)
+	}
+}
