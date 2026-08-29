@@ -90,7 +90,13 @@ Respond with ONLY a JSON object matching exactly this schema:
   MagSafe charger, or Lightning/USB-C cable -> "charging"; a case,
   AppleCare, an adapter, or ear tips -> "accessories".
 - priority: a feature priority like "active_noise_cancellation", "battery_life", or "".
-- recipient: "sister", "brother", or "".
+- recipient: "sister", "brother", or "". Casual shorthand still counts --
+  "bro"/"brotha" -> "brother", "sis" -> "sister". Anyone else (mom, dad,
+  friend, self, ...) -> "".
+A request can express its budget without ever using the word "budget"
+("under 40k", "below 5000", "max 2000 for my bro") -- extract it anyway;
+don't treat the absence of that literal word as reason to ask for
+clarification.
 If the request is too vague to extract a budget AND a category, respond with
 {"clarify": "What would you like to buy, and what is your budget?"}
 Never guess an amount. Never invent a category outside the list above --

@@ -162,10 +162,11 @@ func TestDeterministicExtractorCoversFullCatalog(t *testing.T) {
 	extractor := NewDeterministicExtractor()
 
 	cases := []struct {
-		prompt       string
-		wantCategory string
-		wantPriority string
-		wantBudget   int64
+		prompt        string
+		wantCategory  string
+		wantPriority  string
+		wantBudget    int64
+		wantRecipient string
 	}{
 		{
 			prompt:       "I need a MagSafe charger, budget ₹5,000, fast charging and magnetic alignment please.",
@@ -214,10 +215,24 @@ func TestDeterministicExtractorCoversFullCatalog(t *testing.T) {
 		// recipient both parsed correctly. Also exercises the "30k"
 		// budget shorthand (== 30000, not 30).
 		{
-			prompt:       "i want beats fit pro for my sister, my budget is below 30k",
-			wantCategory: "earbuds",
-			wantPriority: "",
-			wantBudget:   30000,
+			prompt:        "i want beats fit pro for my sister, my budget is below 30k",
+			wantCategory:  "earbuds",
+			wantPriority:  "",
+			wantBudget:    30000,
+			wantRecipient: "sister",
+		},
+		// Regression: no literal word "budget" anywhere in this prompt
+		// ("under 40k" expresses it instead) -- previously the ambiguity
+		// check required that exact substring and clarified this away
+		// before parseBudget/parseCategory ever ran, even though both
+		// are trivially extractable. Also exercises "bro" as shorthand
+		// for the "brother" recipient.
+		{
+			prompt:        "i want earbuds for my bro, under 40k",
+			wantCategory:  "earbuds",
+			wantPriority:  "",
+			wantBudget:    40000,
+			wantRecipient: "brother",
 		},
 	}
 
@@ -234,6 +249,9 @@ func TestDeterministicExtractorCoversFullCatalog(t *testing.T) {
 		}
 		if intent.Budget != c.wantBudget {
 			t.Fatalf("prompt %q: expected budget %d, got %d", c.prompt, c.wantBudget, intent.Budget)
+		}
+		if intent.Recipient != c.wantRecipient {
+			t.Fatalf("prompt %q: expected recipient %s, got %s", c.prompt, c.wantRecipient, intent.Recipient)
 		}
 	}
 }

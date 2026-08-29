@@ -18,10 +18,9 @@ func NewDeterministicExtractor() *DeterministicExtractor {
 func (d *DeterministicExtractor) Extract(ctx context.Context, prompt string) (Intent, error) {
 	lower := strings.ToLower(prompt)
 
-	// Ambiguous input → safe no-op, never a guess.
-	if strings.Contains(lower, "buy me something") ||
-		strings.TrimSpace(prompt) == "" ||
-		!strings.Contains(lower, "budget") {
+	// "buy me something" (with nothing else to go on) and an empty
+	// prompt are always ambiguous, regardless of anything else.
+	if strings.Contains(lower, "buy me something") || strings.TrimSpace(prompt) == "" {
 		return Intent{Clarify: "What would you like to buy, and what is your budget?"}, nil
 	}
 
@@ -29,6 +28,23 @@ func (d *DeterministicExtractor) Extract(ctx context.Context, prompt string) (In
 	category := parseCategory(lower)
 	priority := parsePriority(lower)
 	recipient := parseRecipient(lower)
+
+	// A real budget AND a real category are the two hard requirements
+	// (see ValidateIntent) -- ask for clarification if either is
+	// missing, rather than failing validation with a raw error below.
+	//
+	// This USED to instead require the literal substring "budget"
+	// anywhere in the prompt, which rejected extremely common real
+	// phrasing that expresses a budget without ever using that word --
+	// "i want earbuds for my bro, under 40k" has both a clear budget
+	// (40k) and a clear category (earbuds), but was clarified away
+	// before parseBudget/parseCategory ever even ran, because the word
+	// "budget" itself never appears. Checking the actually-extracted
+	// values instead of a magic word makes this robust to "under X",
+	// "below X", "less than X", "max X", "up to X", and so on.
+	if budget <= 0 || category == "" {
+		return Intent{Clarify: "What would you like to buy, and what is your budget?"}, nil
+	}
 
 	intent := Intent{
 		Budget:    budget,
@@ -179,7 +195,13 @@ func parseRecipient(lower string) string {
 	if strings.Contains(lower, "sister") {
 		return "sister"
 	}
-	if strings.Contains(lower, "brother") {
+	// "bro" is extremely common shorthand for "brother" in a casual
+	// shopping request ("earbuds for my bro, under 40k") -- without it,
+	// a prompt naming no recipient word from the LLM's declared enum
+	// (see llm_extractor.go's intentSystemPrompt) simply left Recipient
+	// blank, which isn't validated so it never broke anything, but did
+	// throw away information the buyer clearly gave.
+	if strings.Contains(lower, "brother") || strings.Contains(lower, "bro") {
 		return "brother"
 	}
 	return ""
