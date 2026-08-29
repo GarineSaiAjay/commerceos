@@ -23,6 +23,14 @@ type LLMExtractor struct {
 	client  *http.Client
 }
 
+// llmRequestTimeout bounds how long Extract waits on the whole chat
+// completion round trip (connect + full response body). 60s rather than
+// a shorter ceiling because OpenRouter response time varies with model
+// load and the caller's own network -- a real (if intermittent) failure
+// mode is "the model was just slow, not actually down", and 30s left too
+// little headroom for that on a slower connection.
+const llmRequestTimeout = 60 * time.Second
+
 // NewLLMExtractor builds an extractor. baseURL defaults to OpenRouter.
 // Use NewLLMExtractorFromEnv to read OPENROUTER_API_KEY/LLM_BASE_URL/LLM_MODEL.
 func NewLLMExtractor(apiKey, baseURL, model string) *LLMExtractor {
@@ -36,7 +44,7 @@ func NewLLMExtractor(apiKey, baseURL, model string) *LLMExtractor {
 		apiKey:  apiKey,
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		model:   model,
-		client:  &http.Client{Timeout: 30 * time.Second},
+		client:  &http.Client{Timeout: llmRequestTimeout},
 	}
 }
 
