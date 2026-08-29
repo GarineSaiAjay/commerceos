@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Request is a JSON-RPC 2.0 request (the MCP wire format).
@@ -28,7 +29,7 @@ type Error struct {
 	Message string `json:"message"`
 }
 
-// Result is the canonical MCP result envelope.
+// Result is the canonical MCP result envelope for a tool call.
 type Result struct {
 	Content []Content `json:"content"`
 }
@@ -37,6 +38,29 @@ type Result struct {
 type Content struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+// protocolVersion is the MCP protocol version this server was written
+// against, used only as the default when a client's "initialize"
+// request omits its own protocolVersion.
+const protocolVersion = "2024-11-05"
+
+// InitializeResult is the MCP spec's shape for a successful
+// "initialize" response -- NOT the tool-call Result envelope above. A
+// strict MCP SDK client validates this shape before ever calling
+// tools/list; sending Result{Content: ...} here (as this server used
+// to) passes a hand-rolled JSON-RPC smoke test but fails the real
+// handshake.
+type InitializeResult struct {
+	ProtocolVersion string          `json:"protocolVersion"`
+	Capabilities    map[string]any  `json:"capabilities"`
+	ServerInfo      InitializeInfo  `json:"serverInfo"`
+}
+
+// InitializeInfo identifies this server in an InitializeResult.
+type InitializeInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 // Tool is a narrow MCP tool.
@@ -75,15 +99,21 @@ func (s *Server) Handle(ctx context.Context, body []byte) ([]byte, error) {
 
 	id := req.ID
 
+	// A JSON-RPC notification (a "notifications/*" method, per MCP's own
+	// naming convention -- most importantly "notifications/initialized",
+	// which every compliant client sends right after a successful
+	// "initialize") gets no response at all: the JSON-RPC 2.0 spec is
+	// explicit that "the Server MUST NOT reply" to a notification. Falling
+	// through to the "method not found" error below (as this server used
+	// to) is itself a handshake-breaking bug for any client that actually
+	// checks the response to what it never expected one for.
+	if strings.HasPrefix(req.Method, "notifications/") {
+		return nil, nil
+	}
+
 	switch req.Method {
 	case "initialize":
-		return json.Marshal(Response{
-			JSONRPC: "2.0",
-			ID:      id,
-			Result: Result{Content: []Content{
-				{Type: "text", Text: "CommerceOS MCP server initialized"},
-			}},
-		})
+		return s.initialize(id, req.Params)
 
 	case "tools/list":
 		return s.listTools(id)
@@ -98,6 +128,34 @@ func (s *Server) Handle(ctx context.Context, body []byte) ([]byte, error) {
 			Error:   &Error{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)},
 		})
 	}
+}
+
+// initialize answers the MCP handshake with the spec's InitializeResult
+// shape. It echoes back the client's requested protocolVersion when
+// present (the common, spec-compliant way a minimal server avoids
+// hardcoding one version it may not actually match); a client that omits
+// it, or sends unparseable params, gets this server's own baseline
+// version instead of a parse error -- initialize params are otherwise
+// unused here, so there's nothing to actually reject.
+func (s *Server) initialize(id json.RawMessage, params json.RawMessage) ([]byte, error) {
+	version := protocolVersion
+
+	var clientParams struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if json.Unmarshal(params, &clientParams) == nil && clientParams.ProtocolVersion != "" {
+		version = clientParams.ProtocolVersion
+	}
+
+	return json.Marshal(Response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: InitializeResult{
+			ProtocolVersion: version,
+			Capabilities:    map[string]any{"tools": map[string]any{}},
+			ServerInfo:      InitializeInfo{Name: "commerceos", Version: "1.0.0"},
+		},
+	})
 }
 
 func (s *Server) listTools(id json.RawMessage) ([]byte, error) {
