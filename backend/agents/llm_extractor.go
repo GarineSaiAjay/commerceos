@@ -64,16 +64,38 @@ func NewLLMExtractorFromEnv() *LLMExtractor {
 
 // The system prompt enforces the strict output schema. The model may only
 // emit JSON matching Intent; ambiguous input must set "clarify".
+//
+// The catalog this shops against (db/seeds/001_catalog.sql) is Apple/Beats
+// audio accessories plus AirTag trackers -- the category list and examples
+// below must be kept in sync with it by hand (same staleness risk already
+// hit three times elsewhere in this codebase for hardcoded product/category
+// lists: growth/simulator.go, policy/model.go, campaign/model.go). Without
+// "charging"/"tracking" listed here, and without the product-name examples,
+// a real request like "beats fit pro for my sister, budget below 30k" was
+// coming back with category "" -- the model had nowhere valid to put a
+// product it could clearly identify as earbuds, so it left the field
+// blank rather than guess, which then failed validation.
 const intentSystemPrompt = `You extract purchase intent from a buyer's natural-language request.
 Respond with ONLY a JSON object matching exactly this schema:
 {"budget": number, "category": string, "priority": string, "recipient": string}
 - budget: the buyer's max spend in INR (a positive whole number of rupees).
-- category: one of "earbuds", "laptop", "accessories", or "" if unknown.
+  Shorthand like "30k" or "under 30k" means 30000; a bare "30" without any
+  "k"/"thousand"/lakh wording means 30 rupees, not 30000 -- convert
+  shorthand yourself, don't leave it for someone else to interpret.
+- category: one of "earbuds", "laptop", "charging", "accessories",
+  "tracking", or "" if unknown. Buyers name specific products, not
+  categories -- map the product to its category yourself:
+  "AirPods" (any generation), "AirPods Pro", "AirPods Max", or "Beats Fit
+  Pro" -> "earbuds"; "AirTag" -> "tracking"; a charger, charging pad,
+  MagSafe charger, or Lightning/USB-C cable -> "charging"; a case,
+  AppleCare, an adapter, or ear tips -> "accessories".
 - priority: a feature priority like "active_noise_cancellation", "battery_life", or "".
 - recipient: "sister", "brother", or "".
 If the request is too vague to extract a budget AND a category, respond with
 {"clarify": "What would you like to buy, and what is your budget?"}
-Never guess an amount. Never invent a category. Output nothing but JSON.`
+Never guess an amount. Never invent a category outside the list above --
+but DO map a named real product to the category it actually belongs to
+rather than leaving category empty.`
 
 // intentUserPrompt builds the per-request message.
 func intentUserPrompt(prompt string) string {
