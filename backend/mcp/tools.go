@@ -57,9 +57,9 @@ func RegisterTools(s *Server, deps Dependencies) {
 			"Deterministic; never bypasses budget/availability. Omit budget to browse " +
 			"the full catalog unfiltered.",
 		InputSchema: schema(map[string]any{
-			"budget": prop("integer", "Maximum price in rupees (not paise). Omit or 0 to browse the full catalog unfiltered."),
-			"category": prop("string", "Product category to prefer, e.g. \"earbuds\"."),
-			"priority": prop("string", "A feature tag to prioritize, e.g. \"active_noise_cancellation\", \"battery_life\"."),
+			"budget":    prop("integer", "Maximum price in rupees (not paise). Omit or 0 to browse the full catalog unfiltered."),
+			"category":  prop("string", "Product category to prefer, e.g. \"earbuds\"."),
+			"priority":  prop("string", "A feature tag to prioritize, e.g. \"active_noise_cancellation\", \"battery_life\"."),
 			"recipient": prop("string", "Who the product is for, e.g. \"myself\", \"my brother\" (informational only)."),
 		}),
 		Handler: func(ctx context.Context, p json.RawMessage) (any, error) {
@@ -82,9 +82,9 @@ func RegisterTools(s *Server, deps Dependencies) {
 		Name:        "create_cart",
 		Description: "Create a cart. No money moves.",
 		InputSchema: schema(map[string]any{
-			"cart_id": prop("string", "A new, caller-chosen unique cart ID."),
+			"cart_id":     prop("string", "A new, caller-chosen unique cart ID."),
 			"merchant_id": prop("string", "Merchant ID. Defaults to \"merchant_001\" if omitted."),
-			"currency": prop("string", "ISO 4217 currency code. Defaults to \"INR\" if omitted."),
+			"currency":    prop("string", "ISO 4217 currency code. Defaults to \"INR\" if omitted."),
 		}, "cart_id"),
 		Handler: func(ctx context.Context, p json.RawMessage) (any, error) {
 			return createCart(ctx, deps, p)
@@ -98,9 +98,9 @@ func RegisterTools(s *Server, deps Dependencies) {
 			"This is the only way to put an item into a cart before create_checkout — a cart with " +
 			"nothing added will fail checkout with an empty-cart error.",
 		InputSchema: schema(map[string]any{
-			"cart_id": prop("string", "ID of an existing cart, from create_cart."),
+			"cart_id":    prop("string", "ID of an existing cart, from create_cart."),
 			"variant_id": prop("string", "Catalog variant ID to add. See search_products/get_product for a product's variants."),
-			"quantity": prop("integer", "Number of units to add. Defaults to 1 if omitted or non-positive."),
+			"quantity":   prop("integer", "Number of units to add. Defaults to 1 if omitted or non-positive."),
 		}, "cart_id", "variant_id"),
 		Handler: func(ctx context.Context, p json.RawMessage) (any, error) {
 			return addItem(ctx, deps, p)
@@ -111,15 +111,15 @@ func RegisterTools(s *Server, deps Dependencies) {
 		Name:        "recommend_bundle",
 		Description: "Recommend a cross-sell bundle with an expected-value score. No money moves.",
 		InputSchema: schema(map[string]any{
-			"cart_id": prop("string", "Cart this recommendation is evaluated for."),
-			"cart_total": prop("integer", "Current cart subtotal, in paise."),
-			"budget": prop("integer", "Buyer's spending ceiling, in paise."),
-			"tolerance": prop("number", "Fractional budget tolerance allowed above the ceiling, e.g. 0.10 for 10%."),
-			"product_id": prop("string", "Candidate product to evaluate as a cross-sell."),
+			"cart_id":              prop("string", "Cart this recommendation is evaluated for."),
+			"cart_total":           prop("integer", "Current cart subtotal, in paise."),
+			"budget":               prop("integer", "Buyer's spending ceiling, in paise."),
+			"tolerance":            prop("number", "Fractional budget tolerance allowed above the ceiling, e.g. 0.10 for 10%."),
+			"product_id":           prop("string", "Candidate product to evaluate as a cross-sell."),
 			"purchase_probability": prop("number", "Estimated probability (0..1) the buyer accepts this candidate."),
-			"incremental_margin": prop("integer", "Expected incremental gross margin if accepted, in paise."),
-			"confidence": prop("number", "Confidence (0..1) in the probability/margin estimates."),
-			"risk_cost": prop("integer", "Expected downside cost (e.g. return risk), in paise."),
+			"incremental_margin":   prop("integer", "Expected incremental gross margin if accepted, in paise."),
+			"confidence":           prop("number", "Confidence (0..1) in the probability/margin estimates."),
+			"risk_cost":            prop("integer", "Expected downside cost (e.g. return risk), in paise."),
 		}, "product_id"),
 		Handler: func(ctx context.Context, p json.RawMessage) (any, error) {
 			return recommendBundle(ctx, deps, p)
@@ -135,7 +135,7 @@ func RegisterTools(s *Server, deps Dependencies) {
 				"description": "Line items to total.",
 				"items": schema(map[string]any{
 					"unit_price": prop("integer", "Unit price in paise."),
-					"quantity": prop("integer", "Quantity."),
+					"quantity":   prop("integer", "Quantity."),
 				}),
 			},
 		}, "items"),
@@ -148,13 +148,13 @@ func RegisterTools(s *Server, deps Dependencies) {
 		Name:        "request_authorization",
 		Description: "Request a policy authorization for a proposed action. Returns APPROVED/REJECTED + authorization_id.",
 		InputSchema: schema(map[string]any{
-			"action": prop("string", "Action being proposed, e.g. \"CREATE_ORDER\"."),
-			"amount": prop("integer", "Proposed amount, in paise."),
-			"currency": prop("string", "ISO 4217 currency code."),
-			"merchant": prop("string", "Merchant ID the action is against."),
-			"items": map[string]any{"type": "array", "description": "Product IDs in the proposed action.", "items": map[string]any{"type": "string"}},
+			"action":     prop("string", "Action being proposed, e.g. \"CREATE_ORDER\"."),
+			"amount":     prop("integer", "Proposed amount, in paise."),
+			"currency":   prop("string", "ISO 4217 currency code."),
+			"merchant":   prop("string", "Merchant ID the action is against."),
+			"items":      map[string]any{"type": "array", "description": "Product IDs in the proposed action.", "items": map[string]any{"type": "string"}},
 			"mandate_id": prop("string", "ID of the buyer's mandate this action is authorized against."),
-			"cart_id": prop("string", "Cart this action is bound to."),
+			"cart_id":    prop("string", "Cart this action is bound to."),
 		}, "mandate_id"),
 		Handler: func(ctx context.Context, p json.RawMessage) (any, error) {
 			return requestAuthorization(ctx, deps, p)
@@ -176,7 +176,7 @@ func RegisterTools(s *Server, deps Dependencies) {
 		Name:        "execute_authorized_checkout",
 		Description: "Execute an authorized payment for an order using a valid authorization_id from request_authorization. The backend re-verifies the authorization before any money movement.",
 		InputSchema: schema(map[string]any{
-			"order_id": prop("string", "Order to pay for, from create_checkout."),
+			"order_id":         prop("string", "Order to pay for, from create_checkout."),
 			"authorization_id": prop("string", "authorization_id returned by request_authorization."),
 		}, "order_id", "authorization_id"),
 		Handler: func(ctx context.Context, p json.RawMessage) (any, error) {
@@ -200,11 +200,11 @@ func RegisterTools(s *Server, deps Dependencies) {
 		Description: "Explain a policy decision in plain language.",
 		InputSchema: schema(map[string]any{
 			"failed_check": prop("string", "The policy check name that failed, e.g. \"amount_ceiling\", \"budget_tolerance\"."),
-			"amount": prop("integer", "Proposed amount, in paise."),
-			"currency": prop("string", "ISO 4217 currency code."),
-			"merchant": prop("string", "Merchant ID the action was against."),
-			"items": map[string]any{"type": "array", "description": "Product IDs in the proposed action.", "items": map[string]any{"type": "string"}},
-			"max_amount": prop("integer", "The mandate's maximum amount, in paise."),
+			"amount":       prop("integer", "Proposed amount, in paise."),
+			"currency":     prop("string", "ISO 4217 currency code."),
+			"merchant":     prop("string", "Merchant ID the action was against."),
+			"items":        map[string]any{"type": "array", "description": "Product IDs in the proposed action.", "items": map[string]any{"type": "string"}},
+			"max_amount":   prop("integer", "The mandate's maximum amount, in paise."),
 		}, "failed_check"),
 		Handler: func(ctx context.Context, p json.RawMessage) (any, error) {
 			return explainDecision(ctx, deps, p)
