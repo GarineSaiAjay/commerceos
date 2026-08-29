@@ -11,6 +11,7 @@ import (
 	"github.com/garinesaiajay/commerceos/analytics"
 	"github.com/garinesaiajay/commerceos/audit"
 	"github.com/garinesaiajay/commerceos/auth"
+	"github.com/garinesaiajay/commerceos/campaign"
 	"github.com/garinesaiajay/commerceos/commerce/cart"
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 	"github.com/garinesaiajay/commerceos/commerce/order"
@@ -108,6 +109,19 @@ func main() {
 	growthStore := growth.NewPostgresStore(dbPool)
 	growthAgent := growth.NewGrowthAgent(catalogRepo, growthStore)
 	growthHandler := growth.NewHandler(growthAgent, growthStore)
+
+	// -------------------------
+	// Campaign Orchestrator
+	// -------------------------
+	// growthStore already satisfies campaign.DemandSource structurally
+	// (RejectedDemandByProduct, backend/growth/demand.go) -- no adapter
+	// needed. catalogRepo already satisfies campaign.CatalogReader
+	// (GetProduct) the same way growth.GrowthAgent uses it.
+
+	campaignRepo := campaign.NewPostgresRepository(dbPool)
+	campaignEngine := campaign.NewEngine(campaign.DefaultConfig())
+	campaignAgent := campaign.NewCampaignAgent(catalogRepo, growthStore, campaignRepo, campaignEngine)
+	campaignHandler := campaign.NewHandler(campaignAgent, campaignRepo)
 
 	// -------------------------
 	// Phase 6: Analytics
@@ -512,6 +526,27 @@ func main() {
 		"/audit/verify",
 		authService.RequireOperator(policyHandler.VerifyAuditChain),
 	)
+
+	// Campaign orchestrator -- merchant-only end to end: there is no
+	// buyer-facing action here (unlike approval-requests, which a buyer
+	// can also approve/reject for their own cart), so every route below
+	// uses RequireOperator rather than OptionalOperator.
+	commerceMux.HandleFunc("/campaigns/propose", authService.RequireOperator(campaignHandler.Propose))
+	commerceMux.HandleFunc("/campaigns", authService.RequireOperator(campaignHandler.List))
+	commerceMux.HandleFunc("/campaigns/", authService.RequireOperator(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/campaigns/")
+		path = strings.Trim(path, "/")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/approve"):
+			campaignHandler.Approve(w, r)
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/reject"):
+			campaignHandler.Reject(w, r)
+		case r.Method == http.MethodGet:
+			campaignHandler.Get(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 
 	// Phase 8: safety / red-team -- merchant-only (files/JUDGE-FACING-GAPS.md P0.3).
 	commerceMux.HandleFunc("/safety/attacks", authService.RequireOperator(safetyHandler.ListAttacks))
