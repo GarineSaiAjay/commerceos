@@ -355,3 +355,108 @@ func TestOptionalOperatorAttachesValidOperator(t *testing.T) {
 		t.Fatalf("expected operator_1 attached to context, got ok=%v operator=%+v", gotOK, gotOperator)
 	}
 }
+
+// --- Login lockout ---
+
+// TestLoginLockoutAfterMaxAttempts proves repeated wrong-password
+// attempts for the same email are locked out after maxLoginAttempts,
+// and that a *correct* password is also rejected with
+// ErrTooManyAttempts while locked -- the lockout must block the
+// account outright, not just keep failing for the wrong reason.
+func TestLoginLockoutAfterMaxAttempts(t *testing.T) {
+	svc, _ := newTestService(t)
+	fixedNow := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return fixedNow }
+
+	for i := 0; i < maxLoginAttempts; i++ {
+		_, _, err := svc.Login(context.Background(), "owner@commerceos.demo", "wrong-password")
+		if err != ErrInvalidCredentials {
+			t.Fatalf("attempt %d: expected ErrInvalidCredentials, got %v", i+1, err)
+		}
+	}
+
+	// The very next attempt is locked out, even with the correct password.
+	_, _, err := svc.Login(context.Background(), "owner@commerceos.demo", testPassword)
+	if err != ErrTooManyAttempts {
+		t.Fatalf("expected ErrTooManyAttempts once locked out, got %v", err)
+	}
+}
+
+// TestLoginLockoutExpires proves the lockout is temporary: once
+// lockoutDuration has passed, a correct login succeeds again.
+func TestLoginLockoutExpires(t *testing.T) {
+	svc, _ := newTestService(t)
+	fixedNow := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return fixedNow }
+
+	for i := 0; i < maxLoginAttempts; i++ {
+		svc.Login(context.Background(), "owner@commerceos.demo", "wrong-password")
+	}
+	if _, _, err := svc.Login(context.Background(), "owner@commerceos.demo", testPassword); err != ErrTooManyAttempts {
+		t.Fatalf("expected lockout immediately after max attempts, got %v", err)
+	}
+
+	// Still locked one second before the lockout expires.
+	svc.now = func() time.Time { return fixedNow.Add(lockoutDuration).Add(-time.Second) }
+	if _, _, err := svc.Login(context.Background(), "owner@commerceos.demo", testPassword); err != ErrTooManyAttempts {
+		t.Fatalf("expected still locked out just before lockoutDuration, got %v", err)
+	}
+
+	// Unlocked one second after.
+	svc.now = func() time.Time { return fixedNow.Add(lockoutDuration).Add(time.Second) }
+	if _, _, err := svc.Login(context.Background(), "owner@commerceos.demo", testPassword); err != nil {
+		t.Fatalf("expected login to succeed once lockoutDuration has passed, got %v", err)
+	}
+}
+
+// TestLoginSuccessClearsAttempts proves a successful login resets the
+// failure count -- a few mistyped passwords followed by the correct
+// one must not count toward a later lockout.
+func TestLoginSuccessClearsAttempts(t *testing.T) {
+	svc, _ := newTestService(t)
+
+	for i := 0; i < maxLoginAttempts-1; i++ {
+		if _, _, err := svc.Login(context.Background(), "owner@commerceos.demo", "wrong-password"); err != ErrInvalidCredentials {
+			t.Fatalf("attempt %d: expected ErrInvalidCredentials, got %v", i+1, err)
+		}
+	}
+	if _, _, err := svc.Login(context.Background(), "owner@commerceos.demo", testPassword); err != nil {
+		t.Fatalf("expected the correct password to succeed before lockout, got %v", err)
+	}
+
+	// Attempts reset: another near-miss run of failures shouldn't be
+	// one attempt away from locking out because of the earlier ones.
+	for i := 0; i < maxLoginAttempts-1; i++ {
+		svc.Login(context.Background(), "owner@commerceos.demo", "wrong-password")
+	}
+	if _, _, err := svc.Login(context.Background(), "owner@commerceos.demo", testPassword); err != nil {
+		t.Fatalf("expected login to succeed: failure count should have reset after the earlier success, got %v", err)
+	}
+}
+
+// TestLoginLockoutIsPerEmail proves a lockout on one email does not
+// block logins for a different, unrelated email.
+func TestLoginLockoutIsPerEmail(t *testing.T) {
+	svc, repo := newTestService(t)
+	hash, err := HashPassword("Other!Pass2026")
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	repo.seedOperator(OperatorRecord{
+		ID:           "operator_2",
+		MerchantID:   "merchant_002",
+		Email:        "second@commerceos.demo",
+		PasswordHash: hash,
+	})
+
+	for i := 0; i < maxLoginAttempts; i++ {
+		svc.Login(context.Background(), "owner@commerceos.demo", "wrong-password")
+	}
+	if _, _, err := svc.Login(context.Background(), "owner@commerceos.demo", testPassword); err != ErrTooManyAttempts {
+		t.Fatalf("expected owner@commerceos.demo to be locked out, got %v", err)
+	}
+
+	if _, _, err := svc.Login(context.Background(), "second@commerceos.demo", "Other!Pass2026"); err != nil {
+		t.Fatalf("expected an unrelated email to be unaffected by another email's lockout, got %v", err)
+	}
+}

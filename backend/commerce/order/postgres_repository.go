@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/garinesaiajay/commerceos/audit"
@@ -366,17 +367,21 @@ func (r *PostgresRepository) CheckoutCart(
 	// already-committed checkout.
 	if r.auditWriter != nil {
 		if discountAmount > 0 {
-			_ = r.auditWriter.Write(ctx, "system", "campaign_discount_applied", "campaign", appliedCampaignID, map[string]any{
+			if err := r.auditWriter.Write(ctx, "system", "campaign_discount_applied", "campaign", appliedCampaignID, map[string]any{
 				"order_id":        order.ID,
 				"product_id":      appliedProductID,
 				"discount_amount": discountAmount,
-			})
+			}); err != nil {
+				log.Printf("[order] audit write failed for campaign_discount_applied (order %s, campaign %s): %v", order.ID, appliedCampaignID, err)
+			}
 		}
 		for _, skipped := range skippedCampaigns {
-			_ = r.auditWriter.Write(ctx, "system", "campaign_budget_exhausted", "campaign", skipped.campaignID, map[string]any{
+			if err := r.auditWriter.Write(ctx, "system", "campaign_budget_exhausted", "campaign", skipped.campaignID, map[string]any{
 				"order_id":   order.ID,
 				"product_id": skipped.productID,
-			})
+			}); err != nil {
+				log.Printf("[order] audit write failed for campaign_budget_exhausted (order %s, campaign %s): %v", order.ID, skipped.campaignID, err)
+			}
 		}
 	}
 

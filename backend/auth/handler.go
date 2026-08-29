@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -45,6 +46,15 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	token, operator, err := h.service.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
+		if errors.Is(err, ErrTooManyAttempts) {
+			// Distinct from the invalid-credentials response below: telling
+			// the caller they're rate-limited doesn't leak whether the
+			// email exists beyond what their own repeated attempts already
+			// imply, and a legitimate operator locked out by a slow typo
+			// needs to know to wait rather than keep guessing.
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+			return
+		}
 		// Same status and message whether the email is unknown or the
 		// password is wrong -- see Service.Login.
 		http.Error(w, "invalid email or password", http.StatusUnauthorized)

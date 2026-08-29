@@ -55,8 +55,12 @@ func (r *PostgresRepository) GetMandate(
 
 	m.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
 
-	_ = json.Unmarshal(categories, &m.AllowedCategories)
-	_ = json.Unmarshal(methods, &m.AllowedPaymentMethods)
+	if err := json.Unmarshal(categories, &m.AllowedCategories); err != nil {
+		return Mandate{}, fmt.Errorf("unmarshal allowed categories: %w", err)
+	}
+	if err := json.Unmarshal(methods, &m.AllowedPaymentMethods); err != nil {
+		return Mandate{}, fmt.Errorf("unmarshal allowed payment methods: %w", err)
+	}
 
 	return m, nil
 }
@@ -129,7 +133,9 @@ func (r *PostgresRepository) GetAuthorization(
 
 	a.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
 
-	_ = json.Unmarshal(items, &a.Items)
+	if err := json.Unmarshal(items, &a.Items); err != nil {
+		return Authorization{}, fmt.Errorf("unmarshal authorization items: %w", err)
+	}
 
 	return a, nil
 }
@@ -291,7 +297,9 @@ func (r *PostgresRepository) GetActiveAuthorization(
 	}
 
 	auth.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
-	_ = json.Unmarshal(items, &auth.Items)
+	if err := json.Unmarshal(items, &auth.Items); err != nil {
+		return Authorization{}, fmt.Errorf("unmarshal authorization items: %w", err)
+	}
 
 	return auth, nil
 }
@@ -393,7 +401,9 @@ func (r *PostgresRepository) GetApprovalRequest(
 	if authID != nil {
 		a.AuthorizationID = *authID
 	}
-	_ = json.Unmarshal(items, &a.Items)
+	if err := json.Unmarshal(items, &a.Items); err != nil {
+		return ApprovalRequest{}, fmt.Errorf("unmarshal approval request items: %w", err)
+	}
 
 	return a, nil
 }
@@ -432,7 +442,9 @@ func (r *PostgresRepository) GetPendingApprovalForAction(
 		return ApprovalRequest{}, fmt.Errorf("get pending approval: %w", err)
 	}
 
-	_ = json.Unmarshal(rawItems, &req.Items)
+	if err := json.Unmarshal(rawItems, &req.Items); err != nil {
+		return ApprovalRequest{}, fmt.Errorf("unmarshal approval request items: %w", err)
+	}
 
 	return req, nil
 }
@@ -504,7 +516,9 @@ func (r *PostgresRepository) ListApprovalRequests(
 		if authID != nil {
 			a.AuthorizationID = *authID
 		}
-		_ = json.Unmarshal(items, &a.Items)
+		if err := json.Unmarshal(items, &a.Items); err != nil {
+			return nil, fmt.Errorf("unmarshal approval request items: %w", err)
+		}
 		out = append(out, a)
 	}
 	if err := rows.Err(); err != nil {
@@ -543,7 +557,9 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, limit int) ([]Run, er
 		); err != nil {
 			return nil, fmt.Errorf("scan run: %w", err)
 		}
-		_ = json.Unmarshal(items, &run.Items)
+		if err := json.Unmarshal(items, &run.Items); err != nil {
+			return nil, fmt.Errorf("unmarshal run items: %w", err)
+		}
 		out = append(out, run)
 	}
 	return out, rows.Err()
@@ -574,7 +590,9 @@ func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (Run, err
 	if err != nil {
 		return Run{}, fmt.Errorf("get run: %w", err)
 	}
-	_ = json.Unmarshal(items, &run.Items)
+	if err := json.Unmarshal(items, &run.Items); err != nil {
+		return Run{}, fmt.Errorf("unmarshal run items: %w", err)
+	}
 
 	run.Steps = append(run.Steps, RunStep{
 		Stage:     "proposed",
