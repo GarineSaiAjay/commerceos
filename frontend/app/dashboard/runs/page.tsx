@@ -44,7 +44,10 @@ export default function RunsPage() {
   // simply adds a header the unguarded endpoint ignores.
   const loadRuns = useCallback(() => {
     authFetch("/runs?limit=50", { cache: "no-store" })
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error("runs request failed");
+        return r.json();
+      })
       .then((d: Run[]) => setRuns(d))
       .catch(() => setError("Could not load agent runs."));
   }, []);
