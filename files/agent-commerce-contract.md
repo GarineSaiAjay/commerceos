@@ -1,81 +1,108 @@
-# Agent Commerce Contract (Phase 4)
+# Agent Commerce Contract
 
-This is the documented request/response contract for the Buyer Agent.
-Every endpoint states what it **may** do and what it is **explicitly not
-allowed** to do. The Buyer Agent produces *proposals* only — it never
-moves money.
+This is the documented request/response contract for how an AI agent
+(buyer-side) transacts against CommerceOS. Every endpoint states what it
+**may** do and what it is **explicitly not allowed** to do. The Buyer
+Agent produces *proposals* only — it never moves money.
 
 All endpoints are served by the Commerce Service (default `:8081`).
+This document was rewritten to match the actual route registrations in
+`backend/cmd/server/main.go` — an earlier version described a
+decomposed `/agent/catalog` → `/agent/search` → `/agent/cart` →
+`/agent/authorize` → `/agent/payment` flow that was never implemented;
+the real surface is below.
 
 ---
 
-## GET /agent/catalog
+## GET /products
 
 - **Allowed:** List the full seeded catalog (AI-native schema: features,
   attributes, use_cases, price, availability).
 - **Not allowed:** Anything else.
 
-## POST /agent/search
+## GET /products/{id} · GET /variants/{id}
 
-**Request:**
-```json
-{ "intent": { "budget": 25000, "category": "earbuds", "priority": "active_noise_cancellation" } }
-```
-
-**Response:** ranked products (best-first). Hard constraints (price ≤
-budget, `availability > 0`) are applied deterministically server-side;
-the LLM never computes or skips them.
-
-- **Allowed:** Rank products by soft preference (features, use_cases).
-- **Not allowed:** Change prices, invent availability, bypass budget.
-
-## POST /agent/cart
-
-Builds a cart from named `product_id`s. The Cart service (Phase 1)
-looks up authoritative price/availability and applies constraints
-(`purchase_constraints.max_quantity`).
-
-- **Allowed:** Name product IDs and quantities.
-- **Not allowed:** Write prices or availability directly.
+Read a single product or variant. Read-only.
 
 ## POST /agent/checkout
+
+A single fused call that does intent extraction, catalog search, and
+Proposed Action assembly — there is no separate search or cart-building
+step in the agent-facing surface (a human-facing cart still exists at
+`POST /carts` / `POST /carts/{id}/items`, used by the checkout UI, not
+by the agent contract).
 
 **Request:**
 ```json
 { "prompt": "I need wireless earbuds for my sister. Budget ₹25,000...", "merchant": "merchant_001" }
 ```
 
-**Response:** a `CheckoutPlan` containing a
+**Response:** a `CheckoutPlan` — the extracted `Intent`, a
 `policy.ProposedAction` (`CREATE_ORDER` with amount/currency/merchant/
-items) + reasoning.
+items), the selected `product_id`, and a `reasoning` string naming the
+actual product and numbers behind the choice.
 
-- **Allowed:** Produce a Proposed Action from intent + ranked search.
+- **Allowed:** Rank products by soft preference (features, use_cases)
+  and produce a Proposed Action from intent + ranked search. Hard
+  constraints (price ≤ budget, `availability > 0`) are applied
+  deterministically server-side (`agents.Searcher.Search`); the LLM
+  never computes or skips them.
 - **Not allowed (explicit):** Perform a payment, create a Razorpay
-  order, or otherwise move money. Calling `/agent/checkout` alone NEVER
-  results in a Razorpay call — verified by the adapter call counter.
+  order, write prices or availability, or otherwise move money. Calling
+  `/agent/checkout` alone NEVER results in a Razorpay call — verified
+  by the adapter call counter (`GET /adapter/calls`).
+- Ambiguous prompts (missing budget, "buy me something") return an
+  error rather than a guessed proposal — the agent asks for
+  clarification instead of fabricating an intent.
 
 To execute, the caller must take the Proposed Action and route it via
-the Policy Engine (`/policy/propose` → authorization) — never directly to
-the Payment Service.
+the Policy Engine (`POST /policy/propose` → authorization) — never
+directly to the Payment Service.
 
-## POST /agent/authorize
+## POST /policy/propose
 
-Submits the Proposed Action to the Phase 3 Policy Engine. Returns
-APPROVED/REJECTED + `authorization_id` when approved. No money moves
-here either.
+Submits a Proposed Action to the deterministic Policy Engine.
 
-## POST /agent/payment
+**Request:**
+```json
+{ "action": "CREATE_ORDER", "amount": 2490000, "currency": "INR", "merchant": "merchant_001", "items": ["airpods-pro-2"], "cart_id": "cart_123", "mandate_id": "mnd_demo" }
+```
 
-Executes an approved authorization through the Payment Service using the
-`authorization_id`. This is the ONLY link that touches money movement,
-and it requires a valid authorization issued by the Policy Engine.
+**Response:** APPROVED/REJECTED + `authorization_id` when approved, or
+the specific `failed_check` and a human-readable reason when rejected.
+No money moves here either.
 
-- **Allowed:** Move money for an authorization_id issued by Policy.
-- **Not allowed:** Any other path (no auth is required and enforced).
+## POST /orders/{id}/payment
 
-## GET /agent/order/{id}
+Executes an approved authorization through the Payment Service. This is
+the ONLY endpoint that touches money movement, and it requires a valid
+`Authorization-Id` header issued by `/policy/propose`.
 
-Reads the order status. Read-only.
+- **Allowed:** Move money for an authorization issued by Policy.
+- **Not allowed:** Any other path (no auth is required and enforced —
+  there is no alternate entry point that skips this check).
+
+## GET /orders/{id} · GET /orders?merchant_id=...
+
+Reads order status / order history. Read-only.
+
+## POST /mcp
+
+The same capabilities above, exposed as narrow MCP tools (`search_products`,
+`create_checkout`, `request_authorization`, `explain_decision`, and
+others — a `tools/list` JSON-RPC call enumerates all of them) over JSON-RPC
+2.0, for an MCP-speaking agent rather than a direct HTTP client. Same
+governing rule applies: there is no single `make_payment(amount)` tool
+with unlimited blast radius — money movement is always a distinct,
+narrow `request_authorization` step gated by the same Policy Engine.
+
+**Handshake:** `initialize` returns the spec's `InitializeResult` shape
+(`protocolVersion`, `capabilities`, `serverInfo`), echoing back the
+client's requested `protocolVersion` when present. **Transport:** plain
+HTTP POST JSON-RPC only — the server does not implement the
+Streamable-HTTP transport's server-initiated SSE stream, so an MCP
+client that requires that half of the spec (rather than simple
+synchronous request/response) will not work against this endpoint.
 
 ---
 
