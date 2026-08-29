@@ -3,6 +3,7 @@ package growth
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 )
@@ -32,6 +33,15 @@ type Recommendation struct {
 	Decision            string  `json:"decision"`
 	PolicyVersion       string  `json:"policy_version"`
 	Reason              string  `json:"reason"`
+	// CreatedAt, CartTotalAtEvaluation, and BudgetAtEvaluation let the
+	// campaign agent (backend/campaign/) recompute, for a REJECT
+	// decision, whether a given discount would have brought the cart
+	// under budget -- without them "N customers would now fit" is an
+	// unverifiable claim. Nullable in the DB (existing rows predate this
+	// column); zero value here means "unknown", not "zero budget".
+	CreatedAt             time.Time `json:"created_at,omitempty"`
+	CartTotalAtEvaluation int64     `json:"cart_total_at_evaluation,omitempty"`
+	BudgetAtEvaluation    int64     `json:"budget_at_evaluation,omitempty"`
 }
 
 // CatalogReader is the catalog surface the growth agent needs.
@@ -84,6 +94,8 @@ func (g *GrowthAgent) EvaluateCandidate(
 		RiskCost:            inputs.RiskCost,
 		ExpectedValue:       ev,
 		PolicyVersion:       PolicyVersion,
+		CartTotalAtEvaluation: cartTotal,
+		BudgetAtEvaluation:    budget.Budget,
 	}
 
 	if !budget.Eligible(newTotal) {
