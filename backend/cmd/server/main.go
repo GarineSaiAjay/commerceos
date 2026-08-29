@@ -119,12 +119,26 @@ func main() {
 	// Phase 4: Buyer Agent
 	// -------------------------
 
-	// Use a real LLM extractor (OpenRouter) when configured; otherwise
-	// fall back to the deterministic extractor so the app and tests work
-	// without an API key.
-	var agentExtractor agents.IntentExtractor = agents.NewLLMExtractorFromEnv()
-	if agentExtractor == nil {
-		agentExtractor = agents.NewDeterministicExtractor()
+	// Use a real LLM extractor (OpenRouter) when configured, wrapped so
+	// any failure (timeout, network error, bad response) automatically
+	// recovers to the deterministic extractor instead of failing the
+	// request -- see FallbackExtractor's doc comment. Without an API key
+	// at all, the deterministic extractor is used directly.
+	//
+	// llmExtractor is deliberately compared to nil BEFORE being assigned
+	// to the agents.IntentExtractor interface variable below, not after:
+	// agents.NewLLMExtractorFromEnv() returns a concrete *agents.LLMExtractor,
+	// and a nil pointer of a concrete type, once boxed into an interface
+	// value, no longer compares equal to nil (a well-known Go footgun --
+	// the interface value then has a non-nil type descriptor even though
+	// its data pointer is nil). Comparing the concrete pointer directly,
+	// while it is still a concrete pointer, avoids that entirely.
+	llmExtractor := agents.NewLLMExtractorFromEnv()
+	deterministicExtractor := agents.NewDeterministicExtractor()
+
+	var agentExtractor agents.IntentExtractor = deterministicExtractor
+	if llmExtractor != nil {
+		agentExtractor = agents.NewFallbackExtractor(llmExtractor, deterministicExtractor)
 	}
 	agentSearcher := agents.NewSearcher(catalogRepo)
 	buyerAgent := agents.NewBuyerAgent(agentExtractor, agentSearcher)

@@ -36,7 +36,14 @@ func NewLLMExtractor(apiKey, baseURL, model string) *LLMExtractor {
 		apiKey:  apiKey,
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		model:   model,
-		client:  &http.Client{Timeout: 30 * time.Second},
+		// Previously 30s: since main.go now wraps this extractor in a
+		// FallbackExtractor that recovers to the deterministic extractor
+		// on any error, a slow/unreachable LLM no longer needs a long
+		// timeout to "give it every chance" -- it only makes the buyer
+		// wait longer before getting the (perfectly good) fallback
+		// answer. 10s is generous for a short JSON-only completion from
+		// a small/fast model while keeping worst-case latency bounded.
+		client: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
