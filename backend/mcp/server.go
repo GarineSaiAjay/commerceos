@@ -52,9 +52,9 @@ const protocolVersion = "2024-11-05"
 // to) passes a hand-rolled JSON-RPC smoke test but fails the real
 // handshake.
 type InitializeResult struct {
-	ProtocolVersion string          `json:"protocolVersion"`
-	Capabilities    map[string]any  `json:"capabilities"`
-	ServerInfo      InitializeInfo  `json:"serverInfo"`
+	ProtocolVersion string         `json:"protocolVersion"`
+	Capabilities    map[string]any `json:"capabilities"`
+	ServerInfo      InitializeInfo `json:"serverInfo"`
 }
 
 // InitializeInfo identifies this server in an InitializeResult.

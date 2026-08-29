@@ -162,9 +162,9 @@ func TestDeterministicExtractorCoversFullCatalog(t *testing.T) {
 	extractor := NewDeterministicExtractor()
 
 	cases := []struct {
-		prompt           string
-		wantCategory     string
-		wantPriority     string
+		prompt       string
+		wantCategory string
+		wantPriority string
 	}{
 		{
 			prompt:       "I need a MagSafe charger, budget ₹5,000, fast charging and magnetic alignment please.",
