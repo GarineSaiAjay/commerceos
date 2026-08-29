@@ -94,6 +94,13 @@ func parseCategory(lower string) string {
 		strings.Contains(lower, "warranty") || strings.Contains(lower, "applecare") ||
 		strings.Contains(lower, "ear tip") || strings.Contains(lower, "eartip"):
 		return "accessories"
+	// "tracking" is airtag-4pack's use_cases tag -- the catalog's first
+	// non-audio product, added alongside airpods-pro-3 and beats-fit-pro
+	// (db/seeds/001_catalog.sql) so "something to track my luggage" or
+	// "find my keys" resolves to a real product instead of nothing.
+	case strings.Contains(lower, "airtag") || strings.Contains(lower, "tracker") ||
+		strings.Contains(lower, "track my") || strings.Contains(lower, "find my"):
+		return "tracking"
 	default:
 		return ""
 	}
@@ -124,6 +131,18 @@ func parsePriority(lower string) string {
 		return "comfort_fit"
 	case strings.Contains(lower, "warranty") || strings.Contains(lower, "support"):
 		return "extended_warranty"
+	// secure_fit/sweat_resistant are beats-fit-pro's distinguishing
+	// features (db/seeds/001_catalog.sql) -- without this, a workout/gym
+	// request would score identically against every earbuds SKU instead
+	// of preferring the one actually built for that use case.
+	case strings.Contains(lower, "workout") || strings.Contains(lower, "gym") ||
+		strings.Contains(lower, "exercise") || strings.Contains(lower, "run") ||
+		strings.Contains(lower, "sweat"):
+		return "secure_fit"
+	// heart_rate_sensing is airpods-pro-3's distinguishing feature over
+	// the otherwise-identical airpods-pro-2 (same price, same ANC).
+	case strings.Contains(lower, "heart rate"):
+		return "heart_rate_sensing"
 	default:
 		return ""
 	}

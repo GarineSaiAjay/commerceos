@@ -405,3 +405,130 @@ VALUES (
     '{}'
 )
 ON CONFLICT (id) DO NOTHING;
+
+
+-- AirPods Pro (3rd Gen) -- added post-buildathon-demo to round out the
+-- catalog beyond the original 4 SKUs; Apple's own India launch price for
+-- the 3rd generation (INR 24,900, per Apple's India store, Aug 2026) is
+-- the same as the still-listed 2nd generation above, so "priority" (heart
+-- rate sensing vs. none) rather than price is what actually distinguishes
+-- them for the agent -- exercising the same scoring path as
+-- active_noise_cancellation elsewhere in this file.
+INSERT INTO products (
+    id, merchant_id, title, price_amount, price_currency, availability,
+    features, compatibility, use_cases, return_policy, shipping,
+    attributes, purchase_constraints
+)
+VALUES (
+    'airpods-pro-3',
+    'merchant_001',
+    'AirPods Pro (3rd Gen)',
+    2490000,
+    'INR',
+    15,
+    '["active_noise_cancellation", "transparency_mode", "battery_life", "heart_rate_sensing"]',
+    '["ios", "macos"]',
+    '["earbuds", "travel", "music", "calls", "fitness"]',
+    '{"days": 7}',
+    '{"estimated_days": 3}',
+    '{"anc": true, "battery_hours": 24, "form_factor": "in_ear", "heart_rate_sensor": true}',
+    '{"max_quantity": 2}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'airpods-pro-3-default',
+    'airpods-pro-3',
+    'AIRPODS-PRO-3',
+    2490000,
+    15,
+    '{"color": "white"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+
+-- AirTag (4 Pack) -- the catalog's first non-audio product. Deliberately
+-- broadens what the shopping agent can actually match: previously every
+-- SKU shared the same "earbuds"/"accessories" use_cases, so any prompt
+-- outside that space (e.g. "something to track my luggage") had nothing
+-- to rank above an unrelated product. Price is Apple's own India store
+-- listing (INR 12,900, Aug 2026).
+INSERT INTO products (
+    id, merchant_id, title, price_amount, price_currency, availability,
+    features, compatibility, use_cases, return_policy, shipping,
+    attributes, purchase_constraints
+)
+VALUES (
+    'airtag-4pack',
+    'merchant_001',
+    'AirTag (4 Pack)',
+    1290000,
+    'INR',
+    40,
+    '["precision_finding", "long_battery_life", "water_resistant"]',
+    '["ios"]',
+    '["tracking", "travel", "accessories"]',
+    '{"days": 7}',
+    '{"estimated_days": 3}',
+    '{"pack_size": 4, "replaceable_battery": true}',
+    '{"max_quantity": 3}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'airtag-4pack-default',
+    'airtag-4pack',
+    'AIRTAG-4PACK',
+    1290000,
+    40,
+    '{}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+
+-- Beats Fit Pro -- the catalog's first non-AirPods earbuds, aimed at the
+-- workout/gym use case (wing-tip secure fit) that no existing SKU covers.
+-- Price is a current India retail price (INR 15,990, Croma, via
+-- Smartprix, Aug 2026), not an Apple-store list price like the AirPods
+-- entries above, since Beats products aren't sold directly on
+-- apple.com/in the way AirPods are.
+INSERT INTO products (
+    id, merchant_id, title, price_amount, price_currency, availability,
+    features, compatibility, use_cases, return_policy, shipping,
+    attributes, purchase_constraints
+)
+VALUES (
+    'beats-fit-pro',
+    'merchant_001',
+    'Beats Fit Pro',
+    1599000,
+    'INR',
+    18,
+    '["active_noise_cancellation", "secure_fit", "sweat_resistant"]',
+    '["ios", "android"]',
+    '["earbuds", "fitness", "calls"]',
+    '{"days": 7}',
+    '{"estimated_days": 3}',
+    '{"anc": true, "battery_hours": 27, "form_factor": "in_ear_wingtip"}',
+    '{"max_quantity": 2}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'beats-fit-pro-default',
+    'beats-fit-pro',
+    'BEATS-FIT-PRO',
+    1599000,
+    18,
+    '{"color": "black"}'
+)
+ON CONFLICT (id) DO NOTHING;

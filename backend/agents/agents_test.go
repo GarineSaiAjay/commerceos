@@ -181,6 +181,25 @@ func TestDeterministicExtractorCoversFullCatalog(t *testing.T) {
 			wantCategory: "accessories",
 			wantPriority: "comfort_fit",
 		},
+		// The three products added alongside this test's original three
+		// cases in the airpods-pro-3/airtag-4pack/beats-fit-pro expansion
+		// (db/seeds/001_catalog.sql) -- same "keyword must resolve to a
+		// real features/use_cases string" requirement as above.
+		{
+			prompt:       "I need something to track my luggage, budget ₹2,000.",
+			wantCategory: "tracking",
+			wantPriority: "",
+		},
+		{
+			prompt:       "I want new AirPods with heart rate sensing, budget ₹25,000, earbuds for calls.",
+			wantCategory: "earbuds",
+			wantPriority: "heart_rate_sensing",
+		},
+		{
+			prompt:       "I need workout earbuds for the gym, budget ₹16,000.",
+			wantCategory: "earbuds",
+			wantPriority: "secure_fit",
+		},
 	}
 
 	for _, c := range cases {
