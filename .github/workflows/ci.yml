@@ -89,6 +89,7 @@ jobs:
         working-directory: .
         run: |
           PGPASSWORD=commerceos_dev_password psql -h localhost -p 5433 -U commerceos -d commerceos -f db/seeds/001_catalog.sql
+          PGPASSWORD=commerceos_dev_password psql -h localhost -p 5433 -U commerceos -d commerceos -f db/seeds/002_operator.sql
 
       - name: Run go vet
         run: go vet ./...
