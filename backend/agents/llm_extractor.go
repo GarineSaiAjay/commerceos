@@ -23,6 +23,19 @@ type LLMExtractor struct {
 	client  *http.Client
 }
 
+// llmRequestTimeout bounds how long Extract waits on the whole chat
+// completion round trip (connect + full response body). 60s rather than
+// a shorter ceiling because OpenRouter response time varies with model
+// load and the caller's own network -- a real (if intermittent) failure
+// mode is "the model was just slow, not actually down", and 30s left too
+// little headroom for that on a slower connection. Safe to keep this
+// generous now that main.go wraps this extractor in a FallbackExtractor
+// (fallback_extractor.go): a timeout here just means a slower recovery
+// to the deterministic extractor, not a failed request, so there's no
+// longer a reason to trade away a legitimately-slow-but-good LLM answer
+// for a snappier failure -- see fallback_extractor.go's own doc comment.
+const llmRequestTimeout = 60 * time.Second
+
 // NewLLMExtractor builds an extractor. baseURL defaults to OpenRouter.
 // Use NewLLMExtractorFromEnv to read OPENROUTER_API_KEY/LLM_BASE_URL/LLM_MODEL.
 func NewLLMExtractor(apiKey, baseURL, model string) *LLMExtractor {
@@ -36,14 +49,7 @@ func NewLLMExtractor(apiKey, baseURL, model string) *LLMExtractor {
 		apiKey:  apiKey,
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		model:   model,
-		// Previously 30s: since main.go now wraps this extractor in a
-		// FallbackExtractor that recovers to the deterministic extractor
-		// on any error, a slow/unreachable LLM no longer needs a long
-		// timeout to "give it every chance" -- it only makes the buyer
-		// wait longer before getting the (perfectly good) fallback
-		// answer. 10s is generous for a short JSON-only completion from
-		// a small/fast model while keeping worst-case latency bounded.
-		client: &http.Client{Timeout: 10 * time.Second},
+		client:  &http.Client{Timeout: llmRequestTimeout},
 	}
 }
 
