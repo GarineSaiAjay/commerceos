@@ -82,13 +82,19 @@ func TestPostgresRepositoryListProducts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// db/seeds/001_catalog.sql seeds 10 products as of commit d30f155
-	// ("fix(catalog): tag products so agent matching can score, and add
-	// five more", 2026-08-28), which grew the catalog from 5 to 10 without
-	// updating this count -- this assertion was stale on main before this
-	// branch existed and is fixed here since it blocks this PR's CI.
-	if len(products) != 10 {
-		t.Fatalf("expected 10 products, got %d", len(products))
+	// db/seeds/001_catalog.sql seeds 13 products: the original 10 (as of
+	// commit d30f155, "fix(catalog): tag products so agent matching can
+	// score, and add five more", 2026-08-28) plus airpods-pro-3,
+	// airtag-4pack, and beats-fit-pro added afterward to give the
+	// shopping agent demo more than one product family to differentiate
+	// on. This exact assertion has now gone stale twice for the same
+	// reason (a hardcoded product count with no link back to the seed
+	// file) -- same class of bug as the hardcoded product *lists* fixed
+	// elsewhere this session (policy/model.go, campaign/model.go,
+	// growth/simulator.go): whoever adds the next product needs to
+	// remember this count lives here too.
+	if len(products) != 13 {
+		t.Fatalf("expected 13 products, got %d", len(products))
 	}
 }
 
