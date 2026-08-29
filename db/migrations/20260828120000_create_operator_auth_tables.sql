@@ -3,7 +3,7 @@
 -- Operator accounts: the merchant's own back-office users, distinct from
 -- buyers (who check out as guests). Gates the merchant dashboard and the
 -- merchant-review path for Level 2/3 approval requests -- see
--- files/JUDGE-FACING-GAPS.md P0.3.
+-- files/AUTH.md.
 CREATE TABLE operators (
     id TEXT PRIMARY KEY,
     merchant_id TEXT NOT NULL REFERENCES merchants(id),

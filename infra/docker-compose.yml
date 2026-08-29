@@ -19,6 +19,17 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+    # Backend/migrate wait on this rather than just "postgres has
+    # started" -- Postgres routinely isn't ready to accept connections
+    # in the first second or two after its container starts, and
+    # nothing downstream previously waited for that (see the backend
+    # service's depends_on below).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-commerceos} -d ${POSTGRES_DB:-commerceos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:8
     container_name: commerceos-redis
@@ -31,6 +42,44 @@ services:
       - redis_data:/data
 
     command: redis-server --appendonly yes
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-off: applies goose migrations, then both seed files, then exits.
+  # Every INSERT in db/seeds/*.sql uses ON CONFLICT ... DO NOTHING, so
+  # re-running this on every `docker compose up` (not just the first)
+  # is safe and idempotent -- it never fails against an already-seeded
+  # database. See db/Dockerfile.migrate for why this exists.
+  migrate:
+    build:
+      context: ..
+      dockerfile: db/Dockerfile.migrate
+    container_name: commerceos-migrate
+
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-commerceos}:${POSTGRES_PASSWORD:-commerceos_dev_password}@postgres:5432/${POSTGRES_DB:-commerceos}?sslmode=disable
+
+    volumes:
+      - ../db:/db:ro
+
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        goose -dir /db/migrations postgres "$$DATABASE_URL" up
+        psql "$$DATABASE_URL" -f /db/seeds/001_catalog.sql
+        psql "$$DATABASE_URL" -f /db/seeds/002_operator.sql
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    restart: "no"
 
   backend:
     build:
@@ -62,15 +111,51 @@ services:
       AGENT_API_PORT: "8082"
       DASHBOARD_PORT: "8083"
 
+      # Browser origin allowed to call the Commerce Service (CORS).
+      # Defaults to the frontend service below; override for a public
+      # demo URL.
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+
     ports:
       - "8080:8080"
       - "8081:8081"
       - "8082:8082"
       - "8083:8083"
 
+    # Previously just `depends_on: [postgres, redis]` with no health
+    # condition -- on a genuinely fresh `up`, Postgres/Redis often
+    # aren't ready the instant their containers start, and the backend
+    # had no retry/backoff around its initial connection either (see
+    # backend/infra/db/postgres.go), so it would crash-loop once before
+    # `restart: unless-stopped` recovered it. Waiting on service_healthy
+    # here, plus migrate having actually finished, removes that
+    # avoidable first-run crash-loop; the backend's own connection retry
+    # (added alongside this) is the second, independent layer of
+    # defense for anything this ordering doesn't catch.
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Previously undefined entirely -- the frontend only ever ran via a
+  # separate manual `npm install && npm run dev`, even though README's
+  # "Getting started" step 2 listed "frontend :3000" alongside the
+  # services docker-compose actually started. See frontend/Dockerfile.
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: commerceos-frontend
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

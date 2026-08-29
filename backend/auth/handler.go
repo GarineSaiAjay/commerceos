@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -45,6 +46,15 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	token, operator, err := h.service.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
+		if errors.Is(err, ErrTooManyAttempts) {
+			// Distinct from the invalid-credentials response below: telling
+			// the caller they're rate-limited doesn't leak whether the
+			// email exists beyond what their own repeated attempts already
+			// imply, and a legitimate operator locked out by a slow typo
+			// needs to know to wait rather than keep guessing.
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+			return
+		}
 		// Same status and message whether the email is unknown or the
 		// password is wrong -- see Service.Login.
 		http.Error(w, "invalid email or password", http.StatusUnauthorized)
@@ -104,7 +114,7 @@ func OperatorFromContext(ctx context.Context) (Operator, bool) {
 // or invalid token is rejected with 401 before next ever runs. Use for
 // routes that are exclusively for the merchant's own back office
 // (dashboard data, safety/red-team controls, the approval-request and
-// run lists) -- see files/JUDGE-FACING-GAPS.md P0.3.
+// run lists) -- see files/AUTH.md.
 func (s *Service) RequireOperator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		operator, err := s.ValidateToken(r.Context(), bearerToken(r))
@@ -126,7 +136,7 @@ func (s *Service) RequireOperator(next http.HandlerFunc) http.HandlerFunc {
 // buyer confirming their own purchase (proven by supplying the cart_id
 // the request was created for) and a logged-in merchant operator
 // reviewing from the dashboard (proven by this token) -- see
-// files/JUDGE-FACING-GAPS.md P0.3.
+// files/AUTH.md.
 func (s *Service) OptionalOperator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)

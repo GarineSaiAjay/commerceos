@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/garinesaiajay/commerceos/statemachine"
 )
@@ -121,7 +122,11 @@ func (a *WebhookApplierImpl) ApplyCaptured(
 	}
 
 	if a.audit != nil {
-		_ = a.audit.Write(
+		// Best-effort: a failed audit write must not fail the webhook
+		// apply (the payment/order state transition above already
+		// committed), but it was previously discarded silently -- an
+		// audit-log outage would leave no trace anywhere. Log it.
+		if err := a.audit.Write(
 			ctx,
 			"razorpay_webhook",
 			"payment.captured",
@@ -133,7 +138,9 @@ func (a *WebhookApplierImpl) ApplyCaptured(
 				"amount":              paymentEntity.Amount,
 				"currency":            paymentEntity.Currency,
 			},
-		)
+		); err != nil {
+			log.Printf("[webhook] audit write failed for payment.captured (payment %s): %v", payment.ID, err)
+		}
 	}
 
 	if a.outbox != nil {
@@ -188,7 +195,7 @@ func (a *WebhookApplierImpl) ApplyFailed(
 	}
 
 	if a.audit != nil {
-		_ = a.audit.Write(
+		if err := a.audit.Write(
 			ctx,
 			"razorpay_webhook",
 			"payment.failed",
@@ -202,7 +209,9 @@ func (a *WebhookApplierImpl) ApplyFailed(
 				"error_code":          paymentEntity.ErrorCode,
 				"error_description":   paymentEntity.ErrorDesc,
 			},
-		)
+		); err != nil {
+			log.Printf("[webhook] audit write failed for payment.failed (payment %s): %v", payment.ID, err)
+		}
 	}
 
 	if a.outbox != nil {

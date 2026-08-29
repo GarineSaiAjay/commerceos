@@ -73,8 +73,8 @@ func (h *Handler) Checkout(w http.ResponseWriter, r *http.Request) {
 
 // ListOrders handles GET /orders?merchant_id=... -- the order-history
 // list the buyer-facing UI reads. Scoped by merchant, not by buyer,
-// because there is no buyer identity yet (files/JUDGE-FACING-GAPS.md
-// P0.3); every order for this single-merchant demo qualifies.
+// because there is no buyer identity yet (files/AUTH.md); every order
+// for this single-merchant demo qualifies.
 func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

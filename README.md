@@ -38,8 +38,9 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
                 agents, analytics, events, audit, MCP)
 /frontend       Next.js app (checkout + merchant dashboard)
 /db             goose migrations + seeds (amounts are paise — ₹1 = 100 paise)
-/infra          docker-compose (Postgres 17 + Redis 8 + backend)
-/files          Phase specs, audit, completion plan, agent contract
+/infra          docker-compose (Postgres 17 + Redis 8 + migrate + backend + frontend)
+/files          Auth design, git workflow, agent contract, trust boundary,
+                demo script, pitch, and this audit trail
 ```
 
 ## Getting started
@@ -51,33 +52,43 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
    `infra/.env` is what `docker compose` in step 2 actually reads (see
    that file's own header comment) -- the backend binary itself never
    reads a `.env` file directly, it reads process environment variables.
-   The root `.env.example` is for a different workflow: running the Go
-   backend directly on the host instead of inside docker-compose (e.g.
-   `export $(cat .env | xargs) && go run ./cmd/server`, against the same
-   Postgres/Redis containers from step 2). If you're following this
-   guide as written, `infra/.env` is the one you need.
 
-2. **Bring up the stack:**
+2. **Bring up the whole stack** — Postgres, Redis, migrations + seeds,
+   backend, and frontend:
    ```bash
    docker compose -f infra/docker-compose.yml up -d --build
    ```
-   - Postgres `:5433`, Redis `:6379`, backend `:8080–8083`, frontend `:3000`.
+   - Postgres `:5433`, Redis `:6379`, backend `:8080–8083`, frontend
+     `:3000` (open `http://localhost:3000`; the merchant dashboard is
+     at `http://localhost:3000/dashboard` -- `files/AUTH.md` has the
+     demo login credentials).
+   - A one-off `migrate` service applies goose migrations and then both
+     seed files automatically before `backend` starts (every seed
+     `INSERT` uses `ON CONFLICT ... DO NOTHING`, so this is safe to run
+     on every `up`, not just the first) -- there is no separate manual
+     migration/seed step anymore. `backend` waits for `postgres` and
+     `redis` to report healthy and for `migrate` to finish
+     successfully before it starts, so a fresh `up` no longer races a
+     not-yet-ready database.
+   - That's it. Skip straight to [Testing](#testing) below.
 
-3. **Apply migrations + seed:**
-   ```bash
-   goose -dir db/migrations postgres "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" up
-   psql "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" -f db/seeds/001_catalog.sql
-   psql "postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable" -f db/seeds/002_operator.sql
-   ```
-   The second seed is the merchant dashboard's login (`files/AUTH.md` has
-   the demo credentials) -- skip it and every `/dashboard` login attempt
-   fails with "invalid email or password" because no operator row exists
-   yet, indistinguishable from an actually wrong password.
+### Running without Docker
 
-4. **Frontend:**
-   ```bash
-   cd frontend && npm install && npm run dev   # http://localhost:3000
-   ```
+To run the Go backend or the Next.js frontend directly on the host
+instead (e.g. for faster iteration), start only the infra services and
+do the rest by hand:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d postgres redis migrate
+```
+
+then:
+
+- **Backend:** the root `.env.example` is for exactly this workflow --
+  copy it to `.env`, fill it in, and
+  `export $(cat .env | xargs) && cd backend && go run ./cmd/server`.
+- **Frontend:** `cd frontend && npm install && npm run dev` --
+  `http://localhost:3000`.
 
 ## Testing
 

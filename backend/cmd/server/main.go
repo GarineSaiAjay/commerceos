@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/garinesaiajay/commerceos/agents"
 	"github.com/garinesaiajay/commerceos/analytics"
@@ -30,11 +31,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "OK")
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(allowedOrigin string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The checkout flow sends Authorization-Id and Idempotency-Key
 		// headers on the payment call, so they must pass preflight.
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Authorization-Id, Idempotency-Key")
 		w.Header().Set("Access-Control-Expose-Headers", "Authorization-Id, Idempotency-Key")
@@ -59,6 +60,16 @@ func main() {
 		redisAddr = "localhost:6379"
 	}
 
+	// Browser origin allowed to call the Commerce Service (CORS).
+	// Previously hardcoded to http://localhost:3000 with no override --
+	// deploying the frontend anywhere else (a public demo URL, a
+	// different port) meant every cross-origin request failed silently
+	// in the browser with no server-side error at all.
+	frontendOrigin := os.Getenv("FRONTEND_ORIGIN")
+	if frontendOrigin == "" {
+		frontendOrigin = "http://localhost:3000"
+	}
+
 	ctx := context.Background()
 
 	dbPool, err := db.NewPostgresPool(ctx, databaseURL)
@@ -71,8 +82,25 @@ func main() {
 	fmt.Println("Connected to PostgreSQL")
 
 	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		fmt.Printf("failed to connect to redis: %v\n", err)
+
+	// Same defense-in-depth as db.NewPostgresPool's own retry loop:
+	// infra/docker-compose.yml's health-gating is the first line, this
+	// is the second, independent one for when Compose isn't in the
+	// picture (e.g. running the backend directly on the host).
+	const redisConnectRetries = 10
+	var redisPingErr error
+	for attempt := 1; attempt <= redisConnectRetries; attempt++ {
+		redisPingErr = redisClient.Ping(ctx).Err()
+		if redisPingErr == nil {
+			break
+		}
+		if attempt < redisConnectRetries {
+			fmt.Printf("redis not ready yet (attempt %d/%d): %v\n", attempt, redisConnectRetries, redisPingErr)
+			time.Sleep(2 * time.Second)
+		}
+	}
+	if redisPingErr != nil {
+		fmt.Printf("failed to connect to redis: %v\n", redisPingErr)
 		os.Exit(1)
 	}
 	defer redisClient.Close()
@@ -183,7 +211,7 @@ func main() {
 
 	// Phase 9: operator authentication -- gates the merchant dashboard and
 	// the approve/reject/safety endpoints. Buyer checkout stays guest; see
-	// files/JUDGE-FACING-GAPS.md P0.3 and files/AUTH.md.
+	// files/AUTH.md.
 	authRepo := auth.NewPostgresRepository(dbPool)
 	authService := auth.NewService(authRepo)
 	authHandler := auth.NewHandler(authService)
@@ -317,9 +345,9 @@ func main() {
 	// collapsing four network hops into one process for a prototype this
 	// size is a feature, not a gap -- splitting them now would be exactly
 	// the "seven microservices for architecture theatre" anti-pattern this
-	// project explicitly rejects (see files/phase-9-presentation-demo.md
-	// §4). Revisit only if the single-service design becomes a real
-	// constraint (see PROJECT-AUDIT.md §3.13 / Fix Log).
+	// project explicitly rejects (see files/pitch-one-pager.md's "Why a
+	// modular monolith, not microservices" section). Revisit only if the
+	// single-service design becomes a real constraint.
 	agentAPIMux := http.NewServeMux()
 	dashboardMux := http.NewServeMux()
 
@@ -482,7 +510,7 @@ func main() {
 	// Level 2/3 durable human-approval requests. Listing is merchant-only
 	// (it exposes every buyer's pending approvals); fetching or acting on
 	// a single request by ID stays reachable by the buyer who owns it --
-	// see the /approval-requests/ subtree below and files/JUDGE-FACING-GAPS.md P0.3.
+	// see the /approval-requests/ subtree below and files/AUTH.md.
 	commerceMux.HandleFunc("/approval-requests", authService.RequireOperator(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			policyHandler.ListApprovalRequests(w, r)
@@ -556,7 +584,7 @@ func main() {
 		}
 	}))
 
-	// Phase 8: safety / red-team -- merchant-only (files/JUDGE-FACING-GAPS.md P0.3).
+	// Phase 8: safety / red-team -- merchant-only (files/AUTH.md).
 	commerceMux.HandleFunc("/safety/attacks", authService.RequireOperator(safetyHandler.ListAttacks))
 	commerceMux.HandleFunc("/safety/evaluations", authService.RequireOperator(safetyHandler.ListEvaluations))
 	commerceMux.HandleFunc("/safety/evaluations/run", authService.RequireOperator(safetyHandler.RunSuite))
@@ -597,7 +625,7 @@ func main() {
 		growthSuggestHandler.Suggest,
 	)
 
-	// Phase 6: dashboard -- merchant-only (files/JUDGE-FACING-GAPS.md P0.3).
+	// Phase 6: dashboard -- merchant-only (files/AUTH.md).
 	commerceMux.HandleFunc(
 		"/dashboard/overview",
 		authService.RequireOperator(analyticsHandler.Overview),
@@ -665,7 +693,7 @@ func main() {
 
 		if err := http.ListenAndServe(
 			":"+commercePort,
-			corsMiddleware(commerceMux),
+			corsMiddleware(frontendOrigin, commerceMux),
 		); err != nil {
 			fmt.Printf("Commerce Service stopped: %v\n", err)
 		}

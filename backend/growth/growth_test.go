@@ -68,11 +68,29 @@ func TestBudgetEligibleWithTolerance(t *testing.T) {
 	}
 }
 
+// testCatalog stands in for the real seeded catalog (db/seeds/001_catalog.sql)
+// so this test doesn't need a database connection -- Generate takes the
+// product list as a parameter precisely so callers like this one can
+// supply their own instead of relying on a hardcoded list baked into
+// the simulator itself.
+var testCatalog = []ProductInfo{
+	{ID: "airpods-pro-2", PriceAmount: 2_490_000},
+	{ID: "airpods-case", PriceAmount: 199_900},
+	{ID: "applecare", PriceAmount: 250_000},
+	{ID: "usb-c-adapter", PriceAmount: 129_900},
+	{ID: "wireless-charging-pad", PriceAmount: 89_900},
+	{ID: "airpods-max", PriceAmount: 5_990_000},
+	{ID: "airpods-3", PriceAmount: 1_890_000},
+	{ID: "magsafe-charger", PriceAmount: 450_000},
+	{ID: "lightning-usbc-cable", PriceAmount: 190_000},
+	{ID: "airpods-eartips", PriceAmount: 150_000},
+}
+
 // TestSimulatorReproducible proves the fixed-seed dataset is identical
 // across runs.
 func TestSimulatorReproducible(t *testing.T) {
-	a := NewMerchantSimulator(42).Generate()
-	b := NewMerchantSimulator(42).Generate()
+	a := NewMerchantSimulator(42).Generate(testCatalog)
+	b := NewMerchantSimulator(42).Generate(testCatalog)
 
 	if len(a) != 50000 || len(b) != 50000 {
 		t.Fatalf("expected 50000 sessions, got %d and %d", len(a), len(b))
@@ -82,5 +100,15 @@ func TestSimulatorReproducible(t *testing.T) {
 		if a[i] != b[i] {
 			t.Fatalf("session %d differs between runs", i)
 		}
+	}
+}
+
+// TestSimulatorEmptyProductsReturnsNil proves Generate fails safe (nil,
+// not a panic) when handed an empty catalog -- e.g. before the catalog
+// has been seeded.
+func TestSimulatorEmptyProductsReturnsNil(t *testing.T) {
+	sessions := NewMerchantSimulator(42).Generate(nil)
+	if sessions != nil {
+		t.Fatalf("expected nil sessions for empty product list, got %d sessions", len(sessions))
 	}
 }

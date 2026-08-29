@@ -111,7 +111,7 @@ interface Decision {
 // RunStep/Run mirror backend/policy/replay.go's GET /runs/{id} response --
 // the audit trail (proposed -> risk-assessed -> policy-evaluated ->
 // authorized) for the exact action this checkout ran. See
-// files/JUDGE-FACING-GAPS.md P0.4.
+// files/AUTH.md.
 interface RunStep {
   stage: string;
   detail: string;
@@ -481,8 +481,8 @@ export default function CheckoutFlow({
   }
 
   // GET /orders?merchant_id=... -- merchant-scoped for now since there
-  // is no buyer identity yet (files/JUDGE-FACING-GAPS.md P0.3); every
-  // order for this single-merchant demo qualifies as "history".
+  // is no buyer identity yet (files/AUTH.md); every order for this
+  // single-merchant demo qualifies as "history".
   async function fetchOrders() {
     setOrdersLoading(true);
     setOrdersError("");
@@ -799,7 +799,7 @@ export default function CheckoutFlow({
   // GET /runs/{id}: the audit trail for the action this checkout actually
   // proposed -- proposed -> risk-assessed -> policy-evaluated -> authorized
   // -- reconstructed from the persisted records, not a separate log. Shown
-  // inline on the complete/failed screens (files/JUDGE-FACING-GAPS.md P0.4).
+  // inline on the complete/failed screens (files/AUTH.md).
   async function fetchRun() {
     if (!runId) return;
     setRunLoading(true);

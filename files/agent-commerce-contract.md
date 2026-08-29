@@ -88,12 +88,19 @@ Reads order status / order history. Read-only.
 
 ## POST /mcp
 
-The same capabilities above, exposed as narrow MCP tools (`search_products`,
-`create_checkout`, `request_authorization`, `explain_decision`, and
-others — a `tools/list` JSON-RPC call enumerates all of them) over JSON-RPC
-2.0, for an MCP-speaking agent rather than a direct HTTP client. Same
-governing rule applies: there is no single `make_payment(amount)` tool
-with unlimited blast radius — money movement is always a distinct,
+The same capabilities above, exposed as 11 narrow MCP tools
+(`search_products`, `get_product`, `create_cart`, `add_item`,
+`recommend_bundle`, `calculate_total`, `request_authorization`,
+`create_checkout`, `execute_authorized_checkout`, `get_payment_status`,
+`explain_decision` — a `tools/list` JSON-RPC call enumerates all of
+them, each with a real JSON Schema `properties`/`required` block, not a
+bare `{"type":"object"}`) over JSON-RPC 2.0, for an MCP-speaking agent
+rather than a direct HTTP client. `add_item` matters specifically: a
+cart created via `create_cart` starts empty, and `add_item` is the only
+MCP tool that can put something into it — without it, an MCP-only agent
+could search and create a cart but never actually complete a purchase.
+Same governing rule applies: there is no single `make_payment(amount)`
+tool with unlimited blast radius — money movement is always a distinct,
 narrow `request_authorization` step gated by the same Policy Engine.
 
 **Handshake:** `initialize` returns the spec's `InitializeResult` shape

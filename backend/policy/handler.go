@@ -189,7 +189,7 @@ func (h *Handler) GetApprovalRequest(w http.ResponseWriter, r *http.Request) {
 // cart_id it was created for) or a logged-in merchant operator (proven by
 // a valid bearer session, attached to the request context by
 // auth.Service.OptionalOperator -- see main.go's route wiring). See
-// files/JUDGE-FACING-GAPS.md P0.3 and Service.resolveApprover.
+// files/AUTH.md and Service.resolveApprover.
 func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

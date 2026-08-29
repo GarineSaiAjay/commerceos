@@ -35,6 +35,38 @@ func NewExperimentService(db *pgxpool.Pool) *ExperimentService {
 	return &ExperimentService{db: db}
 }
 
+// catalogProducts loads the real seeded catalog (id, price_amount) so
+// the Merchant Simulator's synthetic sessions are drawn from whatever
+// is actually in the products table, instead of a hardcoded SKU list
+// that silently fell out of sync with it. Returns an error rather than
+// an empty slice if the catalog is empty, so callers can't proceed
+// into a simulator run with nothing to simulate.
+func (s *ExperimentService) catalogProducts(ctx context.Context) ([]growth.ProductInfo, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, price_amount FROM products ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("query catalog products: %w", err)
+	}
+	defer rows.Close()
+
+	var products []growth.ProductInfo
+	for rows.Next() {
+		var p growth.ProductInfo
+		if err := rows.Scan(&p.ID, &p.PriceAmount); err != nil {
+			return nil, fmt.Errorf("scan catalog product: %w", err)
+		}
+		products = append(products, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read catalog products: %w", err)
+	}
+
+	if len(products) == 0 {
+		return nil, fmt.Errorf("no products found in catalog: run db/seeds/001_catalog.sql first")
+	}
+
+	return products, nil
+}
+
 // Run simulates a controlled comparison: splits the Merchant Simulator
 // population into control/treatment and computes revenue-per-session
 // with a normal-approximation 95% CI for the lift.
@@ -44,7 +76,12 @@ func (s *ExperimentService) Run(
 	seed int64,
 	revenuePerSession float64, // treatment multiplier applied to simulated sessions
 ) (ExperimentReport, error) {
-	sessions := growth.NewMerchantSimulator(seed).Generate()
+	products, err := s.catalogProducts(ctx)
+	if err != nil {
+		return ExperimentReport{}, err
+	}
+
+	sessions := growth.NewMerchantSimulator(seed).Generate(products)
 
 	total := len(sessions)
 	half := total / 2
@@ -95,7 +132,7 @@ func (s *ExperimentService) Run(
 	}
 
 	// Persist (upsert).
-	_, err := s.db.Exec(ctx, `
+	_, err = s.db.Exec(ctx, `
 		INSERT INTO experiments (
 			id, name, metric, population, control_size, treatment_size,
 			control_value, treatment_value, lift, ci_lower, ci_upper, source

@@ -257,7 +257,7 @@ func (s *Service) GetRun(ctx context.Context, runID string) (Run, error) {
 // has that) and a logged-in merchant operator (proven by operatorEmail,
 // which the HTTP layer only sets after validating a session -- see
 // backend/auth.Service.OptionalOperator). Anyone else is rejected. See
-// files/JUDGE-FACING-GAPS.md P0.3: this replaces an approver/by field
+// files/AUTH.md: this replaces an approver/by field
 // the client could set to any string at all, with zero verification.
 func resolveApprover(req ApprovalRequest, cartID, operatorEmail string) (string, error) {
 	if operatorEmail != "" {

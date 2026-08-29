@@ -1,5 +1,7 @@
 **A trust layer for agentic commerce, built on Razorpay**
 
+> **As-built vs. as-designed:** this document is the original vision/planning doc, written before implementation. It shipped largely as designed through Phase 8 (commerce core, state machine, authorization/policy engine, AI buyer, analytics, MCP agent interface, red-team suite). One section did not: §39's "Merchant Agent" (and the "segmentation"/"campaigns" language under Phase 5 in the diagrams) describes a fully autonomous goal-driven loop -- `analyze → identify opportunity → create campaign → select audience → choose offer → run experiment → measure → adapt` -- that was explicitly marked "Stretch Scope (If Time Allows)" and was not built as described. What shipped instead is narrower and more conservative: a deterministic **Campaign Orchestrator** (`backend/campaign`) that proposes fixed-discount campaigns from observed rejected cross-sell demand for a single product, checks them against hard-coded guardrails (discount %, budget cap, duration, product allowlist, minimum demand), and requires an operator to explicitly Approve or Reject each one from the dashboard before it goes live -- no LLM in the loop, no autonomous experiment-and-adapt cycle, no audience segmentation beyond "which product's cross-sell demand got rejected." See files/AUDIT-2026-08-29.md §6 for the full comparison.
+
 ---
 
 ## 0. Executive Summary
