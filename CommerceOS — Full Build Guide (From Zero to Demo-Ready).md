@@ -2,6 +2,8 @@
 
 > Core thesis to hold onto at every phase: **the LLM has intent authority, it never has financial authority.** Every phase below either builds the reasoning layer (which proposes) or the deterministic layer (which decides and executes). Never let a later phase blur that line.
 
+> **As-built vs. as-designed:** this document is the original phase-by-phase build plan, written before implementation. Phases 1-4 and 6-9 shipped essentially as designed. Phase 5's "Growth Agent" shipped its cross-sell/upsell/bundle-recommendation core as planned, but not the "**Merchant Agent** (stretch, if time allows)" goal-driven loop described alongside it (`analyze → identify opportunity → create campaign → select audience → choose offer → run experiment → measure → adapt`), and not audience "segmentation" in the sense of grouping buyers into named cohorts. What shipped instead is a narrower, deterministic **Campaign Orchestrator** (`backend/campaign`): it proposes fixed-discount campaigns from observed rejected cross-sell demand for a single product, checks them against hard-coded guardrails, and requires an operator to explicitly approve or reject each one from the dashboard before it goes live -- no LLM, no autonomous experiment-and-adapt cycle. See files/AUDIT-2026-08-29.md §6 for the full comparison.
+
 ---
 
 ## How to Use This Guide
