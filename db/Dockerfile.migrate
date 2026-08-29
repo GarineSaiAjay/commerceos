@@ -1,0 +1,20 @@
+# db/Dockerfile.migrate
+#
+# Runs goose migrations + both seed files automatically as part of
+# `docker compose up`, closing a gap where a fresh `docker compose up`
+# left the database completely schema-less: README's "Getting started"
+# documented 3 manual follow-up commands (goose, then two `psql -f`
+# calls, in exact order) with no automation wrapping them, and
+# files/BUGS.md bug #5 records a real login failure caused by getting
+# that seed order/completeness wrong once. Every INSERT in both seed
+# files already uses `ON CONFLICT (id) DO NOTHING` (verified against
+# db/seeds/001_catalog.sql and db/seeds/002_operator.sql), so this is
+# safe to run on every `docker compose up`, not just the first one.
+#
+# postgres:17 already ships psql; only goose needs adding.
+FROM golang:1.26 AS goose
+RUN go install github.com/pressly/goose/v3/cmd/goose@v3.27.3
+
+FROM postgres:17
+COPY --from=goose /go/bin/goose /usr/local/bin/goose
+ENTRYPOINT []

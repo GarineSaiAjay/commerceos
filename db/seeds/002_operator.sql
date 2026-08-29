@@ -4,7 +4,7 @@
 -- backend/auth/password.go -- this environment cannot fetch new Go
 -- modules (no network access to golang.org/x/crypto/bcrypt), so this is
 -- a deliberate, documented trade-off rather than a weaker home-rolled
--- scheme. See files/JUDGE-FACING-GAPS.md P0.3 and files/AUTH.md.
+-- scheme. See files/AUTH.md.
 --
 -- Demo credentials (files/AUTH.md):
 --   email:    owner@commerceos.demo
