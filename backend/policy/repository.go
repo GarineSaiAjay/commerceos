@@ -14,7 +14,7 @@ var ErrApprovalRequestNotFound = errors.New("approval request not found")
 // callers can be verified: the buyer (proven by supplying the cart_id
 // this request was created for) or a logged-in merchant operator
 // (proven by a valid session, resolved by the HTTP layer -- see
-// backend/auth). See files/JUDGE-FACING-GAPS.md P0.3.
+// backend/auth). See files/AUTH.md.
 var ErrApprovalUnauthorized = errors.New("not authorized to act on this approval request")
 
 // Repository persists policy entities.

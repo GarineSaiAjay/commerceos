@@ -14,7 +14,6 @@ import (
 // NewMerchantSimulator(seed).Generate() (see analytics/experiment.go), which
 // keeps the seed and the consuming code from drifting apart. A separate
 // script would just be a thinner, duplicate way to call the same two lines.
-// See files/PROJECT-AUDIT.md §3.12 / Fix Log.
 type MerchantSimulator struct {
 	seed int64
 }

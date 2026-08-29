@@ -16,9 +16,9 @@ type Repository interface {
 
 	// ListOrders returns every order placed with the given merchant,
 	// most recent first. There is no buyer identity yet (see
-	// files/JUDGE-FACING-GAPS.md P0.3), so this is merchant-scoped
-	// rather than buyer-scoped -- the right scope once auth lands is a
-	// further WHERE buyer_id = $2 on the same query.
+	// files/AUTH.md), so this is merchant-scoped rather than
+	// buyer-scoped -- the right scope once auth lands is a further
+	// WHERE buyer_id = $2 on the same query.
 	ListOrders(
 		ctx context.Context,
 		merchantID string,

@@ -46,7 +46,7 @@ export default function ApprovalsPage() {
   // The operator's identity is resolved server-side from the bearer
   // session token (backend/policy/service.go's resolveApprover) -- there
   // is no client-supplied approver field to trust anymore. See
-  // files/JUDGE-FACING-GAPS.md P0.3.
+  // files/AUTH.md.
   async function act(id: string, endpoint: "approve" | "reject") {
     setBusy(id);
     setError("");

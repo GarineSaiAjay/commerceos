@@ -104,7 +104,7 @@ func OperatorFromContext(ctx context.Context) (Operator, bool) {
 // or invalid token is rejected with 401 before next ever runs. Use for
 // routes that are exclusively for the merchant's own back office
 // (dashboard data, safety/red-team controls, the approval-request and
-// run lists) -- see files/JUDGE-FACING-GAPS.md P0.3.
+// run lists) -- see files/AUTH.md.
 func (s *Service) RequireOperator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		operator, err := s.ValidateToken(r.Context(), bearerToken(r))
@@ -126,7 +126,7 @@ func (s *Service) RequireOperator(next http.HandlerFunc) http.HandlerFunc {
 // buyer confirming their own purchase (proven by supplying the cart_id
 // the request was created for) and a logged-in merchant operator
 // reviewing from the dashboard (proven by this token) -- see
-// files/JUDGE-FACING-GAPS.md P0.3.
+// files/AUTH.md.
 func (s *Service) OptionalOperator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)

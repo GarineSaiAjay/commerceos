@@ -39,7 +39,8 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
 /frontend       Next.js app (checkout + merchant dashboard)
 /db             goose migrations + seeds (amounts are paise — ₹1 = 100 paise)
 /infra          docker-compose (Postgres 17 + Redis 8 + backend)
-/files          Phase specs, audit, completion plan, agent contract
+/files          Auth design, git workflow, agent contract, trust boundary,
+                demo script, pitch, and this audit trail
 ```
 
 ## Getting started

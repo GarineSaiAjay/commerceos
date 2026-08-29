@@ -1,8 +1,7 @@
 // Operator authentication for the merchant dashboard (P0.3). Buyer
 // checkout stays guest -- this only gates the merchant's own back office:
 // dashboard data, safety/red-team controls, and the LIST endpoints for
-// approval requests and runs. See files/JUDGE-FACING-GAPS.md P0.3 and
-// files/AUTH.md.
+// approval requests and runs. See files/AUTH.md.
 import { API_BASE } from "./api";
 
 const TOKEN_KEY = "commerceos_operator_token";

@@ -23,7 +23,7 @@ export default async function DashboardPage() {
     // unauthenticated -- a 401 here is expected, not a failure. AuthGate
     // (client) handles the actual login wall, and merchant-dashboard.tsx's
     // client-side fetch loads live data once the operator is signed in.
-    // See files/JUDGE-FACING-GAPS.md P0.3.
+    // See files/AUTH.md.
     const response = await fetch(`${API_BASE}/dashboard/overview`, { cache: "no-store" });
     if (response.status === 401) {
       // expected pre-login state; leave initialError unset

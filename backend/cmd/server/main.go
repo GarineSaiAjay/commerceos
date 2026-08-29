@@ -183,7 +183,7 @@ func main() {
 
 	// Phase 9: operator authentication -- gates the merchant dashboard and
 	// the approve/reject/safety endpoints. Buyer checkout stays guest; see
-	// files/JUDGE-FACING-GAPS.md P0.3 and files/AUTH.md.
+	// files/AUTH.md.
 	authRepo := auth.NewPostgresRepository(dbPool)
 	authService := auth.NewService(authRepo)
 	authHandler := auth.NewHandler(authService)
@@ -317,9 +317,9 @@ func main() {
 	// collapsing four network hops into one process for a prototype this
 	// size is a feature, not a gap -- splitting them now would be exactly
 	// the "seven microservices for architecture theatre" anti-pattern this
-	// project explicitly rejects (see files/phase-9-presentation-demo.md
-	// §4). Revisit only if the single-service design becomes a real
-	// constraint (see PROJECT-AUDIT.md §3.13 / Fix Log).
+	// project explicitly rejects (see files/pitch-one-pager.md's "Why a
+	// modular monolith, not microservices" section). Revisit only if the
+	// single-service design becomes a real constraint.
 	agentAPIMux := http.NewServeMux()
 	dashboardMux := http.NewServeMux()
 
@@ -482,7 +482,7 @@ func main() {
 	// Level 2/3 durable human-approval requests. Listing is merchant-only
 	// (it exposes every buyer's pending approvals); fetching or acting on
 	// a single request by ID stays reachable by the buyer who owns it --
-	// see the /approval-requests/ subtree below and files/JUDGE-FACING-GAPS.md P0.3.
+	// see the /approval-requests/ subtree below and files/AUTH.md.
 	commerceMux.HandleFunc("/approval-requests", authService.RequireOperator(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			policyHandler.ListApprovalRequests(w, r)
@@ -556,7 +556,7 @@ func main() {
 		}
 	}))
 
-	// Phase 8: safety / red-team -- merchant-only (files/JUDGE-FACING-GAPS.md P0.3).
+	// Phase 8: safety / red-team -- merchant-only (files/AUTH.md).
 	commerceMux.HandleFunc("/safety/attacks", authService.RequireOperator(safetyHandler.ListAttacks))
 	commerceMux.HandleFunc("/safety/evaluations", authService.RequireOperator(safetyHandler.ListEvaluations))
 	commerceMux.HandleFunc("/safety/evaluations/run", authService.RequireOperator(safetyHandler.RunSuite))
@@ -597,7 +597,7 @@ func main() {
 		growthSuggestHandler.Suggest,
 	)
 
-	// Phase 6: dashboard -- merchant-only (files/JUDGE-FACING-GAPS.md P0.3).
+	// Phase 6: dashboard -- merchant-only (files/AUTH.md).
 	commerceMux.HandleFunc(
 		"/dashboard/overview",
 		authService.RequireOperator(analyticsHandler.Overview),
