@@ -82,10 +82,13 @@ func TestPostgresRepositoryListProducts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// db/seeds/001_catalog.sql seeds 5 products as of the wireless-charging-pad
-	// addition (PROJECT-AUDIT.md Fix Log, 2026-08-26, att_14 prompt-injection fixture).
-	if len(products) != 5 {
-		t.Fatalf("expected 5 products, got %d", len(products))
+	// db/seeds/001_catalog.sql seeds 10 products as of commit d30f155
+	// ("fix(catalog): tag products so agent matching can score, and add
+	// five more", 2026-08-28), which grew the catalog from 5 to 10 without
+	// updating this count -- this assertion was stale on main before this
+	// branch existed and is fixed here since it blocks this PR's CI.
+	if len(products) != 10 {
+		t.Fatalf("expected 10 products, got %d", len(products))
 	}
 }
 

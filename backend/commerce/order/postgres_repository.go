@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/garinesaiajay/commerceos/audit"
 	"github.com/garinesaiajay/commerceos/statemachine"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,12 +14,28 @@ import (
 
 type PostgresRepository struct {
 	db *pgxpool.Pool
+	// auditWriter is nil-safe (see the nil check where it's used in
+	// CheckoutCart) so existing callers/tests that construct this
+	// repository without WithAuditWriter keep working unchanged.
+	auditWriter audit.Writer
 }
 
 func NewPostgresRepository(db *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{
 		db: db,
 	}
+}
+
+// WithAuditWriter attaches the audit trail writer used to record
+// campaign-discount events at checkout (discount applied / campaign
+// budget exhausted). Matches the WithAttempts/WithRecoveryReaders
+// builder pattern already used elsewhere in this codebase
+// (backend/commerce/payment/webhook_applier.go, handler.go) so it can
+// be added without changing this constructor's signature at any
+// existing call site.
+func (r *PostgresRepository) WithAuditWriter(w audit.Writer) *PostgresRepository {
+	r.auditWriter = w
+	return r
 }
 
 func (r *PostgresRepository) CheckoutCart(
@@ -121,6 +138,76 @@ func (r *PostgresRepository) CheckoutCart(
 		return Order{}, ErrCartEmpty
 	}
 
+	// Campaign discount hook: apply at most one campaign discount per
+	// checkout -- the first cart item whose product has a currently
+	// ACTIVE campaign for this merchant. One discount per checkout (not
+	// one per matching line item) is a deliberate MVP scope cut.
+	//
+	// The atomic guard below (`UPDATE ... WHERE spent + $1 <= budget_cap`)
+	// is the only place a campaign's spend is incremented, and it can
+	// never push spent past budget_cap because the invariant is
+	// re-checked in the same statement that performs the increment --
+	// no read-then-write race window between two concurrent checkouts
+	// against the same campaign.
+	//
+	// If the budget is already exhausted (or was spent by a concurrent
+	// checkout between the SELECT and this UPDATE), that is NOT an
+	// error: checkout proceeds at full price. This is the "one failure
+	// handled gracefully" case for this feature -- recorded via the
+	// audit trail after commit (see below), never by failing checkout.
+	var discountAmount int64
+	var appliedCampaignID string
+	var appliedProductID string
+	type skippedCampaign struct {
+		campaignID string
+		productID  string
+	}
+	var skippedCampaigns []skippedCampaign
+
+	for i := range items {
+		var campaignID string
+		var discountPercent int
+
+		err := tx.QueryRow(ctx, `
+			SELECT id, discount_percent FROM campaigns
+			WHERE merchant_id = $1 AND product_id = $2 AND status = 'ACTIVE'
+			  AND (ends_at IS NULL OR ends_at > NOW())
+			ORDER BY created_at DESC LIMIT 1
+		`, merchantID, items[i].ProductID).Scan(&campaignID, &discountPercent)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // no active campaign for this product; try the next item
+		}
+		if err != nil {
+			return Order{}, fmt.Errorf(
+				"look up active campaign for product %s: %w",
+				items[i].ProductID, err,
+			)
+		}
+
+		candidateDiscount := items[i].Total * int64(discountPercent) / 100
+
+		var guardedID string
+		err = tx.QueryRow(ctx, `
+			UPDATE campaigns SET spent = spent + $1, updated_at = NOW()
+			WHERE id = $2 AND spent + $1 <= budget_cap
+			RETURNING id
+		`, candidateDiscount, campaignID).Scan(&guardedID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			skippedCampaigns = append(skippedCampaigns, skippedCampaign{
+				campaignID: campaignID, productID: items[i].ProductID,
+			})
+			continue
+		}
+		if err != nil {
+			return Order{}, fmt.Errorf("apply campaign discount guard: %w", err)
+		}
+
+		discountAmount = candidateDiscount
+		appliedCampaignID = campaignID
+		appliedProductID = items[i].ProductID
+		break
+	}
+
 	// Lock each product row and decrement inventory.
 	//
 	// GetVariant currently reads availability from products, so the
@@ -177,14 +264,16 @@ func (r *PostgresRepository) CheckoutCart(
 	// the order starts in payment_pending (per the Phase 2 state
 	// machine: DRAFT → AUTHORIZED → PAYMENT_PENDING → PAID → ...).
 	order := Order{
-		ID:         orderID,
-		MerchantID: merchantID,
-		CartID:     cartID,
-		Currency:   currency,
-		Subtotal:   subtotal,
-		Status:     "payment_pending",
-		Items:      items,
-		CreatedAt:  time.Now(),
+		ID:             orderID,
+		MerchantID:     merchantID,
+		CartID:         cartID,
+		Currency:       currency,
+		Subtotal:       subtotal - discountAmount,
+		DiscountAmount: discountAmount,
+		CampaignID:     appliedCampaignID,
+		Status:         "payment_pending",
+		Items:          items,
+		CreatedAt:      time.Now(),
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -194,20 +283,34 @@ func (r *PostgresRepository) CheckoutCart(
 			cart_id,
 			currency,
 			subtotal,
+			discount_amount,
+			campaign_id,
 			status
 		)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`,
 		order.ID,
 		order.MerchantID,
 		order.CartID,
 		order.Currency,
 		order.Subtotal,
+		order.DiscountAmount,
+		nilIfEmpty(order.CampaignID),
 		order.Status,
 	)
 
 	if err != nil {
 		return Order{}, fmt.Errorf("create order: %w", err)
+	}
+
+	if discountAmount > 0 {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO campaign_redemptions (campaign_id, order_id, discount_amount)
+			VALUES ($1, $2, $3)
+		`, appliedCampaignID, order.ID, discountAmount)
+		if err != nil {
+			return Order{}, fmt.Errorf("record campaign redemption: %w", err)
+		}
 	}
 
 	// Create order items.
@@ -254,7 +357,40 @@ func (r *PostgresRepository) CheckoutCart(
 		return Order{}, fmt.Errorf("commit checkout transaction: %w", err)
 	}
 
+	// Campaign audit events fire AFTER commit, not inside the
+	// transaction above: audit.Writer.Write always opens its own
+	// transaction (backend/audit/postgres_writer.go) and cannot
+	// participate in this one, so writing it earlier could record an
+	// event describing an order that a later error in this function
+	// rolled back. Best-effort: a failed audit write does not fail an
+	// already-committed checkout.
+	if r.auditWriter != nil {
+		if discountAmount > 0 {
+			_ = r.auditWriter.Write(ctx, "system", "campaign_discount_applied", "campaign", appliedCampaignID, map[string]any{
+				"order_id":        order.ID,
+				"product_id":      appliedProductID,
+				"discount_amount": discountAmount,
+			})
+		}
+		for _, skipped := range skippedCampaigns {
+			_ = r.auditWriter.Write(ctx, "system", "campaign_budget_exhausted", "campaign", skipped.campaignID, map[string]any{
+				"order_id":   order.ID,
+				"product_id": skipped.productID,
+			})
+		}
+	}
+
 	return order, nil
+}
+
+// nilIfEmpty turns an empty string into a SQL NULL -- used for the
+// nullable campaign_id FK on orders, which is empty unless a campaign
+// discount was applied at checkout.
+func nilIfEmpty(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 func (r *PostgresRepository) GetOrder(
@@ -262,6 +398,7 @@ func (r *PostgresRepository) GetOrder(
 	orderID string,
 ) (Order, error) {
 	var order Order
+	var campaignID *string
 
 	err := r.db.QueryRow(ctx, `
 		SELECT
@@ -270,6 +407,8 @@ func (r *PostgresRepository) GetOrder(
 			cart_id,
 			currency,
 			subtotal,
+			discount_amount,
+			campaign_id,
 			status,
 			created_at
 		FROM orders
@@ -280,6 +419,8 @@ func (r *PostgresRepository) GetOrder(
 		&order.CartID,
 		&order.Currency,
 		&order.Subtotal,
+		&order.DiscountAmount,
+		&campaignID,
 		&order.Status,
 		&order.CreatedAt,
 	)
@@ -290,6 +431,9 @@ func (r *PostgresRepository) GetOrder(
 
 	if err != nil {
 		return Order{}, fmt.Errorf("get order: %w", err)
+	}
+	if campaignID != nil {
+		order.CampaignID = *campaignID
 	}
 
 	rows, err := r.db.Query(ctx, `
@@ -348,6 +492,8 @@ func (r *PostgresRepository) ListOrders(
 			cart_id,
 			currency,
 			subtotal,
+			discount_amount,
+			campaign_id,
 			status,
 			created_at
 		FROM orders
@@ -364,6 +510,7 @@ func (r *PostgresRepository) ListOrders(
 
 	for rows.Next() {
 		var o Order
+		var campaignID *string
 
 		if err := rows.Scan(
 			&o.ID,
@@ -371,10 +518,15 @@ func (r *PostgresRepository) ListOrders(
 			&o.CartID,
 			&o.Currency,
 			&o.Subtotal,
+			&o.DiscountAmount,
+			&campaignID,
 			&o.Status,
 			&o.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan order: %w", err)
+		}
+		if campaignID != nil {
+			o.CampaignID = *campaignID
 		}
 
 		o.Items = []OrderItem{}
