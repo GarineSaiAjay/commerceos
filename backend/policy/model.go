@@ -81,8 +81,32 @@ func DefaultConfig() PolicyConfig {
 		AllowedMerchants:  []string{"merchant_001"},
 		AllowedCurrencies: []string{"INR"},
 		// All monetary amounts are paise; this is a ₹30,000 ceiling.
-		Ceiling:         3_000_000,
-		AllowedProducts: []string{"airpods-pro-2", "airpods-case", "applecare", "usb-c-adapter"},
+		Ceiling: 3_000_000,
+		// AllowedProducts must list every product ID actually seeded into
+		// the catalog (db/seeds/001_catalog.sql) -- it previously only
+		// listed the first 4 of what is now a 10-product catalog, so any
+		// legitimate purchase of the other 6 (wireless-charging-pad,
+		// airpods-max, airpods-3, magsafe-charger, lightning-usbc-cable,
+		// airpods-eartips) was unconditionally rejected as "not
+		// permitted" even though nothing was actually wrong with the
+		// purchase. Same class of staleness bug as the one fixed in
+		// growth/simulator.go (files/AUDIT-2026-08-29.md §3.2) -- this
+		// list needs updating by hand whenever the catalog changes;
+		// there is no dynamic catalog lookup here -- Engine has no
+		// dependency on the catalog package at all (see engine.go's
+		// checkProducts).
+		AllowedProducts: []string{
+			"airpods-pro-2",
+			"airpods-case",
+			"applecare",
+			"usb-c-adapter",
+			"wireless-charging-pad",
+			"airpods-max",
+			"airpods-3",
+			"magsafe-charger",
+			"lightning-usbc-cable",
+			"airpods-eartips",
+		},
 		BudgetTolerance: 0,
 	}
 }
