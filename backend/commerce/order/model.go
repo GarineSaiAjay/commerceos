@@ -3,10 +3,10 @@ package order
 import "time"
 
 type Order struct {
-	ID         string      `json:"order_id"`
-	MerchantID string      `json:"merchant_id"`
-	CartID     string      `json:"cart_id"`
-	Currency   string      `json:"currency"`
+	ID         string `json:"order_id"`
+	MerchantID string `json:"merchant_id"`
+	CartID     string `json:"cart_id"`
+	Currency   string `json:"currency"`
 	// Subtotal is the amount actually charged -- already net of
 	// DiscountAmount, if a campaign discount was applied at checkout
 	// (see PostgresRepository.CheckoutCart). It is never the pre-discount

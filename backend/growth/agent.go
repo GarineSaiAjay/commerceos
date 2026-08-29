@@ -84,16 +84,16 @@ func (g *GrowthAgent) EvaluateCandidate(
 	ev := ExpectedValue(inputs)
 
 	rec := Recommendation{
-		ID:                  fmt.Sprintf("rec_%s_%s", cartID, productID),
-		CartID:              cartID,
-		ProductID:           productID,
-		Price:               product.Price.Amount,
-		PurchaseProbability: inputs.PurchaseProbability,
-		IncrementalMargin:   inputs.IncrementalMargin,
-		Confidence:          inputs.Confidence,
-		RiskCost:            inputs.RiskCost,
-		ExpectedValue:       ev,
-		PolicyVersion:       PolicyVersion,
+		ID:                    fmt.Sprintf("rec_%s_%s", cartID, productID),
+		CartID:                cartID,
+		ProductID:             productID,
+		Price:                 product.Price.Amount,
+		PurchaseProbability:   inputs.PurchaseProbability,
+		IncrementalMargin:     inputs.IncrementalMargin,
+		Confidence:            inputs.Confidence,
+		RiskCost:              inputs.RiskCost,
+		ExpectedValue:         ev,
+		PolicyVersion:         PolicyVersion,
 		CartTotalAtEvaluation: cartTotal,
 		BudgetAtEvaluation:    budget.Budget,
 	}
