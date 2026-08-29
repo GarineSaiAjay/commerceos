@@ -2,7 +2,12 @@ import MerchantDashboard, { type Overview } from "./merchant-dashboard";
 
 export const dynamic = "force-dynamic";
 
-const API_BASE = process.env.NEXT_PUBLIC_COMMERCE_URL ?? "http://localhost:8081";
+// Server-side fetch (see app/page.tsx for the full explanation): inside
+// the frontend's own container this must be the Compose network name
+// for the backend, not "localhost". COMMERCE_SERVICE_URL is set for
+// that case in infra/docker-compose.yml; unset (host `npm run dev`),
+// it falls back to localhost:8081.
+const API_BASE = process.env.COMMERCE_SERVICE_URL ?? "http://localhost:8081";
 
 const emptyOverview: Overview = {
   metrics: { revenue: 0, ai_revenue: 0, conversion_rate: 0, average_order_value: 0, simulated: false },

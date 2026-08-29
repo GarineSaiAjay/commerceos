@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { API_BASE } from "../lib/api";
 
 declare global {
   interface Window {
@@ -189,7 +190,6 @@ interface SuggestResponse {
   message?: string;
 }
 
-const API_BASE = "http://localhost:8081";
 const MERCHANT_ID = "merchant_001";
 
 // Each order uses a fresh cart ID. A cart is single-use: once it is

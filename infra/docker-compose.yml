@@ -151,6 +151,20 @@ services:
     container_name: commerceos-frontend
     restart: unless-stopped
 
+    environment:
+      # frontend/app/page.tsx and frontend/app/dashboard/page.tsx fetch
+      # the backend server-side (inside this container, as part of
+      # rendering the page), not from the browser -- "localhost" there
+      # would mean this container, which has nothing listening on 8081,
+      # not the backend container. "backend" is this Compose network's
+      # DNS name for it. Deliberately NOT NEXT_PUBLIC_-prefixed: this is
+      # read at request time by the Node server, not inlined into the
+      # client bundle (the browser's own fetches use
+      # NEXT_PUBLIC_COMMERCE_URL / lib/api.ts's default instead, since
+      # the browser runs on the host, where localhost:8081 correctly
+      # reaches the backend's published port).
+      COMMERCE_SERVICE_URL: http://backend:8081
+
     ports:
       - "3000:3000"
 
