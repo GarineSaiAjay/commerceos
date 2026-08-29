@@ -6,7 +6,11 @@
 // "deterministic gate, never the LLM" posture.
 package campaign
 
-import "time"
+import (
+	"time"
+
+	"github.com/garinesaiajay/commerceos/policy"
+)
 
 // PolicyVersion tags the campaign proposal/approval policy logic
 // (engine.go), using the same "<domain>_policy_v<N>" scheme as
@@ -90,26 +94,18 @@ func DefaultConfig() Config {
 		MaxBudgetCapPerCampaign: 500_000,   // ₹5,000
 		MaxTotalActiveBudget:    2_000_000, // ₹20,000 across all active campaigns
 		MaxDurationDays:         14,
-		// AllowedProducts previously only listed the first 4 of what is
-		// now a 10-product catalog, so the campaign agent could never
-		// propose a merchant discount against the other 6 products even
-		// when demand data justified one. Same staleness bug as the one
-		// fixed in policy/model.go and growth/simulator.go (this list
-		// has no dynamic catalog lookup either -- see engine.go's
-		// checkProductAllowlisted) -- kept in sync with
-		// policy.DefaultConfig().AllowedProducts by hand.
-		AllowedProducts: []string{
-			"airpods-pro-2",
-			"airpods-case",
-			"applecare",
-			"usb-c-adapter",
-			"wireless-charging-pad",
-			"airpods-max",
-			"airpods-3",
-			"magsafe-charger",
-			"lightning-usbc-cable",
-			"airpods-eartips",
-		},
+		// AllowedProducts previously kept its own separate hardcoded
+		// copy of the catalog's product IDs, which went stale twice:
+		// first listing only the original 4 SKUs, then missing the 3
+		// products added after that fix (files/AUDIT-2026-08-29.md
+		// §3.2; policy/model.go hit the exact same bug a second time
+		// for the same reason). Reusing policy.DefaultConfig()'s slice
+		// directly means a future catalog addition only has to be
+		// updated in policy/model.go -- there's no second copy here to
+		// forget. (Still not a dynamic catalog lookup -- see engine.go's
+		// checkProductAllowlisted -- just no longer a *duplicated*
+		// static one.)
+		AllowedProducts:        policy.DefaultConfig().AllowedProducts,
 		MinRejectedDemandCount: 3,
 	}
 }
