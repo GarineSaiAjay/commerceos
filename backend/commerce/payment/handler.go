@@ -305,8 +305,12 @@ type removeItemRequest struct {
 }
 
 // RemoveItemAndRecheckout serves POST /orders/{id}/recovery/remove-item --
-// the fourth failure-recovery action. It drops one removable line item
-// from a failed order, rebuilds a fresh smaller cart with catalog-
+// a "remove one item and retry" recovery action usable from two
+// different terminal states: a genuinely failed/declined Razorpay
+// payment, or a policy rejection that never reached Razorpay at all
+// (no Payment row exists for the order in that second case -- see the
+// ErrPaymentNotFound handling below). It drops one removable line item
+// from the order, rebuilds a fresh smaller cart with catalog-
 // authoritative prices (never the stale order total), and re-runs the
 // checkout saga (locking, expiry, inventory) on it.
 //
@@ -348,15 +352,27 @@ func (h *Handler) RemoveItemAndRecheckout(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Only a genuinely failed/recoverable order can be resized. Reuse the
-	// same server-owned recovery view the failure screen itself uses,
-	// rather than trusting the client's idea of the payment state.
+	// Only a genuinely recoverable order can be resized. Reuse the same
+	// server-owned recovery view the failure screen itself uses, rather
+	// than trusting the client's idea of the payment state -- but
+	// BuildRecovery requires a Payment row to exist, and a policy
+	// rejection never creates one (checkout never reaches Razorpay when
+	// the policy engine rejects it before the "Pay" step). That is not
+	// the same thing as "not recoverable": with no payment attempt at
+	// all, there's no failed/declined/expired attempt to block a retry
+	// on, so ErrPaymentNotFound here means "nothing to recover FROM",
+	// not "this order can't be resized". Previously this fell through
+	// to the generic error branch below and leaked the raw wrapped
+	// error text ("get payment for recovery: payment not found")
+	// straight to the buyer instead of letting the remove happen.
 	view, err := BuildRecovery(r.Context(), orderID, h.service.repo, h.orderRepo, h.carts, h.attempts)
-	if err != nil {
+	switch {
+	case err != nil && errors.Is(err, ErrPaymentNotFound):
+		// No payment attempt exists yet -- nothing blocks a retry.
+	case err != nil:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	if !view.RetryAllowed {
+	case !view.RetryAllowed:
 		http.Error(w, "this order is no longer recoverable; start a new cart", http.StatusConflict)
 		return
 	}

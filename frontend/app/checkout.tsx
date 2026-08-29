@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { API_BASE } from "../lib/api";
 
 declare global {
   interface Window {
@@ -189,7 +190,6 @@ interface SuggestResponse {
   message?: string;
 }
 
-const API_BASE = "http://localhost:8081";
 const MERCHANT_ID = "merchant_001";
 
 // Each order uses a fresh cart ID. A cart is single-use: once it is
@@ -206,7 +206,7 @@ function freshCartId() {
 // order is never resurrected.
 const CART_STORAGE_KEY = "commerceos_cart_id";
 
-type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed" | "orders";
+type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed" | "policy_rejected" | "orders";
 
 export default function CheckoutFlow({
   initialProducts,
@@ -221,6 +221,11 @@ export default function CheckoutFlow({
   const [payment, setPayment] = useState<Payment | null>(null);
   	const [approvalRequestId, setApprovalRequestId] = useState("");
   	const [approvalReason, setApprovalReason] = useState("");
+  	// Set when the policy engine rejects a proposal outright (e.g. over
+  	// the amount ceiling, or an item not on the merchant's permitted
+  	// list) -- distinct from "failed" (a Razorpay payment attempt was
+  	// made and declined): here, no payment was ever attempted at all.
+  	const [policyRejectionReason, setPolicyRejectionReason] = useState("");
   	const [recovery, setRecovery] = useState<Recovery | null>(null);
   	const [approvalLevel, setApprovalLevel] = useState(0);
   	const [approvalSnapshot, setApprovalSnapshot] = useState<ApprovalRequestDetail | null>(null);
@@ -579,7 +584,17 @@ export default function CheckoutFlow({
       }
 
       		if (decision.decision !== "APPROVED" || !decision.authorization_id) {
-      			throw new Error(decision.reason || "Payment was not authorized");
+      			// Rejected outright (e.g. over the amount ceiling, or an item
+      			// not on the merchant's permitted list): show it as a clear
+      			// terminal state instead of leaving this same "Confirm Order /
+      			// Pay" screen up with a button that would just fail identically
+      			// every time it's clicked again -- no payment was ever
+      			// attempted, so "failed"/recovery (which assumes a declined
+      			// Razorpay attempt) doesn't apply here.
+      			setPolicyRejectionReason(decision.reason || "This purchase was not authorized.");
+      			setStep("policy_rejected");
+      			setLoading(false);
+      			return;
       		}
 
 		await createPaymentWithLaunch(decision.authorization_id);
@@ -724,6 +739,7 @@ export default function CheckoutFlow({
       				setApprovalSnapshot(null);
       				setGateConfirmed(false);
       				setGateError("");
+      				setPolicyRejectionReason("");
       				setRunId("");
       				setRun(null);
       				setMessage(messageText);
@@ -1385,6 +1401,60 @@ export default function CheckoutFlow({
 					className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
 				>
 					Cancel
+				</button>
+			</div>
+		</section>
+	)}
+
+	{step === "policy_rejected" && order && (
+		<section>
+			<h2 className="mb-4 text-lg font-semibold text-zinc-900">
+				Payment wasn&apos;t authorized
+			</h2>
+			<div className="rounded-xl border border-rose-200 bg-rose-50 p-5">
+				<p className="text-sm text-rose-900">
+					{policyRejectionReason}
+				</p>
+				<p className="mt-2 text-xs text-rose-700">
+					No payment was attempted -- the policy engine rejected this
+					purchase before any Razorpay call was made. Your cart is
+					unaffected.
+				</p>
+			</div>
+
+			{order.items.length > 1 && (
+				<div className="mt-6 rounded-xl border border-zinc-200 p-5">
+					<p className="text-sm font-semibold text-zinc-900">Remove an item and try again</p>
+					<p className="mt-1 text-xs text-zinc-500">
+						Removing an item recomputes your total from the catalog and
+						re-runs policy on the smaller order before payment.
+					</p>
+					<ul className="mt-3 divide-y divide-zinc-200">
+						{order.items.map((item) => (
+							<li key={item.variant_id} className="flex items-center justify-between py-3">
+								<div>
+									<p className="text-sm font-medium text-zinc-900">{item.title}</p>
+									<p className="text-xs text-zinc-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
+								</div>
+								<button
+									onClick={() => removeAccessoryAndRetry(item.variant_id)}
+									disabled={loading}
+									className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+								>
+									Remove
+								</button>
+							</li>
+						))}
+					</ul>
+				</div>
+			)}
+
+			<div className="mt-6 space-y-3">
+				<button
+					onClick={() => resetToCatalog("Purchase not authorized. Your cart was not charged.")}
+					className="w-full rounded-xl bg-black px-5 py-3 font-medium text-white transition hover:bg-zinc-800"
+				>
+					Return to catalog
 				</button>
 			</div>
 		</section>

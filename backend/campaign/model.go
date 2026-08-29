@@ -6,7 +6,11 @@
 // "deterministic gate, never the LLM" posture.
 package campaign
 
-import "time"
+import (
+	"time"
+
+	"github.com/garinesaiajay/commerceos/policy"
+)
 
 // PolicyVersion tags the campaign proposal/approval policy logic
 // (engine.go), using the same "<domain>_policy_v<N>" scheme as
@@ -90,8 +94,19 @@ func DefaultConfig() Config {
 		MaxBudgetCapPerCampaign: 500_000,   // ₹5,000
 		MaxTotalActiveBudget:    2_000_000, // ₹20,000 across all active campaigns
 		MaxDurationDays:         14,
-		AllowedProducts:         []string{"airpods-pro-2", "airpods-case", "applecare", "usb-c-adapter"},
-		MinRejectedDemandCount:  3,
+		// AllowedProducts previously kept its own separate hardcoded
+		// copy of the catalog's product IDs, which went stale twice:
+		// first listing only the original 4 SKUs, then missing the 3
+		// products added after that fix (files/AUDIT-2026-08-29.md
+		// §3.2; policy/model.go hit the exact same bug a second time
+		// for the same reason). Reusing policy.DefaultConfig()'s slice
+		// directly means a future catalog addition only has to be
+		// updated in policy/model.go -- there's no second copy here to
+		// forget. (Still not a dynamic catalog lookup -- see engine.go's
+		// checkProductAllowlisted -- just no longer a *duplicated*
+		// static one.)
+		AllowedProducts:        policy.DefaultConfig().AllowedProducts,
+		MinRejectedDemandCount: 3,
 	}
 }
 

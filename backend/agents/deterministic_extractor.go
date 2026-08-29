@@ -18,10 +18,9 @@ func NewDeterministicExtractor() *DeterministicExtractor {
 func (d *DeterministicExtractor) Extract(ctx context.Context, prompt string) (Intent, error) {
 	lower := strings.ToLower(prompt)
 
-	// Ambiguous input → safe no-op, never a guess.
-	if strings.Contains(lower, "buy me something") ||
-		strings.TrimSpace(prompt) == "" ||
-		!strings.Contains(lower, "budget") {
+	// "buy me something" (with nothing else to go on) and an empty
+	// prompt are always ambiguous, regardless of anything else.
+	if strings.Contains(lower, "buy me something") || strings.TrimSpace(prompt) == "" {
 		return Intent{Clarify: "What would you like to buy, and what is your budget?"}, nil
 	}
 
@@ -29,6 +28,23 @@ func (d *DeterministicExtractor) Extract(ctx context.Context, prompt string) (In
 	category := parseCategory(lower)
 	priority := parsePriority(lower)
 	recipient := parseRecipient(lower)
+
+	// A real budget AND a real category are the two hard requirements
+	// (see ValidateIntent) -- ask for clarification if either is
+	// missing, rather than failing validation with a raw error below.
+	//
+	// This USED to instead require the literal substring "budget"
+	// anywhere in the prompt, which rejected extremely common real
+	// phrasing that expresses a budget without ever using that word --
+	// "i want earbuds for my bro, under 40k" has both a clear budget
+	// (40k) and a clear category (earbuds), but was clarified away
+	// before parseBudget/parseCategory ever even ran, because the word
+	// "budget" itself never appears. Checking the actually-extracted
+	// values instead of a magic word makes this robust to "under X",
+	// "below X", "less than X", "max X", "up to X", and so on.
+	if budget <= 0 || category == "" {
+		return Intent{Clarify: "What would you like to buy, and what is your budget?"}, nil
+	}
 
 	intent := Intent{
 		Budget:    budget,
@@ -48,6 +64,11 @@ func parseBudget(prompt string) int64 {
 	// Find the first run of digits (handles the multi-byte ₹ symbol
 	// and thousands separators).
 	digits := ""
+	// "30k"/"30K" is extremely common colloquial budget shorthand for
+	// 30,000 -- without this, "my budget is below 30k" silently parsed
+	// as a budget of 30 rupees, which then matched nothing in the
+	// catalog (or the wrong thing) instead of failing loudly.
+	thousands := false
 
 	for i := 0; i < len(prompt); i++ {
 		c := prompt[i]
@@ -56,6 +77,9 @@ func parseBudget(prompt string) int64 {
 		} else if c == ',' && digits != "" {
 			continue
 		} else if digits != "" {
+			if c == 'k' || c == 'K' {
+				thousands = true
+			}
 			break
 		}
 	}
@@ -64,7 +88,11 @@ func parseBudget(prompt string) int64 {
 		return 0
 	}
 
-	return int64(parseInt(digits))
+	budget := int64(parseInt(digits))
+	if thousands {
+		budget *= 1000
+	}
+	return budget
 }
 
 func parseInt(s string) int {
@@ -77,8 +105,6 @@ func parseInt(s string) int {
 
 func parseCategory(lower string) string {
 	switch {
-	case strings.Contains(lower, "earbud") || strings.Contains(lower, "headphone"):
-		return "earbuds"
 	case strings.Contains(lower, "laptop"):
 		return "laptop"
 	// "charging" is a real use_cases tag on wireless-charging-pad,
@@ -90,10 +116,34 @@ func parseCategory(lower string) string {
 	// "accessories" is the shared use_cases tag for applecare, the
 	// usb-c-adapter, and the AirPods ear tips -- same reasoning as above,
 	// just for the rest of the catalog "case" alone couldn't reach.
+	// Checked before the earbuds/brand-name case below: "ear tips for my
+	// AirPods" must resolve to accessories, not earbuds, even though it
+	// mentions "AirPods".
 	case strings.Contains(lower, "case") || strings.Contains(lower, "adapter") ||
 		strings.Contains(lower, "warranty") || strings.Contains(lower, "applecare") ||
 		strings.Contains(lower, "ear tip") || strings.Contains(lower, "eartip"):
 		return "accessories"
+	// "tracking" is airtag-4pack's use_cases tag -- the catalog's first
+	// non-audio product, added alongside airpods-pro-3 and beats-fit-pro
+	// (db/seeds/001_catalog.sql) so "something to track my luggage" or
+	// "find my keys" resolves to a real product instead of nothing.
+	case strings.Contains(lower, "airtag") || strings.Contains(lower, "tracker") ||
+		strings.Contains(lower, "track my") || strings.Contains(lower, "find my"):
+		return "tracking"
+	// Every earbuds SKU in the catalog is sold under a product-family
+	// name ("AirPods ...", "Beats Fit Pro") that a buyer will naturally
+	// type instead of the generic word "earbuds"/"headphones" -- e.g.
+	// "i want beats fit pro for my sister" previously extracted an
+	// empty category and was rejected with "invalid intent: category
+	// required" even though budget and recipient were both given
+	// correctly. Checked last (not first) because it's the broadest
+	// match -- a mention of "AirPods" in an otherwise
+	// accessory/charging/tracking request (an AirPods case, an AirTag)
+	// must resolve to that more specific category instead.
+	case strings.Contains(lower, "earbud") || strings.Contains(lower, "headphone") ||
+		strings.Contains(lower, "airpods") || strings.Contains(lower, "airpod") ||
+		strings.Contains(lower, "beats") || strings.Contains(lower, "buds"):
+		return "earbuds"
 	default:
 		return ""
 	}
@@ -124,6 +174,18 @@ func parsePriority(lower string) string {
 		return "comfort_fit"
 	case strings.Contains(lower, "warranty") || strings.Contains(lower, "support"):
 		return "extended_warranty"
+	// secure_fit/sweat_resistant are beats-fit-pro's distinguishing
+	// features (db/seeds/001_catalog.sql) -- without this, a workout/gym
+	// request would score identically against every earbuds SKU instead
+	// of preferring the one actually built for that use case.
+	case strings.Contains(lower, "workout") || strings.Contains(lower, "gym") ||
+		strings.Contains(lower, "exercise") || strings.Contains(lower, "run") ||
+		strings.Contains(lower, "sweat"):
+		return "secure_fit"
+	// heart_rate_sensing is airpods-pro-3's distinguishing feature over
+	// the otherwise-identical airpods-pro-2 (same price, same ANC).
+	case strings.Contains(lower, "heart rate"):
+		return "heart_rate_sensing"
 	default:
 		return ""
 	}
@@ -133,7 +195,13 @@ func parseRecipient(lower string) string {
 	if strings.Contains(lower, "sister") {
 		return "sister"
 	}
-	if strings.Contains(lower, "brother") {
+	// "bro" is extremely common shorthand for "brother" in a casual
+	// shopping request ("earbuds for my bro, under 40k") -- without it,
+	// a prompt naming no recipient word from the LLM's declared enum
+	// (see llm_extractor.go's intentSystemPrompt) simply left Recipient
+	// blank, which isn't validated so it never broke anything, but did
+	// throw away information the buyer clearly gave.
+	if strings.Contains(lower, "brother") || strings.Contains(lower, "bro") {
 		return "brother"
 	}
 	return ""

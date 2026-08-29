@@ -162,24 +162,77 @@ func TestDeterministicExtractorCoversFullCatalog(t *testing.T) {
 	extractor := NewDeterministicExtractor()
 
 	cases := []struct {
-		prompt       string
-		wantCategory string
-		wantPriority string
+		prompt        string
+		wantCategory  string
+		wantPriority  string
+		wantBudget    int64
+		wantRecipient string
 	}{
 		{
 			prompt:       "I need a MagSafe charger, budget ₹5,000, fast charging and magnetic alignment please.",
 			wantCategory: "charging",
 			wantPriority: "fast_charging",
+			wantBudget:   5000,
 		},
 		{
 			prompt:       "Looking for AppleCare, budget ₹3,000, want the extended warranty.",
 			wantCategory: "accessories",
 			wantPriority: "extended_warranty",
+			wantBudget:   3000,
 		},
 		{
 			prompt:       "I want new ear tips for my AirPods, budget ₹2,000, need a comfortable fit.",
 			wantCategory: "accessories",
 			wantPriority: "comfort_fit",
+			wantBudget:   2000,
+		},
+		// The three products added alongside this test's original three
+		// cases in the airpods-pro-3/airtag-4pack/beats-fit-pro expansion
+		// (db/seeds/001_catalog.sql) -- same "keyword must resolve to a
+		// real features/use_cases string" requirement as above.
+		{
+			prompt:       "I need something to track my luggage, budget ₹2,000.",
+			wantCategory: "tracking",
+			wantPriority: "",
+			wantBudget:   2000,
+		},
+		{
+			prompt:       "I want new AirPods with heart rate sensing, budget ₹25,000, earbuds for calls.",
+			wantCategory: "earbuds",
+			wantPriority: "heart_rate_sensing",
+			wantBudget:   25000,
+		},
+		{
+			prompt:       "I need workout earbuds for the gym, budget ₹16,000.",
+			wantCategory: "earbuds",
+			wantPriority: "secure_fit",
+			wantBudget:   16000,
+		},
+		// Regression: this exact phrasing (a named product, not the
+		// generic word "earbuds"/"headphones") previously extracted an
+		// empty category and was rejected by ValidateIntent with
+		// "invalid intent: category required", even though budget and
+		// recipient both parsed correctly. Also exercises the "30k"
+		// budget shorthand (== 30000, not 30).
+		{
+			prompt:        "i want beats fit pro for my sister, my budget is below 30k",
+			wantCategory:  "earbuds",
+			wantPriority:  "",
+			wantBudget:    30000,
+			wantRecipient: "sister",
+		},
+		// Regression: no literal word "budget" anywhere in this prompt
+		// ("under 40k" expresses it instead) -- previously the ambiguity
+		// check required that exact substring and clarified this away
+		// before parseBudget/parseCategory ever ran, even though both
+		// are trivially extractable. Also exercises "bro" as shorthand
+		// for the "brother" recipient.
+		{
+			prompt:        "i want earbuds for my bro, under 40k",
+			wantCategory:  "earbuds",
+			wantPriority:  "",
+			wantBudget:    40000,
+			wantRecipient: "brother",
 		},
 	}
 
@@ -193,6 +246,12 @@ func TestDeterministicExtractorCoversFullCatalog(t *testing.T) {
 		}
 		if intent.Priority != c.wantPriority {
 			t.Fatalf("prompt %q: expected priority %s, got %s", c.prompt, c.wantPriority, intent.Priority)
+		}
+		if intent.Budget != c.wantBudget {
+			t.Fatalf("prompt %q: expected budget %d, got %d", c.prompt, c.wantBudget, intent.Budget)
+		}
+		if intent.Recipient != c.wantRecipient {
+			t.Fatalf("prompt %q: expected recipient %s, got %s", c.prompt, c.wantRecipient, intent.Recipient)
 		}
 	}
 }

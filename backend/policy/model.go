@@ -81,8 +81,36 @@ func DefaultConfig() PolicyConfig {
 		AllowedMerchants:  []string{"merchant_001"},
 		AllowedCurrencies: []string{"INR"},
 		// All monetary amounts are paise; this is a ₹30,000 ceiling.
-		Ceiling:         3_000_000,
-		AllowedProducts: []string{"airpods-pro-2", "airpods-case", "applecare", "usb-c-adapter"},
+		Ceiling: 3_000_000,
+		// AllowedProducts must list every product ID actually seeded into
+		// the catalog (db/seeds/001_catalog.sql). This has already gone
+		// stale twice: first when it only listed the original 4 SKUs
+		// (files/AUDIT-2026-08-29.md §3.2), then again after
+		// airpods-pro-3/airtag-4pack/beats-fit-pro were added and this
+		// list wasn't -- "product beats-fit-pro is not permitted" at
+		// checkout was that second occurrence. There is no dynamic
+		// catalog lookup here -- Engine has no dependency on the
+		// catalog package at all (see engine.go's checkProducts) -- so
+		// this genuinely has to be updated by hand whenever the catalog
+		// changes. campaign.DefaultConfig() reuses this exact slice
+		// (see campaign/model.go) instead of keeping its own separate
+		// copy, specifically so a future catalog addition only has to
+		// be added in ONE place, not two.
+		AllowedProducts: []string{
+			"airpods-pro-2",
+			"airpods-case",
+			"applecare",
+			"usb-c-adapter",
+			"wireless-charging-pad",
+			"airpods-max",
+			"airpods-3",
+			"magsafe-charger",
+			"lightning-usbc-cable",
+			"airpods-eartips",
+			"airpods-pro-3",
+			"airtag-4pack",
+			"beats-fit-pro",
+		},
 		BudgetTolerance: 0,
 	}
 }
