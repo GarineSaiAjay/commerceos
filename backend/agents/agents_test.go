@@ -150,3 +150,49 @@ func TestAmbiguousIntentDegradesGracefully(t *testing.T) {
 		t.Fatalf("expected ErrAmbiguousIntent, got %v", err)
 	}
 }
+
+// TestDeterministicExtractorCoversFullCatalog proves the no-LLM fallback
+// extractor (used whenever OPENROUTER_API_KEY is unset) isn't blind to
+// the products db/seeds/001_catalog.sql added in commit d30f155 --
+// category must equal a real use_cases entry and priority a real
+// features entry (agents.Searcher.scoreProduct compares by exact
+// string equality), or a keyword parses into an intent that can never
+// actually move a product's rank.
+func TestDeterministicExtractorCoversFullCatalog(t *testing.T) {
+	extractor := NewDeterministicExtractor()
+
+	cases := []struct {
+		prompt           string
+		wantCategory     string
+		wantPriority     string
+	}{
+		{
+			prompt:       "I need a MagSafe charger, budget ₹5,000, fast charging and magnetic alignment please.",
+			wantCategory: "charging",
+			wantPriority: "fast_charging",
+		},
+		{
+			prompt:       "Looking for AppleCare, budget ₹3,000, want the extended warranty.",
+			wantCategory: "accessories",
+			wantPriority: "extended_warranty",
+		},
+		{
+			prompt:       "I want new ear tips for my AirPods, budget ₹2,000, need a comfortable fit.",
+			wantCategory: "accessories",
+			wantPriority: "comfort_fit",
+		},
+	}
+
+	for _, c := range cases {
+		intent, err := extractor.Extract(context.Background(), c.prompt)
+		if err != nil {
+			t.Fatalf("prompt %q: %v", c.prompt, err)
+		}
+		if intent.Category != c.wantCategory {
+			t.Fatalf("prompt %q: expected category %s, got %s", c.prompt, c.wantCategory, intent.Category)
+		}
+		if intent.Priority != c.wantPriority {
+			t.Fatalf("prompt %q: expected priority %s, got %s", c.prompt, c.wantPriority, intent.Priority)
+		}
+	}
+}

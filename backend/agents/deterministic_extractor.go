@@ -81,7 +81,18 @@ func parseCategory(lower string) string {
 		return "earbuds"
 	case strings.Contains(lower, "laptop"):
 		return "laptop"
-	case strings.Contains(lower, "case"):
+	// "charging" is a real use_cases tag on wireless-charging-pad,
+	// magsafe-charger, and lightning-usbc-cable (db/seeds/001_catalog.sql)
+	// -- without this, "I need a charger" could never rank any of them
+	// above an unrelated product on category match.
+	case strings.Contains(lower, "charger") || strings.Contains(lower, "charging pad") || strings.Contains(lower, "cable"):
+		return "charging"
+	// "accessories" is the shared use_cases tag for applecare, the
+	// usb-c-adapter, and the AirPods ear tips -- same reasoning as above,
+	// just for the rest of the catalog "case" alone couldn't reach.
+	case strings.Contains(lower, "case") || strings.Contains(lower, "adapter") ||
+		strings.Contains(lower, "warranty") || strings.Contains(lower, "applecare") ||
+		strings.Contains(lower, "ear tip") || strings.Contains(lower, "eartip"):
 		return "accessories"
 	default:
 		return ""
@@ -89,13 +100,33 @@ func parseCategory(lower string) string {
 }
 
 func parsePriority(lower string) string {
-	if strings.Contains(lower, "noise cancellation") {
+	// More specific two-word phrases are checked first so they can't be
+	// shadowed by a later single-word check that happens to be a substring
+	// of one of them (none currently collide, but this keeps it that way).
+	switch {
+	case strings.Contains(lower, "noise isolation"):
+		return "noise_isolation"
+	case strings.Contains(lower, "noise cancellation"):
 		return "active_noise_cancellation"
-	}
-	if strings.Contains(lower, "battery") {
+	case strings.Contains(lower, "wireless charging"):
+		return "wireless_charging"
+	case strings.Contains(lower, "fast charging"):
+		return "fast_charging"
+	case strings.Contains(lower, "spatial audio"):
+		return "spatial_audio"
+	case strings.Contains(lower, "battery"):
 		return "battery_life"
+	case strings.Contains(lower, "magnetic"):
+		return "magnetic_alignment"
+	case strings.Contains(lower, "braided"):
+		return "durable_braided"
+	case strings.Contains(lower, "comfort"):
+		return "comfort_fit"
+	case strings.Contains(lower, "warranty") || strings.Contains(lower, "support"):
+		return "extended_warranty"
+	default:
+		return ""
 	}
-	return ""
 }
 
 func parseRecipient(lower string) string {
