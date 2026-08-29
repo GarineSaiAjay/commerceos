@@ -242,6 +242,14 @@ func main() {
 	webhookStore := payment.NewPostgresWebhookEventStore(dbPool)
 
 	auditWriter := audit.NewPostgresWriter(dbPool)
+
+	// Campaign discounts applied in order.CheckoutCart write
+	// best-effort audit events (campaign_discount_applied /
+	// campaign_budget_exhausted) after each checkout commits -- see the
+	// comment above that call site for why it can't be part of the
+	// checkout transaction itself.
+	orderRepo = orderRepo.WithAuditWriter(auditWriter)
+
 	outboxRepo := events.NewPostgresOutboxRepository(dbPool)
 
 	webhookApplier := payment.NewWebhookApplier(
