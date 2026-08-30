@@ -23,6 +23,7 @@ import (
 	"github.com/garinesaiajay/commerceos/mcp"
 	"github.com/garinesaiajay/commerceos/policy"
 	"github.com/garinesaiajay/commerceos/safety"
+	"github.com/garinesaiajay/commerceos/tools"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -197,6 +198,22 @@ func main() {
 	cartRepo := cart.NewPostgresRepository(dbPool)
 	cartService := cart.NewService(cartRepo, catalogRepo)
 	cartHandler := cart.NewHandler(cartService)
+
+	// The bounded tool-calling agent (PLAN-01-AGENTIC-CORE.md §2,
+	// ROADMAP-PRIORITIZED.md P1 item 18) shares the exact same
+	// backend/tools package the MCP server's tool handlers use (item 17)
+	// -- constructed here, after catalogService/cartService/growthAgent
+	// all exist, and wired onto the already-built agentHandler.
+	// NewToolCallingAgentFromEnv returns nil without OPENROUTER_API_KEY,
+	// same convention as llmExtractor above; WithLoopAgent(nil) makes
+	// /agent/loop respond 503 rather than panic, leaving /agent/checkout
+	// fully unaffected.
+	toolLoopAgent := agents.NewToolCallingAgentFromEnv(tools.Dependencies{
+		Catalog: catalogService,
+		Cart:    cartService,
+		Growth:  growthAgent,
+	})
+	agentHandler.WithLoopAgent(toolLoopAgent)
 
 	// -------------------------
 	// Order
@@ -642,6 +659,15 @@ func main() {
 	commerceMux.HandleFunc(
 		"/agent/checkout",
 		agentHandler.PlanCheckout,
+	)
+
+	// Item 18: bounded tool-calling agent loop -- a second, genuinely
+	// multi-step agentic path alongside the fixed single-shot one above.
+	// See tool_loop.go's doc comment for why it can never reach a
+	// money-moving tool.
+	commerceMux.HandleFunc(
+		"/agent/loop",
+		agentHandler.PlanCheckoutLoop,
 	)
 
 	// Phase 5: growth agent
