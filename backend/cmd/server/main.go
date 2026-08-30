@@ -150,7 +150,16 @@ func main() {
 		agentExtractor = agents.NewRacingExtractor(llmExtractor, deterministicExtractor)
 	}
 	agentSearcher := agents.NewSearcher(catalogRepo)
-	buyerAgent := agents.NewBuyerAgent(agentExtractor, agentSearcher)
+
+	// agentConversationStore backs conversation memory (PLAN-01-AGENTIC-CORE.md
+	// §3, ROADMAP-PRIORITIZED.md P0 item 6): a follow-up like "no, for my
+	// brother instead" is understood against what the buyer already said
+	// in this cart, instead of failing extraction from scratch. Wiring it
+	// via WithConversationStore is opt-in and additive -- buyerAgent's
+	// original PlanCheckout keeps working unchanged either way.
+	agentConversationStore := agents.NewPostgresConversationStore(dbPool)
+	buyerAgent := agents.NewBuyerAgent(agentExtractor, agentSearcher).
+		WithConversationStore(agentConversationStore)
 	agentHandler := agents.NewHandler(buyerAgent)
 
 	// -------------------------

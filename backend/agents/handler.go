@@ -18,6 +18,11 @@ func NewHandler(agent *BuyerAgent) *Handler {
 type planRequest struct {
 	Prompt   string `json:"prompt"`
 	Merchant string `json:"merchant"`
+	// CartID doubles as the conversation_id for agent memory
+	// (PLAN-01-AGENTIC-CORE.md §3). Optional and backward compatible:
+	// an empty/omitted CartID falls back to the original memoryless
+	// PlanCheckout, unchanged.
+	CartID string `json:"cart_id"`
 }
 
 // PlanCheckout handles POST /agent/checkout — it produces a Proposed
@@ -39,7 +44,15 @@ func (h *Handler) PlanCheckout(w http.ResponseWriter, r *http.Request) {
 		req.Merchant = "merchant_001"
 	}
 
-	plan, err := h.agent.PlanCheckout(r.Context(), req.Prompt, req.Merchant)
+	var (
+		plan CheckoutPlan
+		err  error
+	)
+	if req.CartID != "" {
+		plan, err = h.agent.PlanCheckoutInConversation(r.Context(), req.CartID, req.Prompt, req.Merchant)
+	} else {
+		plan, err = h.agent.PlanCheckout(r.Context(), req.Prompt, req.Merchant)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

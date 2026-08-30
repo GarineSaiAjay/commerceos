@@ -60,7 +60,20 @@ func ParseIntentJSON(data []byte) (Intent, error) {
 	}
 
 	if raw.Clarify != nil {
-		return Intent{Clarify: *raw.Clarify}, nil
+		// Whatever fields the model DID provide alongside a clarify
+		// request are preserved, not discarded -- a single-shot caller
+		// never looks past Clarify != "" so this is behavior-neutral
+		// there; BuyerAgent.PlanCheckoutInConversation (conversation
+		// memory, PLAN-01-AGENTIC-CORE.md §3) is what uses them, the
+		// same reasoning as DeterministicExtractor's analogous clarify
+		// return in deterministic_extractor.go.
+		return Intent{
+			Budget:    derefInt64(raw.Budget),
+			Category:  deref(raw.Category),
+			Priority:  deref(raw.Priority),
+			Recipient: deref(raw.Recipient),
+			Clarify:   *raw.Clarify,
+		}, nil
 	}
 
 	if raw.Budget == nil || raw.Category == nil {
@@ -86,4 +99,11 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func derefInt64(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }

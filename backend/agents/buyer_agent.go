@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/garinesaiajay/commerceos/policy"
 )
@@ -12,8 +13,9 @@ import (
 // Service — it only produces a policy.ProposedAction and hands it to
 // the Policy Engine. It has no financial authority.
 type BuyerAgent struct {
-	extractor IntentExtractor
-	searcher  *Searcher
+	extractor     IntentExtractor
+	searcher      *Searcher
+	conversations ConversationStore
 }
 
 func NewBuyerAgent(extractor IntentExtractor, searcher *Searcher) *BuyerAgent {
@@ -21,6 +23,16 @@ func NewBuyerAgent(extractor IntentExtractor, searcher *Searcher) *BuyerAgent {
 		extractor: extractor,
 		searcher:  searcher,
 	}
+}
+
+// WithConversationStore opts a BuyerAgent into conversation memory
+// (PLAN-01-AGENTIC-CORE.md §3) and returns the same agent for chaining
+// at construction time. Leaving this unset is fully supported —
+// PlanCheckoutInConversation falls back to plain PlanCheckout when no
+// store is configured, and PlanCheckout itself never depends on one.
+func (a *BuyerAgent) WithConversationStore(store ConversationStore) *BuyerAgent {
+	a.conversations = store
+	return a
 }
 
 // CheckoutPlan is the agent's proposal plus the reasoning.
@@ -58,6 +70,14 @@ var ErrNoSuitableProduct = errors.New("no suitable product for intent")
 
 // PlanCheckout turns a natural-language prompt into a Proposed Action.
 // The agent names a product_id; it never writes price/quantity itself.
+//
+// This is the original, memoryless entry point: each call is extracted
+// and searched in isolation, with no reference to any prior turn. It is
+// kept unchanged (same signature, same behavior) for backward
+// compatibility with any caller that doesn't have a conversation_id
+// (cart_id) to key memory off of. PlanCheckoutInConversation below is
+// the memory-aware entry point and delegates to the same planFromIntent
+// helper this uses once it has a validated Intent.
 func (a *BuyerAgent) PlanCheckout(
 	ctx context.Context,
 	prompt string,
@@ -73,6 +93,125 @@ func (a *BuyerAgent) PlanCheckout(
 		return CheckoutPlan{}, ErrAmbiguousIntent
 	}
 
+	return a.planFromIntent(ctx, intent, merchant)
+}
+
+// PlanCheckoutInConversation is PlanCheckout with conversation memory
+// layered on top (PLAN-01-AGENTIC-CORE.md §3, ROADMAP-PRIORITIZED.md P0
+// item 6). cartID doubles as the conversation_id: a buyer's cart already
+// anchors their session, so no new identity system is needed.
+//
+// The new prompt is still extracted in isolation (a.extractor.Extract
+// never sees prior turns directly), but the resulting Intent is then
+// merged over the last known Intent stored for this cartID (see
+// mergeIntent's doc comment for exactly what "merge" means and its
+// limits) before validation. This is what turns "no, for my brother
+// instead" — which alone has no budget or category and would otherwise
+// fail validation from scratch — into a valid follow-up.
+//
+// If cartID is empty or no ConversationStore is configured, this
+// degrades to plain PlanCheckout with zero behavior change — memory is
+// strictly additive. A ConversationStore failure while reading history
+// also degrades to plain PlanCheckout for this call, rather than
+// failing the request: memory is an enhancement, not a dependency the
+// agent's core job should ever be blocked on.
+func (a *BuyerAgent) PlanCheckoutInConversation(
+	ctx context.Context,
+	cartID string,
+	prompt string,
+	merchant string,
+) (CheckoutPlan, error) {
+	if a.conversations == nil || cartID == "" {
+		return a.PlanCheckout(ctx, prompt, merchant)
+	}
+
+	newIntent, err := a.extractor.Extract(ctx, prompt)
+	// ErrAmbiguousIntent is a legitimate answer, not a hard failure --
+	// same treatment FallbackExtractor/RacingExtractor already give it
+	// one layer down. The intent returned alongside it may still carry
+	// partial fields (see llm_extractor.go and deterministic_extractor.go's
+	// analogous clarify returns), which is exactly what memory needs: a
+	// standalone "no, for my brother instead" is ambiguous on its own,
+	// but still worth merging into what the buyer already said instead
+	// of aborting the whole conversation. Any other error (timeout,
+	// network failure, malformed response) is still a hard failure,
+	// unchanged from PlanCheckout's behavior.
+	if err != nil && !errors.Is(err, ErrAmbiguousIntent) {
+		return CheckoutPlan{}, err
+	}
+
+	prevIntent, hadPrev, histErr := a.conversations.LastKnownIntent(ctx, cartID)
+	if histErr != nil {
+		log.Printf("[agents] conversation history unavailable for cart %s, continuing without memory: %v", cartID, histErr)
+		return a.PlanCheckout(ctx, prompt, merchant)
+	}
+
+	merged := newIntent
+	if hadPrev {
+		merged = mergeIntent(prevIntent, newIntent)
+	} else {
+		merged.Clarify = ""
+	}
+
+	if err := ValidateIntent(merged); err != nil {
+		// Still incomplete even with prior context -- same safe no-op
+		// as PlanCheckout's clarify path, just recorded in history so
+		// the buyer's next attempt has this turn to build on too.
+		a.recordTurn(ctx, cartID, prompt, merged, hadPrev || merged != (Intent{}))
+		a.recordAssistantTurn(ctx, cartID, clarifyText(newIntent))
+		return CheckoutPlan{}, ErrAmbiguousIntent
+	}
+
+	plan, err := a.planFromIntent(ctx, merged, merchant)
+
+	a.recordTurn(ctx, cartID, prompt, merged, true)
+
+	if err != nil {
+		a.recordAssistantTurn(ctx, cartID, err.Error())
+		return CheckoutPlan{}, err
+	}
+
+	a.recordAssistantTurn(ctx, cartID, plan.Reasoning)
+
+	return plan, nil
+}
+
+// clarifyText prefers the extractor's own clarify question (it may name
+// specifically what's missing) and falls back to a generic prompt for
+// the rare case an extractor returns Clarify without a message.
+func clarifyText(intent Intent) string {
+	if intent.Clarify != "" {
+		return intent.Clarify
+	}
+	return "I need a bit more information — what would you like to buy, and what's the budget?"
+}
+
+// recordTurn persists the buyer's message and, when saveIntent is true,
+// the merged Intent snapshot alongside it. Store failures are logged,
+// not returned -- conversation memory must never fail the buyer-facing
+// request it's layered on top of.
+func (a *BuyerAgent) recordTurn(ctx context.Context, cartID, prompt string, intent Intent, saveIntent bool) {
+	var snapshot *Intent
+	if saveIntent {
+		snapshot = &intent
+	}
+	if err := a.conversations.AppendTurn(ctx, cartID, "user", prompt, snapshot); err != nil {
+		log.Printf("[agents] failed to record user turn for cart %s: %v", cartID, err)
+	}
+}
+
+func (a *BuyerAgent) recordAssistantTurn(ctx context.Context, cartID, content string) {
+	if err := a.conversations.AppendTurn(ctx, cartID, "assistant", content, nil); err != nil {
+		log.Printf("[agents] failed to record assistant turn for cart %s: %v", cartID, err)
+	}
+}
+
+// planFromIntent is the shared tail of both PlanCheckout and
+// PlanCheckoutInConversation: given an already-validated Intent, search
+// the catalog, pick the top match, and build the ProposedAction plus
+// reasoning. Neither entry point writes price/quantity itself here —
+// the agent only ever names a product_id.
+func (a *BuyerAgent) planFromIntent(ctx context.Context, intent Intent, merchant string) (CheckoutPlan, error) {
 	results, err := a.searcher.Search(ctx, intent)
 	if err != nil {
 		return CheckoutPlan{}, err
