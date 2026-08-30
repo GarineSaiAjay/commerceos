@@ -8,11 +8,22 @@ import (
 
 // Handler exposes the Agent Commerce Contract endpoints.
 type Handler struct {
-	agent *BuyerAgent
+	agent     *BuyerAgent
+	loopAgent *ToolCallingAgent
 }
 
 func NewHandler(agent *BuyerAgent) *Handler {
 	return &Handler{agent: agent}
+}
+
+// WithLoopAgent attaches the bounded tool-calling agent (item 18) that
+// powers POST /agent/loop. Optional and additive: a nil loopAgent (no
+// OPENROUTER_API_KEY configured, same convention as buyerAgent's
+// LLMExtractor) simply makes /agent/loop respond 503 -- /agent/checkout
+// is completely unaffected either way.
+func (h *Handler) WithLoopAgent(loopAgent *ToolCallingAgent) *Handler {
+	h.loopAgent = loopAgent
+	return h
 }
 
 type planRequest struct {
@@ -59,6 +70,46 @@ func (h *Handler) PlanCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, plan)
+}
+
+type loopRequest struct {
+	Prompt   string `json:"prompt"`
+	Merchant string `json:"merchant"`
+}
+
+// PlanCheckoutLoop handles POST /agent/loop -- the bounded tool-calling
+// agent (PLAN-01-AGENTIC-CORE.md §2, ROADMAP-PRIORITIZED.md P1 item 18).
+// Like PlanCheckout, it only ever produces a Proposed Action; it never
+// moves money -- see tool_loop.go's doc comment for why the loop
+// structurally cannot reach any money-moving tool. Kept as its own
+// endpoint, separate from /agent/checkout, so the existing single-shot
+// path stays completely unchanged by this addition.
+func (h *Handler) PlanCheckoutLoop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.loopAgent == nil {
+		http.Error(w, "tool-calling agent not configured (OPENROUTER_API_KEY not set)", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req loopRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Merchant == "" {
+		req.Merchant = "merchant_001"
+	}
+
+	result, err := h.loopAgent.Run(r.Context(), req.Prompt, req.Merchant)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
