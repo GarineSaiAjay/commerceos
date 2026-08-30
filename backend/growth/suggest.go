@@ -9,11 +9,21 @@ import (
 
 	"github.com/garinesaiajay/commerceos/commerce/cart"
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
+	"github.com/garinesaiajay/commerceos/commerce/order"
 )
 
 // CartReader is the cart surface SuggestHandler needs.
 type CartReader interface {
 	GetCart(ctx context.Context, id string) (cart.Cart, error)
+}
+
+// OrderReader is the order surface SuggestForOrder needs -- just enough
+// to read back a completed order's line items and totals. GET
+// /orders/{id} is already reachable without login so checkout.tsx can
+// show the buyer their own order (P0.4); SuggestForOrder reuses that
+// same "no separate buyer identity yet" posture (files/AUTH.md).
+type OrderReader interface {
+	GetOrder(ctx context.Context, orderID string) (order.Order, error)
 }
 
 // CatalogSearcher is the catalog surface SuggestHandler needs -- a
@@ -109,27 +119,33 @@ func heuristicEVInputs(candidatePrice int64, overlapScore int, averageRating flo
 	}
 }
 
-// SuggestHandler serves POST /growth/suggest. Given a cart_id, it picks
-// the single best complementary product -- by content overlap with what
-// is already in the cart (shared use_cases/compatibility/features tags)
-// -- scores it with the same deterministic EV formula /growth/evaluate
-// uses, and runs it through GrowthAgent.EvaluateCandidate so the budget
-// check and persistence path are identical to the rest of the growth
-// agent (the resulting recommendation is saved to the same table the
-// dashboard's ai_revenue metric already joins on via recommendations.cart_id).
-// It never recommends when nothing in the catalog shares a signal with
-// the cart -- a safe no-op, the same posture agents.IntentExtractor
-// takes on an ambiguous prompt (see agents/intent.go's Clarify field) --
-// rather than guessing at an unrelated product.
+// SuggestHandler serves POST /growth/suggest (cart-based), POST
+// /growth/suggest/product (product-detail-based, item 19 /
+// PLAN-03-PROACTIVE-GROWTH-AGENT.md §3), and POST /growth/suggest/order
+// (post-checkout-based, §4). All three pick the single best
+// complementary product -- by content overlap with a signal set (a
+// cart's aggregate tags, one viewed product's own tags, or a completed
+// order's aggregate tags) -- score it with the same deterministic EV
+// formula /growth/evaluate uses, and run it through
+// GrowthAgent.EvaluateCandidate so the budget check and persistence
+// path are identical no matter which surface triggered it (the
+// resulting recommendation is saved to the same table the dashboard's
+// ai_revenue metric already joins on via recommendations.cart_id). None
+// of the three ever recommends when nothing in the catalog shares a
+// signal with the input -- a safe no-op, the same posture
+// agents.IntentExtractor takes on an ambiguous prompt (see
+// agents/intent.go's Clarify field) -- rather than guessing at an
+// unrelated product.
 type SuggestHandler struct {
 	catalog    CatalogSearcher
 	cart       CartReader
+	orders     OrderReader
 	agent      *GrowthAgent
 	dismissals DismissalStore
 }
 
-func NewSuggestHandler(catalog CatalogSearcher, cartReader CartReader, agent *GrowthAgent, dismissals DismissalStore) *SuggestHandler {
-	return &SuggestHandler{catalog: catalog, cart: cartReader, agent: agent, dismissals: dismissals}
+func NewSuggestHandler(catalog CatalogSearcher, cartReader CartReader, orders OrderReader, agent *GrowthAgent, dismissals DismissalStore) *SuggestHandler {
+	return &SuggestHandler{catalog: catalog, cart: cartReader, orders: orders, agent: agent, dismissals: dismissals}
 }
 
 // SuggestedProduct carries just enough catalog detail to render the
@@ -149,6 +165,146 @@ type SuggestResponse struct {
 	Message        string            `json:"message,omitempty"`
 }
 
+// scoredCandidate is a catalog product paired with its content-overlap
+// score against a signal set -- shared between all three suggestion
+// entry points below.
+type scoredCandidate struct {
+	product catalog.Product
+	score   int
+}
+
+// buildSignals aggregates use_cases/compatibility/features tags across
+// one or more products into a single signal set. The cart-based
+// endpoint passes every product currently in the cart; the
+// product-detail endpoint passes just the one viewed product; the
+// post-checkout endpoint passes every product in the completed order.
+func buildSignals(products ...catalog.Product) map[string]bool {
+	signals := make(map[string]bool)
+	for _, product := range products {
+		for _, tag := range product.UseCases {
+			signals[tag] = true
+		}
+		for _, tag := range product.Compatibility {
+			signals[tag] = true
+		}
+		for _, tag := range product.Features {
+			signals[tag] = true
+		}
+	}
+	return signals
+}
+
+// bestCandidate scores every catalog product against signals, skipping
+// anything in exclude, from a different merchant, or currently out of
+// stock, and returns the highest-scoring match. Ties break toward the
+// cheaper item -- a smaller, more plausible add-on beats an equally
+// relevant but expensive one. This is the one scoring function shared
+// by all three /growth/suggest* entry points (PLAN-03-PROACTIVE-GROWTH-
+// AGENT.md §3: "One scoring function, ... call sites -- no duplicated
+// logic").
+func bestCandidate(catalogProducts []catalog.Product, merchantID string, signals map[string]bool, exclude map[string]bool) (scoredCandidate, bool) {
+	var candidates []scoredCandidate
+
+	for _, product := range catalogProducts {
+		if exclude[product.ID] || product.Availability <= 0 || product.Merchant.ID != merchantID {
+			continue
+		}
+		score := 0
+		for _, tag := range product.UseCases {
+			if signals[tag] {
+				score++
+			}
+		}
+		for _, tag := range product.Compatibility {
+			if signals[tag] {
+				score++
+			}
+		}
+		for _, tag := range product.Features {
+			if signals[tag] {
+				score++
+			}
+		}
+		if score > 0 {
+			candidates = append(candidates, scoredCandidate{product: product, score: score})
+		}
+	}
+
+	if len(candidates) == 0 {
+		return scoredCandidate{}, false
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].product.Price.Amount < candidates[j].product.Price.Amount
+	})
+
+	return candidates[0], true
+}
+
+// loadDismissed reads back every product previously dismissed for id
+// (a cart_id in every current caller -- the product-detail and
+// post-checkout endpoints both key dismissals by the same cart_id the
+// buyer's session already has, so a "No thanks" on one surface holds
+// across all of them, not just the surface it was given on). A missing
+// dismissals store (e.g. an older wiring or a test) just means nothing
+// is excluded, not an error.
+func (h *SuggestHandler) loadDismissed(ctx context.Context, id string) (map[string]bool, error) {
+	dismissed := make(map[string]bool)
+	if h.dismissals == nil || id == "" {
+		return dismissed, nil
+	}
+	ids, err := h.dismissals.ListDismissedProductIDs(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("list dismissals: %w", err)
+	}
+	for _, productID := range ids {
+		dismissed[productID] = true
+	}
+	return dismissed, nil
+}
+
+// evaluate runs the shared EV-scoring + budget-check + persistence step
+// (GrowthAgent.EvaluateCandidate) for a chosen candidate and turns the
+// result into the wire response. cartID is the key every recommendation
+// is stored and deduplicated under (recommendations.id is
+// "rec_<cartID>_<productID>", upserted on re-evaluation) -- every
+// caller below passes a real cart_id so a product suggested from
+// several surfaces during the same shopping session converges on one
+// row, not three.
+func (h *SuggestHandler) evaluate(ctx context.Context, cartID string, cartTotal int64, best scoredCandidate) (SuggestResponse, error) {
+	rec, err := h.agent.EvaluateCandidate(
+		ctx,
+		cartID,
+		cartTotal,
+		BudgetCheck{CartTotal: cartTotal, Budget: DemoBudgetCeiling, Tolerance: DemoBudgetTolerance},
+		best.product.ID,
+		heuristicEVInputs(best.product.Price.Amount, best.score, best.product.AverageRating),
+	)
+	if err != nil {
+		return SuggestResponse{}, err
+	}
+
+	if rec.Decision != "RECOMMEND" {
+		return SuggestResponse{Available: false, Message: rec.Reason}, nil
+	}
+
+	return SuggestResponse{
+		Available:      true,
+		Recommendation: &rec,
+		Product: &SuggestedProduct{
+			ProductID: best.product.ID,
+			Title:     best.product.Title,
+			Price:     best.product.Price.Amount,
+			Currency:  best.product.Price.Currency,
+		},
+	}, nil
+}
+
+// Suggest serves POST /growth/suggest -- cross-sell scored against
+// everything currently in a live cart.
 func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -175,45 +331,26 @@ func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inCart := make(map[string]bool, len(c.Items))
-	var cartTotal int64
-	signals := make(map[string]bool)
-
-	// Products the buyer already said "no thanks" to for this cart --
-	// excluded the same way an in-cart product already is, so dismissal
-	// actually sticks instead of resetting on the next fetch (previously
-	// this only lived in frontend React state, lost on reload). A
-	// missing/nil dismissals store (e.g. an older wiring or a test) just
-	// means nothing is excluded, not an error.
-	dismissed := make(map[string]bool)
-	if h.dismissals != nil {
-		ids, err := h.dismissals.ListDismissedProductIDs(ctx, req.CartID)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("list dismissals: %v", err), http.StatusInternalServerError)
-			return
-		}
-		for _, id := range ids {
-			dismissed[id] = true
-		}
-	}
+	exclude := make(map[string]bool, len(c.Items))
+	var cartProducts []catalog.Product
 
 	for _, item := range c.Items {
-		inCart[item.ProductID] = true
-		cartTotal += item.Total
+		exclude[item.ProductID] = true
 
 		product, err := h.catalog.GetProduct(ctx, item.ProductID)
 		if err != nil {
 			continue // a stale/removed product shouldn't fail the whole suggestion
 		}
-		for _, tag := range product.UseCases {
-			signals[tag] = true
-		}
-		for _, tag := range product.Compatibility {
-			signals[tag] = true
-		}
-		for _, tag := range product.Features {
-			signals[tag] = true
-		}
+		cartProducts = append(cartProducts, product)
+	}
+
+	dismissed, err := h.loadDismissed(ctx, req.CartID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for productID := range dismissed {
+		exclude[productID] = true
 	}
 
 	catalogProducts, err := h.catalog.ListProducts(ctx)
@@ -221,42 +358,9 @@ func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("list catalog: %v", err), http.StatusInternalServerError)
 		return
 	}
-	type scoredCandidate struct {
-		product catalog.Product
-		score   int
-	}
 
-	var candidates []scoredCandidate
-
-	for _, product := range catalogProducts {
-		if inCart[product.ID] || dismissed[product.ID] || product.Availability <= 0 {
-			continue
-		}
-		if product.Merchant.ID != c.MerchantID {
-			continue
-		}
-		score := 0
-		for _, tag := range product.UseCases {
-			if signals[tag] {
-				score++
-			}
-		}
-		for _, tag := range product.Compatibility {
-			if signals[tag] {
-				score++
-			}
-		}
-		for _, tag := range product.Features {
-			if signals[tag] {
-				score++
-			}
-		}
-		if score > 0 {
-			candidates = append(candidates, scoredCandidate{product: product, score: score})
-		}
-	}
-
-	if len(candidates) == 0 {
+	best, ok := bestCandidate(catalogProducts, c.MerchantID, buildSignals(cartProducts...), exclude)
+	if !ok {
 		writeSuggestJSON(w, http.StatusOK, SuggestResponse{
 			Available: false,
 			Message:   "no complementary product found for this cart",
@@ -264,51 +368,190 @@ func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		// Tie-break toward the cheaper item -- a smaller, more plausible
-		// add-on beats an equally-relevant but expensive one.
-		return candidates[i].product.Price.Amount < candidates[j].product.Price.Amount
-	})
-	best := candidates[0]
-
-	rec, err := h.agent.EvaluateCandidate(
-		ctx,
-		req.CartID,
-		cartTotal,
-		BudgetCheck{CartTotal: cartTotal, Budget: DemoBudgetCeiling, Tolerance: DemoBudgetTolerance},
-		best.product.ID,
-		heuristicEVInputs(best.product.Price.Amount, best.score, best.product.AverageRating),
-	)
+	resp, err := h.evaluate(ctx, req.CartID, c.Subtotal, best)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if rec.Decision != "RECOMMEND" {
-		writeSuggestJSON(w, http.StatusOK, SuggestResponse{Available: false, Message: rec.Reason})
+	writeSuggestJSON(w, http.StatusOK, resp)
+}
+
+// SuggestForProduct serves POST /growth/suggest/product -- cross-sell
+// scored against a single viewed product's own tags, independent of
+// whatever is (or isn't yet) in the cart (PLAN-03-PROACTIVE-GROWTH-
+// AGENT.md §3, item 19). This is what powers the "Frequently paired
+// with" line in the product detail expand -- it reaches a buyer who
+// never opens the agent chat or adds anything to a cart, who today gets
+// zero cross-sell exposure whatsoever. cart_id is still required (the
+// buyer's session always has one -- checkout.tsx mints one on mount,
+// well before the first item is added) so a recommendation shown here
+// dedupes/ties into the same shopping session's recommendation history
+// as every other surface, and so a "No thanks" here is honored by the
+// cart-badge suggestion later, not just on this one panel. A cart_id
+// that doesn't exist in the DB yet (nothing added yet) is not an error
+// here -- it just means there's no live cart context to layer on top
+// (no items to exclude, no running total for the budget check).
+func (h *SuggestHandler) SuggestForProduct(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	writeSuggestJSON(w, http.StatusOK, SuggestResponse{
-		Available:      true,
-		Recommendation: &rec,
-		Product: &SuggestedProduct{
-			ProductID: best.product.ID,
-			Title:     best.product.Title,
-			Price:     best.product.Price.Amount,
-			Currency:  best.product.Price.Currency,
-		},
-	})
+	var req struct {
+		ProductID string `json:"product_id"`
+		CartID    string `json:"cart_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ProductID == "" || req.CartID == "" {
+		http.Error(w, "product_id and cart_id required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+
+	viewed, err := h.catalog.GetProduct(ctx, req.ProductID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	exclude := map[string]bool{req.ProductID: true}
+	var cartTotal int64
+
+	if c, err := h.cart.GetCart(ctx, req.CartID); err == nil {
+		cartTotal = c.Subtotal
+		for _, item := range c.Items {
+			exclude[item.ProductID] = true
+		}
+	}
+	// else: no live cart yet for this cart_id -- proceed with cartTotal 0
+	// and nothing extra excluded, see doc comment above.
+
+	dismissed, err := h.loadDismissed(ctx, req.CartID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for productID := range dismissed {
+		exclude[productID] = true
+	}
+
+	catalogProducts, err := h.catalog.ListProducts(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("list catalog: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	best, ok := bestCandidate(catalogProducts, viewed.Merchant.ID, buildSignals(viewed), exclude)
+	if !ok {
+		writeSuggestJSON(w, http.StatusOK, SuggestResponse{
+			Available: false,
+			Message:   fmt.Sprintf("no complementary product found for %s", viewed.Title),
+		})
+		return
+	}
+
+	resp, err := h.evaluate(ctx, req.CartID, cartTotal, best)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeSuggestJSON(w, http.StatusOK, resp)
+}
+
+// SuggestForOrder serves POST /growth/suggest/order -- "complete the
+// set" cross-sell scored against the items in a just-completed order,
+// not a live cart (PLAN-03-PROACTIVE-GROWTH-AGENT.md §4, item 19). The
+// order-complete screen is the one real, low-risk revenue surface most
+// e-commerce checkouts use that this app previously had zero equivalent
+// of. Reuses the order's own cart_id to key the recommendation, and its
+// Subtotal (already net of any campaign discount) as the running total
+// for the budget check -- "would this addition, on top of what you just
+// bought, still fit the mandate."
+func (h *SuggestHandler) SuggestForOrder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OrderID == "" {
+		http.Error(w, "order_id required", http.StatusBadRequest)
+		return
+	}
+
+	if h.orders == nil {
+		http.Error(w, "order lookup unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+
+	ord, err := h.orders.GetOrder(ctx, req.OrderID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if len(ord.Items) == 0 {
+		writeSuggestJSON(w, http.StatusOK, SuggestResponse{Available: false, Message: "order has no items"})
+		return
+	}
+
+	exclude := make(map[string]bool, len(ord.Items))
+	var orderProducts []catalog.Product
+
+	for _, item := range ord.Items {
+		exclude[item.ProductID] = true
+
+		product, err := h.catalog.GetProduct(ctx, item.ProductID)
+		if err != nil {
+			continue // a since-removed product shouldn't fail the whole suggestion
+		}
+		orderProducts = append(orderProducts, product)
+	}
+
+	dismissed, err := h.loadDismissed(ctx, ord.CartID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for productID := range dismissed {
+		exclude[productID] = true
+	}
+
+	catalogProducts, err := h.catalog.ListProducts(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("list catalog: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	best, ok := bestCandidate(catalogProducts, ord.MerchantID, buildSignals(orderProducts...), exclude)
+	if !ok {
+		writeSuggestJSON(w, http.StatusOK, SuggestResponse{
+			Available: false,
+			Message:   "no complementary product found to complete the set",
+		})
+		return
+	}
+
+	resp, err := h.evaluate(ctx, ord.CartID, ord.Subtotal, best)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeSuggestJSON(w, http.StatusOK, resp)
 }
 
 // Dismiss handles POST /growth/suggest/dismiss -- records that the
 // buyer said "no thanks" to a specific product for a specific cart
-// (see DismissalStore). Suggest excludes it from candidates on every
-// subsequent call for that cart. Idempotent: dismissing the same
-// product twice is a no-op (SaveDismissal's ON CONFLICT DO NOTHING).
+// (see DismissalStore). Suggest/SuggestForProduct/SuggestForOrder all
+// exclude it from candidates on every subsequent call keyed to that
+// cart_id. Idempotent: dismissing the same product twice is a no-op
+// (SaveDismissal's ON CONFLICT DO NOTHING).
 func (h *SuggestHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

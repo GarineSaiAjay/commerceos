@@ -68,6 +68,18 @@ interface Product {
   // AppleCare's implicit "2-year" or the cable's implicit "1m".
   attributes?: Record<string, unknown>;
   variants?: ProductVariant[];
+  // features/compatibility/use_cases/return_policy/shipping (item 19,
+  // PLAN-02-CATALOG-AND-COMMERCE.md §4) are all present in every real
+  // API response (catalog.Product never omits them) but were never
+  // rendered anywhere until the product-detail expand below -- optional
+  // here only so a partial Product built from an agent/suggestion
+  // payload (see chooseAlternative/acceptSuggestion's synthetic
+  // `matched` fallback) still type-checks without them.
+  features?: string[];
+  compatibility?: string[];
+  use_cases?: string[];
+  return_policy?: { days: number };
+  shipping?: { estimated_days: number };
 }
 
 interface CartItem {
@@ -358,6 +370,20 @@ export default function CheckoutFlow({
   // defaultVariantFor(product) when a product has no entry here yet.
   const [selectedVariant, setSelectedVariant] = useState<Record<string, string>>({});
 
+  // Product-detail expand (item 19, PLAN-03-PROACTIVE-GROWTH-AGENT.md
+  // §3 / PLAN-02-CATALOG-AND-COMMERCE.md §4) -- at most one product's
+  // detail panel is open at a time, so a single current-suggestion pair
+  // is enough rather than a map keyed by product_id.
+  const [expandedProductId, setExpandedProductId] = useState<string | null>(null);
+  const [detailSuggestion, setDetailSuggestion] = useState<SuggestResponse | null>(null);
+  const [detailSuggestionLoading, setDetailSuggestionLoading] = useState(false);
+
+  // Post-checkout "complete the set" cross-sell (item 19, PLAN-03-
+  // PROACTIVE-GROWTH-AGENT.md §4) -- scored once against the order that
+  // was just placed, shown on the order-complete screen.
+  const [postCheckoutSuggestion, setPostCheckoutSuggestion] = useState<SuggestResponse | null>(null);
+  const [postCheckoutSuggestionLoading, setPostCheckoutSuggestionLoading] = useState(false);
+
   // Persist the active cart ID so a hard reload doesn't lose the cart
   // (P0.2: previously a fresh ID was minted on every mount).
   useEffect(() => {
@@ -393,15 +419,23 @@ export default function CheckoutFlow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function ensureCart() {
+  // targetCartId lets a caller add to a cart OTHER than the one
+  // currently in `cartId` state -- needed because setCartId(...) is
+  // async (a React state update, not visible to code running later in
+  // the same function via closure), so "start a fresh cart and
+  // immediately add this item to it" (acceptPostCheckoutSuggestion)
+  // cannot rely on the `cartId` closure alone. Every existing caller
+  // omits it and gets the previous behavior unchanged.
+  async function ensureCart(targetCartId?: string) {
+    const id = targetCartId ?? cartId;
     try {
-      const res = await fetch(`${API_BASE}/carts/${cartId}`);
+      const res = await fetch(`${API_BASE}/carts/${id}`);
       if (res.status === 404) {
         const createRes = await fetch(`${API_BASE}/carts`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            cart_id: cartId,
+            cart_id: id,
             merchant_id: MERCHANT_ID,
             currency: "INR",
           }),
@@ -416,14 +450,15 @@ export default function CheckoutFlow({
     }
   }
 
-  async function addToCart(product: Product, variantId?: string) {
+  async function addToCart(product: Product, variantId?: string, targetCartId?: string) {
+    const id = targetCartId ?? cartId;
     setLoading(true);
     setMessage("");
     try {
-      await ensureCart();
+      await ensureCart(id);
       const resolvedVariantId = variantId ?? defaultVariantFor(product);
 
-      const res = await fetch(`${API_BASE}/carts/${cartId}/items`, {
+      const res = await fetch(`${API_BASE}/carts/${id}/items`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -435,7 +470,7 @@ export default function CheckoutFlow({
       });
       if (!res.ok) throw new Error("Failed to add item to cart");
 
-      setCart(await fetch(`${API_BASE}/carts/${cartId}`).then((r) => r.json()));
+      setCart(await fetch(`${API_BASE}/carts/${id}`).then((r) => r.json()));
       setStep("cart");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to add item");
@@ -645,6 +680,112 @@ export default function CheckoutFlow({
       });
     }
     setSuggestion(null);
+  }
+
+  // Product-detail cross-sell: POST /growth/suggest/product. Scores
+  // against just the one viewed product's own tags (backend/growth/
+  // suggest.go's SuggestForProduct), not the whole cart -- reaches a
+  // buyer who never adds anything to a cart or opens the agent chat,
+  // the one surface with previously zero cross-sell exposure at all
+  // (PLAN-03-PROACTIVE-GROWTH-AGENT.md §3).
+  async function toggleProductDetail(productId: string) {
+    if (expandedProductId === productId) {
+      setExpandedProductId(null);
+      setDetailSuggestion(null);
+      return;
+    }
+    setExpandedProductId(productId);
+    setDetailSuggestion(null);
+    setDetailSuggestionLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/growth/suggest/product`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product_id: productId, cart_id: cartId }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as SuggestResponse;
+        setDetailSuggestion(data.available ? data : null);
+      } else {
+        setDetailSuggestion(null);
+      }
+    } catch {
+      setDetailSuggestion(null);
+    } finally {
+      setDetailSuggestionLoading(false);
+    }
+  }
+
+  async function acceptDetailSuggestion() {
+    if (!detailSuggestion?.product) return;
+    const suggested = detailSuggestion.product;
+    setDetailSuggestion(null);
+    const matched = products.find((p) => p.product_id === suggested.product_id) ?? {
+      product_id: suggested.product_id,
+      title: suggested.title,
+      price: { amount: suggested.price, currency: suggested.currency },
+      availability: 1,
+    };
+    await addToCart(matched);
+  }
+
+  // Post-checkout "complete the set" cross-sell: POST
+  // /growth/suggest/order, scored against the order that was just
+  // placed rather than a live cart -- the checked-out cart_id would
+  // 404 on GetCart (backend/commerce/cart/service.go), which is exactly
+  // why this is a separate endpoint (backend/growth/suggest.go's
+  // SuggestForOrder) instead of reusing /growth/suggest with the old
+  // cart_id. A real, low-risk revenue surface most e-commerce checkouts
+  // use that this app previously had zero equivalent of
+  // (PLAN-03-PROACTIVE-GROWTH-AGENT.md §4).
+  async function fetchPostCheckoutSuggestion(orderId: string) {
+    setPostCheckoutSuggestionLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/growth/suggest/order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_id: orderId }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as SuggestResponse;
+        setPostCheckoutSuggestion(data.available ? data : null);
+      } else {
+        setPostCheckoutSuggestion(null);
+      }
+    } catch {
+      setPostCheckoutSuggestion(null);
+    } finally {
+      setPostCheckoutSuggestionLoading(false);
+    }
+  }
+
+  // Accepting a post-checkout suggestion starts a brand new cart (the
+  // just-completed one is single-use and already checked_out) with the
+  // suggested item already in it, then lands on the cart screen ready
+  // to check out again -- same reset shape as the "Start a new order"
+  // button below, just pre-populated. Passes the fresh cart id straight
+  // into addToCart/ensureCart rather than relying on setCartId's
+  // (asynchronous) state update, which addToCart's own `cartId` closure
+  // would not see yet in this same function call.
+  async function acceptPostCheckoutSuggestion() {
+    if (!postCheckoutSuggestion?.product) return;
+    const suggested = postCheckoutSuggestion.product;
+    const freshId = freshCartId();
+    setPostCheckoutSuggestion(null);
+    setCartId(freshId);
+    setCart(null);
+    setOrder(null);
+    setPayment(null);
+    setRunId("");
+    setRun(null);
+    setReviews({});
+    const matched = products.find((p) => p.product_id === suggested.product_id) ?? {
+      product_id: suggested.product_id,
+      title: suggested.title,
+      price: { amount: suggested.price, currency: suggested.currency },
+      availability: 1,
+    };
+    await addToCart(matched, undefined, freshId);
   }
 
   // GET /orders?merchant_id=... -- merchant-scoped for now since there
@@ -1078,6 +1219,19 @@ export default function CheckoutFlow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, runId]);
 
+  // Fetch the post-checkout "complete the set" suggestion once, the
+  // moment the order-complete screen has a real order to score against
+  // -- order?.order_id as the dependency (not just `step`) means this
+  // only re-fires for a genuinely new order, not a re-render of the
+  // same one.
+  useEffect(() => {
+    if (step === "complete" && order) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      fetchPostCheckoutSuggestion(order.order_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, order?.order_id]);
+
   async function verifyPayment(response: RazorpayResponse) {
     setMessage("Verifying payment...");
     try {
@@ -1324,53 +1478,105 @@ export default function CheckoutFlow({
                   const displayPrice = activeVariant?.price.amount ?? product.price.amount;
                   const displayAvailability = activeVariant?.availability ?? product.availability;
 
+                  const isExpanded = expandedProductId === product.product_id;
+
                   return (
-                    <li
-                      key={product.product_id}
-                      className="flex items-center justify-between py-4"
-                    >
-                      <div>
-                        <p className="font-semibold text-slate-900">
-                          {product.title}
-                        </p>
-                        <p className="text-sm text-slate-500">
-                          {formatINR(displayPrice)} · {displayAvailability} in stock
-                          {!!product.review_count && (
-                            <>
-                              {" "}
-                              · <span className="text-amber-600">★ {product.average_rating?.toFixed(1)}</span>{" "}
-                              ({product.review_count})
-                            </>
+                    <li key={product.product_id} className="py-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <button
+                            onClick={() => toggleProductDetail(product.product_id)}
+                            className="text-left font-semibold text-slate-900 underline-offset-2 hover:underline"
+                          >
+                            {product.title}
+                          </button>
+                          <p className="text-sm text-slate-500">
+                            {formatINR(displayPrice)} · {displayAvailability} in stock
+                            {!!product.review_count && (
+                              <>
+                                {" "}
+                                · <span className="text-amber-600">★ {product.average_rating?.toFixed(1)}</span>{" "}
+                                ({product.review_count})
+                              </>
+                            )}
+                          </p>
+                          {hasVariants && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {product.variants!.map((variant) => (
+                                <button
+                                  key={variant.variant_id}
+                                  onClick={() =>
+                                    setSelectedVariant((sel) => ({ ...sel, [product.product_id]: variant.variant_id }))
+                                  }
+                                  disabled={variant.availability === 0}
+                                  className={`rounded-full border px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                                    variant.variant_id === activeVariantId
+                                      ? "border-black bg-black text-white"
+                                      : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                                  }`}
+                                >
+                                  {variantLabel(variant, product)}
+                                </button>
+                              ))}
+                            </div>
                           )}
-                        </p>
-                        {hasVariants && (
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {product.variants!.map((variant) => (
-                              <button
-                                key={variant.variant_id}
-                                onClick={() =>
-                                  setSelectedVariant((sel) => ({ ...sel, [product.product_id]: variant.variant_id }))
-                                }
-                                disabled={variant.availability === 0}
-                                className={`rounded-full border px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                                  variant.variant_id === activeVariantId
-                                    ? "border-black bg-black text-white"
-                                    : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
-                                }`}
-                              >
-                                {variantLabel(variant, product)}
-                              </button>
-                            ))}
-                          </div>
-                        )}
+                        </div>
+                        <button
+                          onClick={() => addToCart(product, activeVariantId)}
+                          disabled={loading}
+                          className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+                        >
+                          Add to cart
+                        </button>
                       </div>
-                      <button
-                        onClick={() => addToCart(product, activeVariantId)}
-                        disabled={loading}
-                        className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
-                      >
-                        Add to cart
-                      </button>
+
+                      {isExpanded && (
+                        <div className="mt-3 rounded-lg bg-slate-50 p-4 text-sm text-slate-600">
+                          {!!product.features?.length && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {product.features.map((feature) => (
+                                <span
+                                  key={feature}
+                                  className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs text-slate-600"
+                                >
+                                  {feature.replace(/_/g, " ")}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <p className="mt-3">
+                            {product.return_policy?.days
+                              ? `${product.return_policy.days}-day returns`
+                              : "No returns"}
+                            {!!product.shipping?.estimated_days && (
+                              <> · ships in {product.shipping.estimated_days} day{product.shipping.estimated_days > 1 ? "s" : ""}</>
+                            )}
+                          </p>
+
+                          {detailSuggestionLoading && (
+                            <p className="mt-3 text-xs text-slate-400">Checking for a complementary item...</p>
+                          )}
+                          {!detailSuggestionLoading && detailSuggestion?.product && (
+                            <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+                              <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
+                                Frequently paired with
+                              </p>
+                              <div className="mt-1 flex items-center justify-between">
+                                <p className="text-sm text-slate-900">
+                                  {detailSuggestion.product.title} -- {formatINR(detailSuggestion.product.price)}
+                                </p>
+                                <button
+                                  onClick={acceptDetailSuggestion}
+                                  disabled={loading}
+                                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                                >
+                                  Add
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </li>
                   );
                 })}
@@ -1863,6 +2069,31 @@ export default function CheckoutFlow({
                 </ul>
               </div>
             )}
+
+            {postCheckoutSuggestionLoading && (
+              <p className="mt-6 text-xs text-slate-400">Checking for a complementary item...</p>
+            )}
+            {!postCheckoutSuggestionLoading && postCheckoutSuggestion?.product && (
+              <div className="mt-6 rounded-xl border border-indigo-200 bg-indigo-50 p-6">
+                <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
+                  Complete the set
+                </p>
+                <p className="mt-1 font-semibold text-slate-900">
+                  Add {postCheckoutSuggestion.product.title} -- {formatINR(postCheckoutSuggestion.product.price)}
+                </p>
+                {postCheckoutSuggestion.recommendation && (
+                  <p className="mt-1 text-sm text-indigo-800">{postCheckoutSuggestion.recommendation.reason}</p>
+                )}
+                <button
+                  onClick={acceptPostCheckoutSuggestion}
+                  disabled={loading}
+                  className="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  Add -- starts a new order
+                </button>
+              </div>
+            )}
+
             <button
               onClick={() => {
                 setStep("catalog");
@@ -1874,6 +2105,7 @@ export default function CheckoutFlow({
                 setRun(null);
                 setMessage("");
                 setReviews({});
+                setPostCheckoutSuggestion(null);
               }}
               className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-slate-800"
             >
