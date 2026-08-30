@@ -802,6 +802,19 @@ func main() {
 		authService.RequireOperator(analyticsHandler.ListExperiments),
 	)
 
+	// /dashboard/growth (item 24, PLAN-05-SELLER-DASHBOARD.md §3 /
+	// PLAN-03-PROACTIVE-GROWTH-AGENT.md §8): the natural home for item
+	// 20's impression/acceptance tracking, plus the same rejected-demand
+	// query the Campaign Orchestrator already reads
+	// (RejectedDemandByProduct) surfaced directly instead of only
+	// implicit in CampaignAgent's own argmax pick.
+	growthDashboardHandler := growth.NewGrowthDashboardHandler(growthStore, catalogRepo)
+
+	commerceMux.HandleFunc(
+		"/dashboard/growth",
+		authService.RequireOperator(growthDashboardHandler.Overview),
+	)
+
 	// Phase 7: MCP endpoint
 	commerceMux.Handle(
 		"/mcp",

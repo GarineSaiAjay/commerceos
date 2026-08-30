@@ -8,6 +8,7 @@ const NAV = [
   ["Analytics", "/dashboard/analytics"],
   ["Approvals", "/dashboard/approvals"],
   ["Campaigns", "/dashboard/campaigns"],
+  ["Growth", "/dashboard/growth"],
   ["Runs", "/dashboard/runs"],
   ["Safety", "/dashboard/safety"],
 ];
