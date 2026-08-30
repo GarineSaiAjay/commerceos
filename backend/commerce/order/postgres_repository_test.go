@@ -537,7 +537,7 @@ func TestGetOrderAndListOrdersIncludePaymentStatus(t *testing.T) {
 
 	_, err = pool.Exec(ctx, `
 		INSERT INTO payments (id, order_id, provider, provider_order_id, amount, currency, status)
-		VALUES ($1, $2, 'razorpay', $3, 19900, 'INR', 'paid')
+		VALUES ($1, $2, 'razorpay', $3, 19900, 'INR', 'captured')
 	`, paymentID, orderID, "provider_order_"+orderID)
 	if err != nil {
 		t.Fatal(err)
@@ -547,8 +547,8 @@ func TestGetOrderAndListOrdersIncludePaymentStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fetched.PaymentStatus != "paid" {
-		t.Fatalf("GetOrder: expected PaymentStatus %q, got %q", "paid", fetched.PaymentStatus)
+	if fetched.PaymentStatus != "captured" {
+		t.Fatalf("GetOrder: expected PaymentStatus %q, got %q", "captured", fetched.PaymentStatus)
 	}
 
 	listed, err := repo.ListOrders(ctx, "merchant_001")
@@ -559,8 +559,8 @@ func TestGetOrderAndListOrdersIncludePaymentStatus(t *testing.T) {
 	for _, o := range listed {
 		if o.ID == orderID {
 			found = true
-			if o.PaymentStatus != "paid" {
-				t.Fatalf("ListOrders: expected PaymentStatus %q for %s, got %q", "paid", orderID, o.PaymentStatus)
+			if o.PaymentStatus != "captured" {
+				t.Fatalf("ListOrders: expected PaymentStatus %q for %s, got %q", "captured", orderID, o.PaymentStatus)
 			}
 		}
 	}

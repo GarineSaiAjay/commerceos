@@ -6,7 +6,7 @@ import { authFetch } from "../../../lib/auth";
 
 // Mirrors backend/commerce/order/model.go's Order/OrderItem JSON shape.
 // payment_status (item 15, PLAN-05-SELLER-DASHBOARD.md §2) comes from a
-// LEFT JOIN in GetOrder/ListOrders -- empty string, not "paid" or any
+// LEFT JOIN in GetOrder/ListOrders -- empty string, not "captured" or any
 // other value, until a payment has actually been created for the order.
 type OrderItem = {
   product_id: string;
