@@ -378,12 +378,21 @@ func main() {
 	commerceMux.HandleFunc("/health", healthHandler)
 
 	// Catalog
+	// Catalog mutation (create/update/delete) is merchant-only -- these
+	// were previously reachable with no authentication at all, meaning
+	// anyone who could reach the Commerce Service could rewrite prices,
+	// delete products, or plant a prompt-injection payload into a
+	// product's attributes (see the deliberately-planted example on
+	// wireless-charging-pad in db/seeds/001_catalog.sql, kept there for
+	// safety.AttackLibrary's att_14). GET stays open: the buyer checkout
+	// flow and any external MCP/agent client both need to browse the
+	// catalog without an operator session.
 	commerceMux.HandleFunc(
 		"/products",
 		func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodPost:
-				catalogHandler.CreateProduct(w, r)
+				authService.RequireOperator(catalogHandler.CreateProduct)(w, r)
 
 			case http.MethodGet:
 				catalogHandler.ListProducts(w, r)
@@ -402,10 +411,10 @@ func main() {
 				catalogHandler.GetProduct(w, r)
 
 			case http.MethodPatch:
-				catalogHandler.UpdateProduct(w, r)
+				authService.RequireOperator(catalogHandler.UpdateProduct)(w, r)
 
 			case http.MethodDelete:
-				catalogHandler.DeleteProduct(w, r)
+				authService.RequireOperator(catalogHandler.DeleteProduct)(w, r)
 
 			default:
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
