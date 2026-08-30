@@ -59,6 +59,52 @@ func nullableInt64(v int64) any {
 	return v
 }
 
+// SaveDismissal records that a buyer said "no thanks" to a suggested
+// product for a specific cart, so Suggest (suggest.go) can exclude it
+// on the next call instead of proposing the exact same product again.
+// ON CONFLICT DO NOTHING because a repeat dismissal of the same
+// product on the same cart (e.g. a double-click, or the suggestion
+// briefly reappearing before the exclusion takes effect) is a no-op,
+// not an error -- the first dismissal already recorded everything a
+// second one would.
+func (s *PostgresStore) SaveDismissal(ctx context.Context, cartID, productID string) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO suggestion_dismissals (cart_id, product_id)
+		VALUES ($1, $2)
+		ON CONFLICT (cart_id, product_id) DO NOTHING
+	`, cartID, productID)
+	if err != nil {
+		return fmt.Errorf("save suggestion dismissal: %w", err)
+	}
+	return nil
+}
+
+// ListDismissedProductIDs returns every product ID dismissed for cartID,
+// so Suggest can exclude them from candidates the same way it already
+// excludes products already in the cart.
+func (s *PostgresStore) ListDismissedProductIDs(ctx context.Context, cartID string) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT product_id FROM suggestion_dismissals WHERE cart_id = $1
+	`, cartID)
+	if err != nil {
+		return nil, fmt.Errorf("list suggestion dismissals: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan suggestion dismissal: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate suggestion dismissals: %w", err)
+	}
+	return ids, nil
+}
+
 // GetByID fetches a recommendation for the explanation view.
 func (s *PostgresStore) GetByID(ctx context.Context, id string) (Recommendation, error) {
 	var r Recommendation

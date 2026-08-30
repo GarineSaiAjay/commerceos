@@ -24,6 +24,14 @@ type CatalogSearcher interface {
 	ListProducts(ctx context.Context) ([]catalog.Product, error)
 }
 
+// DismissalStore persists and reads back per-cart "no thanks" responses
+// to a suggestion, so a dismissed product isn't proposed again for the
+// same cart. Implemented by *PostgresStore (postgres_store.go).
+type DismissalStore interface {
+	SaveDismissal(ctx context.Context, cartID, productID string) error
+	ListDismissedProductIDs(ctx context.Context, cartID string) ([]string, error)
+}
+
 // Demo-scoped budget defaults. This project has exactly one mandate
 // (mandate_demo, db/seeds/001_catalog.sql, maximum_amount 3000000 paise
 // = ₹30,000) and the growth agent has no per-buyer mandate lookup wired
@@ -81,13 +89,14 @@ func heuristicEVInputs(candidatePrice int64, overlapScore int) EVInputs {
 // takes on an ambiguous prompt (see agents/intent.go's Clarify field) --
 // rather than guessing at an unrelated product.
 type SuggestHandler struct {
-	catalog CatalogSearcher
-	cart    CartReader
-	agent   *GrowthAgent
+	catalog    CatalogSearcher
+	cart       CartReader
+	agent      *GrowthAgent
+	dismissals DismissalStore
 }
 
-func NewSuggestHandler(catalog CatalogSearcher, cartReader CartReader, agent *GrowthAgent) *SuggestHandler {
-	return &SuggestHandler{catalog: catalog, cart: cartReader, agent: agent}
+func NewSuggestHandler(catalog CatalogSearcher, cartReader CartReader, agent *GrowthAgent, dismissals DismissalStore) *SuggestHandler {
+	return &SuggestHandler{catalog: catalog, cart: cartReader, agent: agent, dismissals: dismissals}
 }
 
 // SuggestedProduct carries just enough catalog detail to render the
@@ -137,6 +146,24 @@ func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 	var cartTotal int64
 	signals := make(map[string]bool)
 
+	// Products the buyer already said "no thanks" to for this cart --
+	// excluded the same way an in-cart product already is, so dismissal
+	// actually sticks instead of resetting on the next fetch (previously
+	// this only lived in frontend React state, lost on reload). A
+	// missing/nil dismissals store (e.g. an older wiring or a test) just
+	// means nothing is excluded, not an error.
+	dismissed := make(map[string]bool)
+	if h.dismissals != nil {
+		ids, err := h.dismissals.ListDismissedProductIDs(ctx, req.CartID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("list dismissals: %v", err), http.StatusInternalServerError)
+			return
+		}
+		for _, id := range ids {
+			dismissed[id] = true
+		}
+	}
+
 	for _, item := range c.Items {
 		inCart[item.ProductID] = true
 		cartTotal += item.Total
@@ -169,7 +196,7 @@ func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 	var candidates []scoredCandidate
 
 	for _, product := range catalogProducts {
-		if inCart[product.ID] || product.Availability <= 0 {
+		if inCart[product.ID] || dismissed[product.ID] || product.Availability <= 0 {
 			continue
 		}
 		if product.Merchant.ID != c.MerchantID {
@@ -242,6 +269,44 @@ func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 			Currency:  best.product.Price.Currency,
 		},
 	})
+}
+
+// Dismiss handles POST /growth/suggest/dismiss -- records that the
+// buyer said "no thanks" to a specific product for a specific cart
+// (see DismissalStore). Suggest excludes it from candidates on every
+// subsequent call for that cart. Idempotent: dismissing the same
+// product twice is a no-op (SaveDismissal's ON CONFLICT DO NOTHING).
+func (h *SuggestHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		CartID    string `json:"cart_id"`
+		ProductID string `json:"product_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CartID == "" || req.ProductID == "" {
+		http.Error(w, "cart_id and product_id required", http.StatusBadRequest)
+		return
+	}
+
+	if h.dismissals == nil {
+		// Wired without a dismissal store (shouldn't happen in
+		// production -- main.go always passes one) -- treat as success
+		// rather than a 500 the buyer can do nothing about; the
+		// suggestion is still hidden client-side via dismissedProductId
+		// either way.
+		writeSuggestJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+
+	if err := h.dismissals.SaveDismissal(r.Context(), req.CartID, req.ProductID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeSuggestJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func writeSuggestJSON(w http.ResponseWriter, status int, value any) {
