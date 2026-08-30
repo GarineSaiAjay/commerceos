@@ -514,11 +514,20 @@ export default function CheckoutFlow({
     fetchOrders();
   }
 
-  // Re-check for a suggestion whenever the buyer lands on a non-empty
-  // cart, including right after accepting one (item count changes ->
-  // effect re-runs -> a fresh suggestion is computed over the new cart).
+  // Re-check for a suggestion on every cart mutation, independent of
+  // which screen the buyer is currently on. Previously this was gated on
+  // `step === "cart"`, so a suggestion only ever appeared while the
+  // buyer happened to be looking at the cart screen at the exact moment
+  // it was computed -- going back to "Keep shopping" (the normal flow
+  // after accepting an agent-proposed product) meant no further
+  // suggestion was ever surfaced again for the rest of the session, even
+  // though the growth agent kept working correctly the whole time. See
+  // files/REALITY-CHECK-2026-08-30.md §3 and
+  // files/PLAN-03-PROACTIVE-GROWTH-AGENT.md §1. renderSuggestionCard()
+  // now renders on both the catalog and cart screens, so this only needs
+  // to decide *when* to fetch, not *where* to show the result.
   useEffect(() => {
-    if (step === "cart" && cart && cart.items.length > 0) {
+    if (cart && cart.items.length > 0) {
       // Fetching from an external system (the growth service) on a
       // dependency change is exactly what useEffect is for; the
       // setState calls happen inside fetchSuggestion, not here.
@@ -526,7 +535,7 @@ export default function CheckoutFlow({
       fetchSuggestion();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, cart?.cart_id, cart?.items.length]);
+  }, [cart?.cart_id, cart?.items.length]);
 
   async function startPayment() {
     setLoading(true);
@@ -903,6 +912,50 @@ export default function CheckoutFlow({
     );
   }
 
+  // Cross-sell card, shared between the catalog and cart screens so a
+  // computed suggestion stays visible regardless of which one the buyer
+  // is on -- previously this only rendered inside the cart screen, so a
+  // buyer who went back to "Keep shopping" (or arrived at a suggestion
+  // via the agent chat, which also lands them on the cart screen only
+  // momentarily) had no way to see it again without navigating back into
+  // the cart. See files/PLAN-03-PROACTIVE-GROWTH-AGENT.md §1-2.
+  function renderSuggestionCard() {
+    if (suggestion?.available && suggestion.product) {
+      return (
+        <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-5">
+          <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
+            Agent suggests
+          </p>
+          <p className="mt-1 font-semibold text-zinc-900">
+            Add {suggestion.product.title} -- {formatINR(suggestion.product.price)}
+          </p>
+          {suggestion.recommendation && (
+            <p className="mt-1 text-sm text-indigo-800">{suggestion.recommendation.reason}</p>
+          )}
+          <div className="mt-3 flex gap-3">
+            <button
+              onClick={acceptSuggestion}
+              disabled={loading}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              Add to cart
+            </button>
+            <button
+              onClick={dismissSuggestion}
+              className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-800 hover:bg-indigo-100"
+            >
+              No thanks
+            </button>
+          </div>
+        </div>
+      );
+    }
+    if (suggestionLoading) {
+      return <p className="mt-3 text-xs text-zinc-400">Checking for a complementary item...</p>;
+    }
+    return null;
+  }
+
   return (
     <main className="min-h-screen bg-zinc-100">
       <div className="mx-auto max-w-3xl px-6 py-10">
@@ -985,6 +1038,8 @@ export default function CheckoutFlow({
                 </div>
               )}
             </div>
+
+            {renderSuggestionCard()}
 
             <h2 className="mb-4 text-lg font-semibold text-zinc-900">
               Browse Catalog
@@ -1077,37 +1132,7 @@ export default function CheckoutFlow({
               ))}
             </ul>
 
-            {suggestion?.available && suggestion.product && (
-              <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-5">
-                <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
-                  Agent suggests
-                </p>
-                <p className="mt-1 font-semibold text-zinc-900">
-                  Add {suggestion.product.title} -- {formatINR(suggestion.product.price)}
-                </p>
-                {suggestion.recommendation && (
-                  <p className="mt-1 text-sm text-indigo-800">{suggestion.recommendation.reason}</p>
-                )}
-                <div className="mt-3 flex gap-3">
-                  <button
-                    onClick={acceptSuggestion}
-                    disabled={loading}
-                    className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                  >
-                    Add to cart
-                  </button>
-                  <button
-                    onClick={dismissSuggestion}
-                    className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-800 hover:bg-indigo-100"
-                  >
-                    No thanks
-                  </button>
-                </div>
-              </div>
-            )}
-            {suggestionLoading && !suggestion && (
-              <p className="mt-3 text-xs text-zinc-400">Checking for a complementary item...</p>
-            )}
+            {renderSuggestionCard()}
 
             <div className="mt-4 flex items-center justify-between rounded-xl border border-zinc-200 p-5">
               <p className="font-semibold text-zinc-900">Subtotal</p>
