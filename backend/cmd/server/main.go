@@ -557,6 +557,15 @@ func main() {
 				strings.HasSuffix(r.URL.Path, "/payment"):
 				paymentHandler.CreatePaymentOrder(w, r)
 
+			// GET /orders/{id}/payment -- the linked payment record for
+			// the order-detail view (item 15,
+			// PLAN-05-SELLER-DASHBOARD.md §2). Checked before the plain
+			// GET /orders/{id} case below via the same suffix-first
+			// ordering already used for /recovery and /payment/verify.
+			case r.Method == http.MethodGet &&
+				strings.HasSuffix(r.URL.Path, "/payment"):
+				paymentHandler.GetPayment(w, r)
+
 			case r.Method == http.MethodPost &&
 				strings.HasSuffix(r.URL.Path, "/recovery/remove-item"):
 				paymentHandler.RemoveItemAndRecheckout(w, r)
@@ -813,6 +822,19 @@ func main() {
 	commerceMux.HandleFunc(
 		"/dashboard/growth",
 		authService.RequireOperator(growthDashboardHandler.Overview),
+	)
+
+	// /dashboard/orders (item 15, PLAN-05-SELLER-DASHBOARD.md §2): the
+	// merchant "command center" had no view of its own orders at all --
+	// GET /orders?merchant_id= already existed but only for the buyer's
+	// own unauthenticated order history (files/AUTH.md). This is the
+	// operator-scoped equivalent, list only; detail reuses the existing
+	// public GET /orders/{id} (and the new GET /orders/{id}/payment
+	// above) directly, matching how /runs/{id}'s detail is public while
+	// /runs' list is operator-gated.
+	commerceMux.HandleFunc(
+		"/dashboard/orders",
+		authService.RequireOperator(orderHandler.ListOrdersForOperator),
 	)
 
 	// Phase 7: MCP endpoint

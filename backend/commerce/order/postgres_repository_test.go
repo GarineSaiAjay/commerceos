@@ -446,3 +446,131 @@ func TestCheckoutCartSkipsDiscountWhenBudgetExhausted(t *testing.T) {
 	_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
 	_, _ = pool.Exec(ctx, `DELETE FROM product_variants WHERE id = $1`, variantID)
 }
+
+// TestGetOrderAndListOrdersIncludePaymentStatus proves the item 15
+// (PLAN-05-SELLER-DASHBOARD.md §2) LEFT JOIN addition to GetOrder/
+// ListOrders: PaymentStatus is empty (never a literal "NULL" string)
+// before any payment exists for the order, and reflects the payments
+// row's status once one does -- exercised through both read paths
+// since they carry the join independently.
+func TestGetOrderAndListOrdersIncludePaymentStatus(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(
+		ctx,
+		"postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	cartID := "cart_payment_status_test"
+	orderID := "order_payment_status_test"
+	productID := "payment-status-test-product"
+	variantID := "payment-status-test-variant"
+	paymentID := "payment_payment_status_test"
+
+	// Clean up in case the test was run before.
+	_, _ = pool.Exec(ctx, `DELETE FROM payments WHERE id = $1`, paymentID)
+	_, _ = pool.Exec(ctx, `DELETE FROM orders WHERE id = $1`, orderID)
+	_, _ = pool.Exec(ctx, `DELETE FROM carts WHERE id = $1`, cartID)
+	_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO products (
+			id, merchant_id, title, price_amount, price_currency,
+			availability, features, compatibility, use_cases,
+			return_policy, shipping, attributes, purchase_constraints
+		)
+		VALUES (
+			$1, 'merchant_001', 'Payment Status Test Product', 19900, 'INR',
+			100, '[]', '[]', '[]',
+			'{"days": 7}', '{"estimated_days": 3}', '{}', '{}'
+		)
+	`, productID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO product_variants (id, product_id, sku, price_amount, availability, attributes)
+		VALUES ($1, $2, 'PAYMENT-STATUS-TEST', 19900, 100, '{}')
+	`, variantID, productID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO carts (id, merchant_id, currency, subtotal_amount, status, expires_at)
+		VALUES ($1, 'merchant_001', 'INR', 19900, 'active', $2)
+	`, cartID, time.Now().Add(9*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO cart_items (
+			cart_id, product_id, variant_id, title, quantity,
+			unit_price_amount, total_amount
+		)
+		VALUES ($1, $2, $3, 'Payment Status Test Product', 1, 19900, 19900)
+	`, cartID, productID, variantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewPostgresRepository(pool)
+
+	order, err := repo.CheckoutCart(ctx, cartID, orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if order.PaymentStatus != "" {
+		t.Fatalf("expected empty PaymentStatus before a payment exists, got %q", order.PaymentStatus)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payments (id, order_id, provider, provider_order_id, amount, currency, status)
+		VALUES ($1, $2, 'razorpay', $3, 19900, 'INR', 'captured')
+	`, paymentID, orderID, "provider_order_"+orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fetched, err := repo.GetOrder(ctx, orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.PaymentStatus != "captured" {
+		t.Fatalf("GetOrder: expected PaymentStatus %q, got %q", "captured", fetched.PaymentStatus)
+	}
+
+	listed, err := repo.ListOrders(ctx, "merchant_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, o := range listed {
+		if o.ID == orderID {
+			found = true
+			if o.PaymentStatus != "captured" {
+				t.Fatalf("ListOrders: expected PaymentStatus %q for %s, got %q", "captured", orderID, o.PaymentStatus)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected order %s in ListOrders(merchant_001) result", orderID)
+	}
+
+	// Clean up.
+	_, _ = pool.Exec(ctx, `DELETE FROM payments WHERE id = $1`, paymentID)
+	_, _ = pool.Exec(ctx, `DELETE FROM orders WHERE id = $1`, orderID)
+	_, _ = pool.Exec(ctx, `DELETE FROM carts WHERE id = $1`, cartID)
+	_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+}

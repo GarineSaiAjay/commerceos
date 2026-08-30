@@ -20,6 +20,16 @@ type Order struct {
 	Status         string      `json:"status"`
 	Items          []OrderItem `json:"items"`
 	CreatedAt      time.Time   `json:"created_at"`
+	// PaymentStatus is the linked payment record's status
+	// (payments.status: created/attempted/paid/failed/refunded), empty
+	// if no payment has been initiated for this order yet. Populated via
+	// a LEFT JOIN in GetOrder/ListOrders (postgres_repository.go) --
+	// added for the merchant dashboard's Orders page (item 15,
+	// PLAN-05-SELLER-DASHBOARD.md §2's "status, payment status" list
+	// column). The existing buyer-facing ListOrders/GetOrder callers
+	// (checkout.tsx's own order history) simply get an extra field they
+	// don't render.
+	PaymentStatus string `json:"payment_status,omitempty"`
 }
 
 type OrderItem struct {
