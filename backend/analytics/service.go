@@ -15,7 +15,19 @@ type Metrics struct {
 	AIRevenue         int64   `json:"ai_revenue"`          // attributed to accepted recommendations
 	ConversionRate    float64 `json:"conversion_rate"`     // 0..1
 	AverageOrderValue int64   `json:"average_order_value"` // in paise
-	Simulated         bool    `json:"simulated"`           // always false here
+	// SuggestionImpressions/SuggestionAcceptances (PLAN-03-PROACTIVE-
+	// GROWTH-AGENT.md §8, item 20): how many cross-sell suggestions
+	// were actually SHOWN to a buyer (suggestion_impressions -- one row
+	// per real impression, across every /growth/suggest* surface, item
+	// 19) versus how many resulted in the buyer adding the product
+	// (recommendations.accepted, set by POST /growth/suggest/accept).
+	// Previously a merchant saw a single lifetime ai_revenue figure and
+	// had no way to tell whether the cross-sell agent is actually
+	// engaging buyers or just occasionally getting lucky -- this is the
+	// concrete, honest counter pair that closes that gap.
+	SuggestionImpressions int64 `json:"suggestion_impressions"`
+	SuggestionAcceptances int64 `json:"suggestion_acceptances"`
+	Simulated             bool  `json:"simulated"` // always false here
 }
 
 // Activity is a recent, inspectable event for the merchant dashboard.
@@ -124,6 +136,20 @@ func (s *Service) Compute(ctx context.Context) (Metrics, error) {
 			SELECT COALESCE(SUM(subtotal), 0) FROM orders WHERE status = 'paid'
 		`).Scan(&m.AverageOrderValue)
 		m.AverageOrderValue /= paid
+	}
+
+	// Suggestion impressions/acceptances (item 20) -- see the Metrics
+	// doc comment above for why these are a real, honest counter pair
+	// rather than a single lifetime revenue figure.
+	if err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(COUNT(*), 0) FROM suggestion_impressions
+	`).Scan(&m.SuggestionImpressions); err != nil {
+		return Metrics{}, fmt.Errorf("count suggestion impressions: %w", err)
+	}
+	if err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(COUNT(*), 0) FROM recommendations WHERE accepted = TRUE
+	`).Scan(&m.SuggestionAcceptances); err != nil {
+		return Metrics{}, fmt.Errorf("count suggestion acceptances: %w", err)
 	}
 
 	return m, nil

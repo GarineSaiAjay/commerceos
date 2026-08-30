@@ -450,7 +450,14 @@ export default function CheckoutFlow({
     }
   }
 
-  async function addToCart(product: Product, variantId?: string, targetCartId?: string) {
+  // Returns whether the item actually landed in the cart -- every
+  // existing caller ignored addToCart's return value already (it used
+  // to be void), so adding this is backward compatible; the three
+  // suggestion-accept flows (acceptSuggestion/acceptDetailSuggestion/
+  // acceptPostCheckoutSuggestion) use it to only report an acceptance
+  // (POST /growth/suggest/accept, item 20) once the add genuinely
+  // succeeded, not just once the buyer clicked "Add".
+  async function addToCart(product: Product, variantId?: string, targetCartId?: string): Promise<boolean> {
     const id = targetCartId ?? cartId;
     setLoading(true);
     setMessage("");
@@ -472,8 +479,10 @@ export default function CheckoutFlow({
 
       setCart(await fetch(`${API_BASE}/carts/${id}`).then((r) => r.json()));
       setStep("cart");
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to add item");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -644,6 +653,23 @@ export default function CheckoutFlow({
     }
   }
 
+  // Best-effort notification that a suggestion was actually accepted
+  // (POST /growth/suggest/accept, item 20, PLAN-03-PROACTIVE-GROWTH-
+  // AGENT.md §8) -- feeds the merchant dashboard's suggestion_
+  // impressions/suggestion_acceptances metrics. Same fire-and-forget
+  // posture as dismissSuggestion below: the buyer's item is already in
+  // their cart either way, so a failure here should never surface as a
+  // page-level error.
+  function notifySuggestionAccepted(forCartId: string, productId: string) {
+    fetch(`${API_BASE}/growth/suggest/accept`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cart_id: forCartId, product_id: productId }),
+    }).catch(() => {
+      // best-effort, see comment above
+    });
+  }
+
   async function acceptSuggestion() {
     if (!suggestion?.product) return;
     const suggested = suggestion.product;
@@ -654,7 +680,9 @@ export default function CheckoutFlow({
       price: { amount: suggested.price, currency: suggested.currency },
       availability: 1,
     };
-    await addToCart(matched);
+    if (await addToCart(matched)) {
+      notifySuggestionAccepted(cartId, suggested.product_id);
+    }
   }
 
   // Persists the dismissal server-side (POST /growth/suggest/dismiss,
@@ -726,7 +754,9 @@ export default function CheckoutFlow({
       price: { amount: suggested.price, currency: suggested.currency },
       availability: 1,
     };
-    await addToCart(matched);
+    if (await addToCart(matched)) {
+      notifySuggestionAccepted(cartId, suggested.product_id);
+    }
   }
 
   // Post-checkout "complete the set" cross-sell: POST
@@ -771,6 +801,12 @@ export default function CheckoutFlow({
     if (!postCheckoutSuggestion?.product) return;
     const suggested = postCheckoutSuggestion.product;
     const freshId = freshCartId();
+    // SuggestForOrder (backend/growth/suggest.go) keys this
+    // recommendation to the ORDER's own cart_id, not the new cart about
+    // to be created -- so the accept notification must use that same
+    // original cart_id (captured here, before the reset below clears
+    // `order` from state) for RecordAcceptance to find the right row.
+    const originalCartId = order?.cart_id ?? freshId;
     setPostCheckoutSuggestion(null);
     setCartId(freshId);
     setCart(null);
@@ -785,7 +821,9 @@ export default function CheckoutFlow({
       price: { amount: suggested.price, currency: suggested.currency },
       availability: 1,
     };
-    await addToCart(matched, undefined, freshId);
+    if (await addToCart(matched, undefined, freshId)) {
+      notifySuggestionAccepted(originalCartId, suggested.product_id);
+    }
   }
 
   // GET /orders?merchant_id=... -- merchant-scoped for now since there

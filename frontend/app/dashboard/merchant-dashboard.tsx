@@ -11,6 +11,13 @@ export type Overview = {
     ai_revenue: number;
     conversion_rate: number;
     average_order_value: number;
+    // suggestion_impressions/suggestion_acceptances (item 20,
+    // PLAN-03-PROACTIVE-GROWTH-AGENT.md §8): real counts, not a rate --
+    // how many cross-sell suggestions were actually shown to a buyer
+    // versus how many were accepted (backend/analytics/service.go's
+    // Compute()).
+    suggestion_impressions: number;
+    suggestion_acceptances: number;
     simulated: boolean;
   };
   recent_activity: Array<{ id: number; actor: string; action: string; entity_type: string; entity_id: string; detail: Record<string, unknown>; occurred_at: string }>;
@@ -128,6 +135,15 @@ export default function MerchantDashboard({ initialOverview, initialError }: { i
             <MetricCard label="AI-attributed revenue" value={formatINR(m.ai_revenue)} hint="Orders linked to accepted recommendations." />
             <MetricCard label="Conversion" value={formatPct(m.conversion_rate)} hint="Paid orders divided by tracked carts." />
             <MetricCard label="Average order value" value={formatINR(m.average_order_value)} hint="Captured order value per paid order." />
+            <MetricCard
+              label="Cross-sell engagement"
+              value={`${m.suggestion_acceptances} / ${m.suggestion_impressions}`}
+              hint={
+                m.suggestion_impressions > 0
+                  ? `${formatPct(m.suggestion_acceptances / m.suggestion_impressions)} of shown suggestions were accepted.`
+                  : "No suggestions shown yet."
+              }
+            />
           </div>
         )}
       </section>

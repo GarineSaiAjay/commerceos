@@ -42,6 +42,13 @@ type Recommendation struct {
 	CreatedAt             time.Time `json:"created_at,omitempty"`
 	CartTotalAtEvaluation int64     `json:"cart_total_at_evaluation,omitempty"`
 	BudgetAtEvaluation    int64     `json:"budget_at_evaluation,omitempty"`
+	// Accepted (PLAN-03-PROACTIVE-GROWTH-AGENT.md §8, item 20) is set
+	// by POST /growth/suggest/accept when the buyer actually adds this
+	// recommendation's product to their cart -- distinct from Decision,
+	// which is only ever the growth AGENT's own RECOMMEND/REJECT call.
+	// False for a brand-new recommendation (the DB column default);
+	// EvaluateCandidate/Save never set it directly.
+	Accepted bool `json:"accepted"`
 }
 
 // CatalogReader is the catalog surface the growth agent needs.
