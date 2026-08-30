@@ -49,11 +49,13 @@ services:
       timeout: 5s
       retries: 10
 
-  # One-off: applies goose migrations, then both seed files, then exits.
-  # Every INSERT in db/seeds/*.sql uses ON CONFLICT ... DO NOTHING, so
-  # re-running this on every `docker compose up` (not just the first)
-  # is safe and idempotent -- it never fails against an already-seeded
-  # database. See db/Dockerfile.migrate for why this exists.
+  # One-off: applies goose migrations, then all seed files, then exits.
+  # Every INSERT in db/seeds/*.sql uses ON CONFLICT ... DO NOTHING (or,
+  # for 003_reviews.sql, an equivalent NOT EXISTS guard -- reviews.id
+  # has no natural key to ON CONFLICT on), so re-running this on every
+  # `docker compose up` (not just the first) is safe and idempotent --
+  # it never fails against an already-seeded database. See
+  # db/Dockerfile.migrate for why this exists.
   migrate:
     build:
       context: ..
@@ -74,6 +76,7 @@ services:
         goose -dir /db/migrations postgres "$$DATABASE_URL" up
         psql "$$DATABASE_URL" -f /db/seeds/001_catalog.sql
         psql "$$DATABASE_URL" -f /db/seeds/002_operator.sql
+        psql "$$DATABASE_URL" -f /db/seeds/003_reviews.sql
 
     depends_on:
       postgres:

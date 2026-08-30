@@ -253,25 +253,42 @@ func (r *PostgresRepository) GetProduct(ctx context.Context, id string) (Product
 	var attributes []byte
 	var purchaseConstraints []byte
 
+	// The LEFT JOIN against a per-product rating aggregate (PLAN-02-
+	// CATALOG-AND-COMMERCE.md §2) is computed here, at read time, rather
+	// than stored on products -- it can never go stale, and at this
+	// catalog's size (13-50 products) the aggregate is cheap even
+	// though ListProducts calls GetProduct once per row below. A
+	// product with zero reviews gets average_rating 0 / review_count 0
+	// via COALESCE, never a NULL that would fail the float64/int scan.
 	err := r.db.QueryRow(
 		ctx,
 		`
 		SELECT
-			id,
-			title,
-			price_amount,
-			price_currency,
-			availability,
-			features,
-			compatibility,
-			use_cases,
-			return_policy,
-			shipping,
-			attributes,
-			purchase_constraints,
-			merchant_id
-		FROM products
-		WHERE id = $1
+			p.id,
+			p.title,
+			p.price_amount,
+			p.price_currency,
+			p.availability,
+			p.features,
+			p.compatibility,
+			p.use_cases,
+			p.return_policy,
+			p.shipping,
+			p.attributes,
+			p.purchase_constraints,
+			p.merchant_id,
+			COALESCE(r.average_rating, 0),
+			COALESCE(r.review_count, 0)
+		FROM products p
+		LEFT JOIN (
+			SELECT
+				product_id,
+				AVG(rating)::float8 AS average_rating,
+				COUNT(*)::int AS review_count
+			FROM reviews
+			GROUP BY product_id
+		) r ON r.product_id = p.id
+		WHERE p.id = $1
 		`,
 		id,
 	).Scan(
@@ -288,6 +305,8 @@ func (r *PostgresRepository) GetProduct(ctx context.Context, id string) (Product
 		&attributes,
 		&purchaseConstraints,
 		&product.Merchant.ID,
+		&product.AverageRating,
+		&product.ReviewCount,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Product{}, ErrProductNotFound

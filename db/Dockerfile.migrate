@@ -1,15 +1,17 @@
 # db/Dockerfile.migrate
 #
-# Runs goose migrations + both seed files automatically as part of
+# Runs goose migrations + every seed file automatically as part of
 # `docker compose up`, closing a gap where a fresh `docker compose up`
 # left the database completely schema-less: README's "Getting started"
-# documented 3 manual follow-up commands (goose, then two `psql -f`
-# calls, in exact order) with no automation wrapping them, and
+# documented manual follow-up commands (goose, then `psql -f` per seed
+# file, in exact order) with no automation wrapping them, and
 # files/BUGS.md bug #5 records a real login failure caused by getting
-# that seed order/completeness wrong once. Every INSERT in both seed
-# files already uses `ON CONFLICT (id) DO NOTHING` (verified against
-# db/seeds/001_catalog.sql and db/seeds/002_operator.sql), so this is
-# safe to run on every `docker compose up`, not just the first one.
+# that seed order/completeness wrong once. Every INSERT in
+# db/seeds/001_catalog.sql and db/seeds/002_operator.sql uses
+# `ON CONFLICT (id) DO NOTHING`; db/seeds/003_reviews.sql uses an
+# equivalent NOT EXISTS guard (reviews.id is a bare serial with no
+# natural key to ON CONFLICT on) -- so this is safe to run on every
+# `docker compose up`, not just the first one.
 #
 # postgres:17 already ships psql; only goose needs adding.
 FROM golang:1.26 AS goose

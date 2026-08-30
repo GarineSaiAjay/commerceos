@@ -59,6 +59,86 @@ func TestPostgresRepositoryGetProduct(t *testing.T) {
 	}
 }
 
+// TestPostgresRepositoryGetProductIncludesRatingAggregate proves
+// GetProduct's rating join (PLAN-02-CATALOG-AND-COMMERCE.md §2, item
+// 11) both computes a real average/count from the reviews table and
+// never returns NULL/zero-value-that-looks-like-a-real-zero for an
+// unrated product's aggregate (it's a genuine 0, not a masked NULL).
+func TestPostgresRepositoryGetProductIncludesRatingAggregate(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(
+		ctx,
+		"postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewPostgresRepository(pool)
+
+	productID := "rating-test-product"
+	_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+
+	product := Product{
+		ID:           productID,
+		Title:        "Rating Test Product",
+		Price:        Money{Amount: 5000, Currency: "INR"},
+		Availability: 3,
+		Merchant:     MerchantRef{ID: "merchant_001"},
+		ReturnPolicy: ReturnPolicy{Days: 7},
+		Shipping:     Shipping{EstimatedDays: 3},
+	}
+	if err := repo.CreateProduct(ctx, product); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+	}()
+
+	// No reviews yet: average_rating 0, review_count 0.
+	fetched, err := repo.GetProduct(ctx, productID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.AverageRating != 0 || fetched.ReviewCount != 0 {
+		t.Fatalf("expected 0/0 for an unrated product, got %v/%d", fetched.AverageRating, fetched.ReviewCount)
+	}
+
+	// Seed three reviews directly (order_id NULL, same shape
+	// db/seeds/003_reviews.sql uses for its starter set) -- average
+	// (5+3+4)/3 = 4.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO reviews (product_id, order_id, buyer_reference, rating, comment)
+		VALUES
+			($1, NULL, 'Test Buyer A', 5, ''),
+			($1, NULL, 'Test Buyer B', 3, ''),
+			($1, NULL, 'Test Buyer C', 4, '')
+	`, productID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM reviews WHERE product_id = $1`, productID)
+	}()
+
+	fetched, err = repo.GetProduct(ctx, productID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.ReviewCount != 3 {
+		t.Fatalf("expected review_count 3, got %d", fetched.ReviewCount)
+	}
+	if fetched.AverageRating != 4 {
+		t.Fatalf("expected average_rating 4, got %v", fetched.AverageRating)
+	}
+}
+
 func TestPostgresRepositoryListProducts(t *testing.T) {
 	ctx := context.Background()
 

@@ -45,6 +45,8 @@ interface Product {
   title: string;
   price: { amount: number; currency: string };
   availability: number;
+  average_rating?: number;
+  review_count?: number;
 }
 
 interface CartItem {
@@ -71,6 +73,18 @@ interface Order {
   currency: string;
   items: CartItem[];
   created_at?: string;
+}
+
+// ReviewEntry is per-line-item, client-only state for the post-checkout
+// "Rate this order" prompt (PLAN-02-CATALOG-AND-COMMERCE.md §2) --
+// keyed by product_id in the `reviews` state below, one entry per item
+// in the just-completed order.
+interface ReviewEntry {
+  rating: number;
+  comment: string;
+  submitting: boolean;
+  submitted: boolean;
+  error: string;
 }
 
 interface Payment {
@@ -265,6 +279,7 @@ export default function CheckoutFlow({
   	const [runId, setRunId] = useState("");
   	const [run, setRun] = useState<Run | null>(null);
   	const [runLoading, setRunLoading] = useState(false);
+  const [reviews, setReviews] = useState<Record<string, ReviewEntry>>({});
 
   // Persist the active cart ID so a hard reload doesn't lose the cart
   // (P0.2: previously a fresh ID was minted on every mount).
@@ -582,6 +597,74 @@ export default function CheckoutFlow({
   function viewOrderHistory() {
     setStep("orders");
     fetchOrders();
+  }
+
+  // POST /orders/{id}/review -- the post-checkout "Rate this order"
+  // prompt (PLAN-02-CATALOG-AND-COMMERCE.md §2). Per-product client
+  // state only; a failed submit leaves the form in place with an
+  // inline error instead of losing what the buyer typed.
+  function rateProduct(productId: string, rating: number) {
+    setReviews((prev) => ({
+      ...prev,
+      [productId]: {
+        rating,
+        comment: prev[productId]?.comment ?? "",
+        submitting: false,
+        submitted: prev[productId]?.submitted ?? false,
+        error: "",
+      },
+    }));
+  }
+
+  function commentOnProduct(productId: string, comment: string) {
+    setReviews((prev) => ({
+      ...prev,
+      [productId]: {
+        rating: prev[productId]?.rating ?? 0,
+        comment,
+        submitting: prev[productId]?.submitting ?? false,
+        submitted: prev[productId]?.submitted ?? false,
+        error: prev[productId]?.error ?? "",
+      },
+    }));
+  }
+
+  async function submitReview(orderId: string, productId: string) {
+    const entry = reviews[productId];
+    if (!entry || entry.rating < 1) return;
+
+    setReviews((prev) => ({
+      ...prev,
+      [productId]: { ...prev[productId], submitting: true, error: "" },
+    }));
+
+    try {
+      const res = await fetch(`${API_BASE}/orders/${orderId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_id: productId,
+          rating: entry.rating,
+          comment: entry.comment,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(await res.text() || "Failed to submit review");
+      }
+      setReviews((prev) => ({
+        ...prev,
+        [productId]: { ...prev[productId], submitting: false, submitted: true },
+      }));
+    } catch (error) {
+      setReviews((prev) => ({
+        ...prev,
+        [productId]: {
+          ...prev[productId],
+          submitting: false,
+          error: error instanceof Error ? error.message : "Failed to submit review",
+        },
+      }));
+    }
   }
 
   // Re-check for a suggestion on every cart mutation, independent of
@@ -1164,6 +1247,13 @@ export default function CheckoutFlow({
                       </p>
                       <p className="text-sm text-slate-500">
                         {formatINR(product.price.amount)} · {product.availability} in stock
+                        {!!product.review_count && (
+                          <>
+                            {" "}
+                            · <span className="text-amber-600">★ {product.average_rating?.toFixed(1)}</span>{" "}
+                            ({product.review_count})
+                          </>
+                        )}
                       </p>
                     </div>
                     <button
@@ -1602,6 +1692,68 @@ export default function CheckoutFlow({
               </p>
             </div>
             {renderAuditTrail()}
+            {order && order.items.length > 0 && (
+              <div className="mt-6 rounded-xl border border-slate-200 p-6">
+                <p className="text-sm font-semibold text-slate-900">Rate your order</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Optional -- helps other buyers, and the seller sees it too.
+                </p>
+                <ul className="mt-4 divide-y divide-slate-100">
+                  {order.items.map((item) => {
+                    const entry: ReviewEntry = reviews[item.product_id] ?? {
+                      rating: 0,
+                      comment: "",
+                      submitting: false,
+                      submitted: false,
+                      error: "",
+                    };
+                    return (
+                      <li key={item.product_id} className="py-4 first:pt-0 last:pb-0">
+                        <p className="text-sm font-medium text-slate-900">{item.title}</p>
+                        {entry.submitted ? (
+                          <p className="mt-2 text-sm text-emerald-700">Thanks for your review!</p>
+                        ) : (
+                          <>
+                            <div className="mt-2 flex gap-1">
+                              {[1, 2, 3, 4, 5].map((n) => (
+                                <button
+                                  key={n}
+                                  type="button"
+                                  onClick={() => rateProduct(item.product_id, n)}
+                                  aria-label={`Rate ${item.title} ${n} star${n > 1 ? "s" : ""}`}
+                                  className={`text-lg leading-none ${
+                                    n <= entry.rating ? "text-amber-500" : "text-slate-300"
+                                  }`}
+                                >
+                                  ★
+                                </button>
+                              ))}
+                            </div>
+                            <textarea
+                              value={entry.comment}
+                              onChange={(e) => commentOnProduct(item.product_id, e.target.value)}
+                              placeholder="Optional comment"
+                              rows={2}
+                              className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
+                            />
+                            {entry.error && (
+                              <p className="mt-1 text-xs text-rose-600">{entry.error}</p>
+                            )}
+                            <button
+                              onClick={() => submitReview(order.order_id, item.product_id)}
+                              disabled={entry.rating < 1 || entry.submitting}
+                              className="mt-2 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800 disabled:opacity-40"
+                            >
+                              {entry.submitting ? "Submitting..." : "Submit review"}
+                            </button>
+                          </>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
             <button
               onClick={() => {
                 setStep("catalog");
@@ -1612,6 +1764,7 @@ export default function CheckoutFlow({
                 setRunId("");
                 setRun(null);
                 setMessage("");
+                setReviews({});
               }}
               className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-slate-800"
             >
