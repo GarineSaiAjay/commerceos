@@ -733,15 +733,37 @@ func main() {
 	// GrowthAgent.EvaluateCandidate path /growth/evaluate uses, but picks
 	// the candidate and its EV inputs deterministically instead of
 	// requiring the caller to supply them (see growth/suggest.go).
-	growthSuggestHandler := growth.NewSuggestHandler(catalogRepo, cartService, growthAgent, growthStore)
+	// orderService also backs SuggestForOrder's post-checkout surface
+	// (item 19) -- same GetOrder path the buyer's own order-history view
+	// already uses unauthenticated (files/AUTH.md).
+	growthSuggestHandler := growth.NewSuggestHandler(catalogRepo, cartService, orderService, growthAgent, growthStore)
 
 	commerceMux.HandleFunc(
 		"/growth/suggest",
 		growthSuggestHandler.Suggest,
 	)
 
+	// Product-detail cross-sell (item 19, PLAN-03-PROACTIVE-GROWTH-
+	// AGENT.md §3): scores against one viewed product's own tags instead
+	// of a cart's aggregate, reaching a buyer who never adds anything to
+	// a cart or opens the agent chat.
+	commerceMux.HandleFunc(
+		"/growth/suggest/product",
+		growthSuggestHandler.SuggestForProduct,
+	)
+
+	// Post-checkout "complete the set" cross-sell (item 19, PLAN-03-
+	// PROACTIVE-GROWTH-AGENT.md §4): scores against a just-completed
+	// order's line items rather than a live cart, since a checked-out
+	// cart 404s on GetCart (commerce/cart/service.go).
+	commerceMux.HandleFunc(
+		"/growth/suggest/order",
+		growthSuggestHandler.SuggestForOrder,
+	)
+
 	// Persists a buyer's "No thanks" so the same product isn't suggested
-	// again for this cart (growth.DismissalStore, suggest.go).
+	// again for this cart, on any surface (growth.DismissalStore,
+	// suggest.go).
 	commerceMux.HandleFunc(
 		"/growth/suggest/dismiss",
 		growthSuggestHandler.Dismiss,
