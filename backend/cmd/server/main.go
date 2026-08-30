@@ -119,11 +119,20 @@ func main() {
 	// Phase 4: Buyer Agent
 	// -------------------------
 
-	// Use a real LLM extractor (OpenRouter) when configured, wrapped so
-	// any failure (timeout, network error, bad response) automatically
-	// recovers to the deterministic extractor instead of failing the
-	// request -- see FallbackExtractor's doc comment. Without an API key
-	// at all, the deterministic extractor is used directly.
+	// Use a real LLM extractor (OpenRouter) when configured, raced against
+	// the deterministic extractor rather than called serially -- see
+	// RacingExtractor's doc comment. The deterministic extractor is a pure
+	// function over the prompt string (no I/O), so racing it costs nothing;
+	// the LLM extractor's own HTTP client timeout is a 60s safety ceiling,
+	// but RacingExtractor's race window (3.5s) is what actually bounds
+	// perceived latency in the common case -- if the LLM hasn't answered
+	// by then, the buyer sees the deterministic answer immediately instead
+	// of a frozen "Thinking..." state. Any LLM failure (timeout, network
+	// error, bad response) still recovers to the deterministic extractor,
+	// exactly as FallbackExtractor did -- RacingExtractor is a strict
+	// latency improvement on the same recovery contract, not a behavior
+	// change to it. Without an API key at all, the deterministic extractor
+	// is used directly.
 	//
 	// llmExtractor is deliberately compared to nil BEFORE being assigned
 	// to the agents.IntentExtractor interface variable below, not after:
@@ -138,7 +147,7 @@ func main() {
 
 	var agentExtractor agents.IntentExtractor = deterministicExtractor
 	if llmExtractor != nil {
-		agentExtractor = agents.NewFallbackExtractor(llmExtractor, deterministicExtractor)
+		agentExtractor = agents.NewRacingExtractor(llmExtractor, deterministicExtractor)
 	}
 	agentSearcher := agents.NewSearcher(catalogRepo)
 	buyerAgent := agents.NewBuyerAgent(agentExtractor, agentSearcher)
