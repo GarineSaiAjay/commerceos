@@ -405,19 +405,26 @@ func (r *PostgresRepository) GetOrder(
 	var order Order
 	var campaignID *string
 
+	// LEFT JOIN payments -- 1:1 per order (payments.order_id is UNIQUE),
+	// so this can never duplicate the orders row; COALESCE keeps
+	// PaymentStatus an honest empty string rather than a literal "NULL"
+	// when no payment has been created for this order yet (item 15,
+	// PLAN-05-SELLER-DASHBOARD.md §2).
 	err := r.db.QueryRow(ctx, `
 		SELECT
-			id,
-			merchant_id,
-			cart_id,
-			currency,
-			subtotal,
-			discount_amount,
-			campaign_id,
-			status,
-			created_at
-		FROM orders
-		WHERE id = $1
+			o.id,
+			o.merchant_id,
+			o.cart_id,
+			o.currency,
+			o.subtotal,
+			o.discount_amount,
+			o.campaign_id,
+			o.status,
+			o.created_at,
+			COALESCE(p.status, '')
+		FROM orders o
+		LEFT JOIN payments p ON p.order_id = o.id
+		WHERE o.id = $1
 	`, orderID).Scan(
 		&order.ID,
 		&order.MerchantID,
@@ -428,6 +435,7 @@ func (r *PostgresRepository) GetOrder(
 		&campaignID,
 		&order.Status,
 		&order.CreatedAt,
+		&order.PaymentStatus,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -492,18 +500,20 @@ func (r *PostgresRepository) ListOrders(
 ) ([]Order, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT
-			id,
-			merchant_id,
-			cart_id,
-			currency,
-			subtotal,
-			discount_amount,
-			campaign_id,
-			status,
-			created_at
-		FROM orders
-		WHERE merchant_id = $1
-		ORDER BY created_at DESC
+			o.id,
+			o.merchant_id,
+			o.cart_id,
+			o.currency,
+			o.subtotal,
+			o.discount_amount,
+			o.campaign_id,
+			o.status,
+			o.created_at,
+			COALESCE(p.status, '')
+		FROM orders o
+		LEFT JOIN payments p ON p.order_id = o.id
+		WHERE o.merchant_id = $1
+		ORDER BY o.created_at DESC
 	`, merchantID)
 	if err != nil {
 		return nil, fmt.Errorf("list orders: %w", err)
@@ -527,6 +537,7 @@ func (r *PostgresRepository) ListOrders(
 			&campaignID,
 			&o.Status,
 			&o.CreatedAt,
+			&o.PaymentStatus,
 		); err != nil {
 			return nil, fmt.Errorf("scan order: %w", err)
 		}

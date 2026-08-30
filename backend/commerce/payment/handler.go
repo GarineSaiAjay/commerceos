@@ -107,6 +107,42 @@ func (h *Handler) Recovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// GetPayment handles GET /orders/{id}/payment -- a read-only lookup of
+// the payment record linked to an order, for the merchant dashboard's
+// order-detail view (item 15, PLAN-05-SELLER-DASHBOARD.md §2's "linked
+// payment record") and anything else that only has an order ID.
+// Registered alongside the existing POST /orders/{id}/payment (create)
+// and .../payment/verify in the same route family in main.go; left
+// unauthenticated like every other route in that family, since it's
+// also reachable from the buyer's own payment-recovery flow with no
+// buyer identity system yet (files/AUTH.md) -- the same reasoning
+// Recovery above already documents for this handler.
+func (h *Handler) GetPayment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	orderID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/orders/"), "/payment")
+	orderID = strings.Trim(orderID, "/")
+	if orderID == "" {
+		http.Error(w, "order ID required", http.StatusBadRequest)
+		return
+	}
+
+	payment, err := h.service.GetPayment(r.Context(), orderID)
+	if err != nil {
+		if errors.Is(err, ErrPaymentNotFound) {
+			http.Error(w, "payment not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, payment)
+}
+
 // WithCallCounter attaches the provider call counter to the handler.
 func (h *Handler) WithCallCounter(counter CallCounter) *Handler {
 	h.counter = counter
