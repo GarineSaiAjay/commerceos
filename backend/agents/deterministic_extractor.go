@@ -43,7 +43,22 @@ func (d *DeterministicExtractor) Extract(ctx context.Context, prompt string) (In
 	// values instead of a magic word makes this robust to "under X",
 	// "below X", "less than X", "max X", "up to X", and so on.
 	if budget <= 0 || category == "" {
-		return Intent{Clarify: "What would you like to buy, and what is your budget?"}, nil
+		// Partial fields (e.g. a recognized recipient or priority) are
+		// still returned alongside Clarify, not discarded. A single-shot
+		// PlanCheckout call never looks past Clarify != "" so this is
+		// behavior-neutral there; BuyerAgent.PlanCheckoutInConversation
+		// (conversation memory, PLAN-01-AGENTIC-CORE.md §3) is what
+		// actually uses them -- it's what lets "no, for my brother
+		// instead" contribute its recognized recipient to the merged
+		// intent instead of that information being thrown away here
+		// before memory ever gets a chance to use it.
+		return Intent{
+			Budget:    budget,
+			Category:  category,
+			Priority:  priority,
+			Recipient: recipient,
+			Clarify:   "What would you like to buy, and what is your budget?",
+		}, nil
 	}
 
 	intent := Intent{

@@ -199,7 +199,16 @@ func (e *LLMExtractor) Extract(ctx context.Context, prompt string) (Intent, erro
 		return Intent{}, err
 	}
 	if intent.Clarify != "" {
-		return Intent{}, ErrAmbiguousIntent
+		// The parsed intent (including any partial fields the model DID
+		// supply alongside its clarify request, per ParseIntentJSON's
+		// doc comment) is returned alongside the sentinel error, not
+		// discarded -- a caller that only checks err != nil (the
+		// original, still-supported behavior) is unaffected; one that
+		// also wants those partial fields when err is exactly
+		// ErrAmbiguousIntent (BuyerAgent.PlanCheckoutInConversation's
+		// conversation-memory merge, PLAN-01-AGENTIC-CORE.md §3) can
+		// use them instead of starting from nothing.
+		return intent, ErrAmbiguousIntent
 	}
 	return intent, nil
 }

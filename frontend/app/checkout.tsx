@@ -171,6 +171,16 @@ interface CheckoutPlan {
   reasoning: string;
 }
 
+// One turn of the buyer <-> agent transcript, mirrored client-side for
+// display only -- the actual conversation memory that makes a follow-up
+// like "no, for my brother instead" work lives server-side, keyed by
+// cart_id (see backend/agents/conversation.go), so it survives even if
+// this client-side list is empty after a reload.
+interface AgentChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 interface SuggestedProduct {
   product_id: string;
   title: string;
@@ -237,6 +247,7 @@ export default function CheckoutFlow({
   	const [agentLoading, setAgentLoading] = useState(false);
   	const [agentPlan, setAgentPlan] = useState<CheckoutPlan | null>(null);
   	const [agentError, setAgentError] = useState("");
+  	const [agentHistory, setAgentHistory] = useState<AgentChatMessage[]>([]);
   	const [suggestion, setSuggestion] = useState<SuggestResponse | null>(null);
   	const [suggestionLoading, setSuggestionLoading] = useState(false);
   	const [dismissedProductId, setDismissedProductId] = useState<string | null>(null);
@@ -395,32 +406,43 @@ export default function CheckoutFlow({
   // normal cart/policy/payment pipeline still runs unchanged.
   async function askAgent() {
     if (!agentPrompt.trim()) return;
+    const prompt = agentPrompt;
+    setAgentHistory((h) => [...h, { role: "user", content: prompt }]);
+    setAgentPrompt("");
     setAgentLoading(true);
     setAgentError("");
     setAgentPlan(null);
     try {
+      // cart_id doubles as the conversation_id (backend/agents/conversation.go)
+      // -- sending it is what lets a follow-up like "no, for my brother
+      // instead" build on what was already said in this cart, instead of
+      // being extracted from scratch and rejected for missing budget/category.
       const res = await fetch(`${API_BASE}/agent/checkout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: agentPrompt, merchant: MERCHANT_ID }),
+        body: JSON.stringify({ prompt, merchant: MERCHANT_ID, cart_id: cartId }),
       });
       if (!res.ok) {
         const text = await res.text();
+        let errorMessage: string;
         if (text.includes("ambiguous intent")) {
-          setAgentError(
-            "Say a bit more -- what are you shopping for, and what is the budget?"
-          );
+          errorMessage = "Say a bit more -- what are you shopping for, and what is the budget?";
         } else if (text.includes("no suitable product")) {
-          setAgentError("Nothing in the catalog matches that yet -- try browsing below instead.");
+          errorMessage = "Nothing in the catalog matches that yet -- try browsing below instead.";
         } else {
-          setAgentError("The assistant is temporarily unavailable -- you can browse the catalog manually below.");
+          errorMessage = "The assistant is temporarily unavailable -- you can browse the catalog manually below.";
         }
+        setAgentError(errorMessage);
+        setAgentHistory((h) => [...h, { role: "assistant", content: errorMessage }]);
         return;
       }
       const plan = (await res.json()) as CheckoutPlan;
       setAgentPlan(plan);
+      setAgentHistory((h) => [...h, { role: "assistant", content: plan.reasoning }]);
     } catch {
-      setAgentError("The assistant is temporarily unavailable -- you can browse the catalog manually below.");
+      const errorMessage = "The assistant is temporarily unavailable -- you can browse the catalog manually below.";
+      setAgentError(errorMessage);
+      setAgentHistory((h) => [...h, { role: "assistant", content: errorMessage }]);
     } finally {
       setAgentLoading(false);
     }
@@ -938,6 +960,20 @@ export default function CheckoutFlow({
               <p className="mb-3 text-sm text-zinc-600">
                 Say what you want and the budget. It reads the catalog and proposes one item -- it never places an order itself; the normal checkout below still runs.
               </p>
+
+              {agentHistory.length > 0 && (
+                <div className="mb-3 max-h-40 space-y-2 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-3">
+                  {agentHistory.map((msg, i) => (
+                    <p key={i} className="text-sm">
+                      <span className="font-medium text-zinc-500">
+                        {msg.role === "user" ? "You: " : "Agent: "}
+                      </span>
+                      <span className="text-zinc-700">{msg.content}</span>
+                    </p>
+                  ))}
+                </div>
+              )}
+
               <div className="flex gap-2">
                 <input
                   type="text"
