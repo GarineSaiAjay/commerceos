@@ -222,19 +222,24 @@ func TestPostgresRepositoryListProducts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// db/seeds/001_catalog.sql seeds 13 products: the original 10 (as of
+	// db/seeds/001_catalog.sql seeds 13 products (the original 10 as of
 	// commit d30f155, "fix(catalog): tag products so agent matching can
-	// score, and add five more", 2026-08-28) plus airpods-pro-3,
-	// airtag-4pack, and beats-fit-pro added afterward to give the
-	// shopping agent demo more than one product family to differentiate
-	// on. This exact assertion has now gone stale twice for the same
-	// reason (a hardcoded product count with no link back to the seed
-	// file) -- same class of bug as the hardcoded product *lists* fixed
-	// elsewhere this session (policy/model.go, campaign/model.go,
-	// growth/simulator.go): whoever adds the next product needs to
-	// remember this count lives here too.
-	if len(products) != 13 {
-		t.Fatalf("expected 13 products, got %d", len(products))
+	// score, and add five more", 2026-08-28, plus airpods-pro-3,
+	// airtag-4pack, and beats-fit-pro added afterward). This assertion
+	// used to be an exact `!= 13` check and went stale twice for the
+	// same reason (a hardcoded product count with no link back to the
+	// seed file). Since ROADMAP-PRIORITIZED.md item 14
+	// (frontend/app/dashboard/catalog/page.tsx) shipped, exact equality
+	// is now permanently wrong, not just occasionally stale: a merchant
+	// running against this same dev database can add real products
+	// through the dashboard, and a real report against this branch did
+	// exactly that ("refrigerator magnets") -- this test failing on
+	// their machine was this exact assertion working as badly as
+	// designed, not a regression. `>= 13` keeps the one guarantee this
+	// test can actually make (the seed data loaded) without asserting
+	// something dashboard-added products necessarily break.
+	if len(products) < 13 {
+		t.Fatalf("expected at least the 13 seeded products, got %d", len(products))
 	}
 }
 
