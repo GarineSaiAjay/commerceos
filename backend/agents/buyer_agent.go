@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/garinesaiajay/commerceos/policy"
+	"github.com/garinesaiajay/commerceos/tools"
 )
 
 // BuyerAgent assembles checkout proposals. It NEVER calls the Payment
@@ -212,7 +213,16 @@ func (a *BuyerAgent) recordAssistantTurn(ctx context.Context, cartID, content st
 // reasoning. Neither entry point writes price/quantity itself here —
 // the agent only ever names a product_id.
 func (a *BuyerAgent) planFromIntent(ctx context.Context, intent Intent, merchant string) (CheckoutPlan, error) {
-	results, err := a.searcher.Search(ctx, intent)
+	// Search's parameter is tools.SearchFilter, not agents.Intent (see
+	// backend/agents/search.go's doc comment) -- Intent's Clarify field
+	// has no meaning to a search, so this only ever carries the four
+	// fields the two types actually share.
+	results, err := a.searcher.Search(ctx, tools.SearchFilter{
+		Budget:    intent.Budget,
+		Category:  intent.Category,
+		Priority:  intent.Priority,
+		Recipient: intent.Recipient,
+	})
 	if err != nil {
 		return CheckoutPlan{}, err
 	}

@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/garinesaiajay/commerceos/agents"
 	"github.com/garinesaiajay/commerceos/commerce/cart"
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 	"github.com/garinesaiajay/commerceos/commerce/order"
 	"github.com/garinesaiajay/commerceos/commerce/payment"
 	"github.com/garinesaiajay/commerceos/growth"
 	"github.com/garinesaiajay/commerceos/policy"
+	"github.com/garinesaiajay/commerceos/tools"
 )
 
 // Dependencies bundles the services the MCP tools wrap. Tools are thin
@@ -24,6 +24,14 @@ type Dependencies struct {
 	Policy  *policy.Service
 	Growth  *growth.GrowthAgent
 	Explain func(policy.ProposedAction, policy.Mandate, string) string
+}
+
+// toolDeps narrows Dependencies to the shared tools package's own
+// Dependencies shape (PLAN-01-AGENTIC-CORE.md §1, ROADMAP-PRIORITIZED.md
+// P1 item 17) -- backend/tools deliberately never sees Order, Payment,
+// Policy, or Explain, so this is a strict subset, not a full adapter.
+func (d Dependencies) toolDeps() tools.Dependencies {
+	return tools.Dependencies{Catalog: d.Catalog, Cart: d.Cart, Growth: d.Growth}
 }
 
 // schema builds a real JSON Schema object (type/properties/required) for
@@ -212,17 +220,17 @@ func RegisterTools(s *Server, deps Dependencies) {
 	})
 }
 
-// searchProducts is the search_products tool. Prior to this fix it
-// ignored every argument and always returned the full unfiltered
-// catalog despite its own description claiming to filter by budget and
-// priority — that mismatch is the actual bug this fixes, not just the
-// schema. It now reuses the same agents.Searcher the Buyer Agent uses
-// (agents/search.go) rather than re-implementing scoring here, per this
-// file's own "tools are thin wrappers" rule. A caller that omits budget
-// (or sends a non-positive one) still gets the full catalog: there is
-// no sensible "budget" hard-filter for an agent that's still just
-// browsing, and defaulting budget to 0 would incorrectly exclude every
-// priced product.
+// searchProducts is the search_products tool. It delegates to the
+// shared tools.SearchProducts (backend/tools/tools.go), which every
+// other product-search path in this codebase now goes through too --
+// the in-app agent's BuyerAgent and its own tool-calling loop both rank
+// products via the same tools.Searcher underneath (PLAN-01-AGENTIC-CORE.md
+// §1, ROADMAP-PRIORITIZED.md P1 item 17) -- rather than re-implementing
+// scoring here, per this file's own "tools are thin wrappers" rule. A
+// caller that omits budget (or sends a non-positive one) still gets the
+// full catalog: there is no sensible "budget" hard-filter for an agent
+// that's still just browsing, and defaulting budget to 0 would
+// incorrectly exclude every priced product.
 func searchProducts(ctx context.Context, deps Dependencies, p json.RawMessage) (any, error) {
 	var req struct {
 		Budget    int64  `json:"budget"`
@@ -234,35 +242,21 @@ func searchProducts(ctx context.Context, deps Dependencies, p json.RawMessage) (
 	// error -- an empty {} call is exactly how a browsing agent starts.
 	_ = json.Unmarshal(p, &req)
 
-	if req.Budget <= 0 {
-		return deps.Catalog.ListProducts(ctx)
-	}
-
-	searcher := agents.NewSearcher(deps.Catalog)
-	results, err := searcher.Search(ctx, agents.Intent{
+	return tools.SearchProducts(ctx, deps.toolDeps(), tools.SearchProductsRequest{
 		Budget:    req.Budget,
 		Category:  req.Category,
 		Priority:  req.Priority,
 		Recipient: req.Recipient,
 	})
-	if err != nil {
-		return nil, err
-	}
-	return results, nil
 }
 
 func getProduct(ctx context.Context, deps Dependencies, p json.RawMessage) (any, error) {
 	var req struct {
 		ProductID string `json:"product_id"`
 	}
-	if err := json.Unmarshal(p, &req); err != nil || req.ProductID == "" {
-		return nil, fmt.Errorf("product_id required")
-	}
-	product, err := deps.Catalog.GetProduct(ctx, req.ProductID)
-	if err != nil {
-		return nil, err
-	}
-	return product, nil
+	_ = json.Unmarshal(p, &req)
+
+	return tools.GetProduct(ctx, deps.toolDeps(), tools.GetProductRequest{ProductID: req.ProductID})
 }
 
 func createCart(ctx context.Context, deps Dependencies, p json.RawMessage) (any, error) {
@@ -271,16 +265,13 @@ func createCart(ctx context.Context, deps Dependencies, p json.RawMessage) (any,
 		MerchantID string `json:"merchant_id"`
 		Currency   string `json:"currency"`
 	}
-	if err := json.Unmarshal(p, &req); err != nil || req.ID == "" {
-		return nil, fmt.Errorf("cart_id required")
-	}
-	if req.MerchantID == "" {
-		req.MerchantID = "merchant_001"
-	}
-	if req.Currency == "" {
-		req.Currency = "INR"
-	}
-	return deps.Cart.CreateCart(ctx, req.ID, req.MerchantID, req.Currency)
+	_ = json.Unmarshal(p, &req)
+
+	return tools.CreateCart(ctx, deps.toolDeps(), tools.CreateCartRequest{
+		ID:         req.ID,
+		MerchantID: req.MerchantID,
+		Currency:   req.Currency,
+	})
 }
 
 // addItem is the add_item tool. Without this tool, an MCP-only caller
@@ -297,23 +288,13 @@ func addItem(ctx context.Context, deps Dependencies, p json.RawMessage) (any, er
 		VariantID string `json:"variant_id"`
 		Quantity  int    `json:"quantity"`
 	}
-	if err := json.Unmarshal(p, &req); err != nil || req.CartID == "" || req.VariantID == "" {
-		return nil, fmt.Errorf("cart_id and variant_id required")
-	}
-	if req.Quantity <= 0 {
-		req.Quantity = 1
-	}
+	_ = json.Unmarshal(p, &req)
 
-	if err := deps.Cart.AddItem(ctx, req.CartID, cart.CartItem{
+	return tools.AddItem(ctx, deps.toolDeps(), tools.AddItemRequest{
+		CartID:    req.CartID,
 		VariantID: req.VariantID,
 		Quantity:  req.Quantity,
-	}); err != nil {
-		return nil, err
-	}
-
-	// Return the updated cart so the caller can see the item (and its
-	// authoritative catalog price) land without a second round trip.
-	return deps.Cart.GetCart(ctx, req.CartID)
+	})
 }
 
 func recommendBundle(ctx context.Context, deps Dependencies, p json.RawMessage) (any, error) {
@@ -328,24 +309,19 @@ func recommendBundle(ctx context.Context, deps Dependencies, p json.RawMessage) 
 		Confidence   float64 `json:"confidence"`
 		RiskCost     int64   `json:"risk_cost"`
 	}
-	if err := json.Unmarshal(p, &req); err != nil || req.ProductID == "" {
-		return nil, fmt.Errorf("product_id required")
-	}
-	rec, err := deps.Growth.EvaluateCandidate(
-		ctx, req.CartID, req.CartTotal,
-		growth.BudgetCheck{CartTotal: req.CartTotal, Budget: req.Budget, Tolerance: req.Tolerance},
-		req.ProductID,
-		growth.EVInputs{
-			PurchaseProbability: req.PurchaseProb,
-			IncrementalMargin:   req.Margin,
-			Confidence:          req.Confidence,
-			RiskCost:            req.RiskCost,
-		},
-	)
-	if err != nil {
-		return nil, err
-	}
-	return rec, nil
+	_ = json.Unmarshal(p, &req)
+
+	return tools.RecommendBundle(ctx, deps.toolDeps(), tools.RecommendBundleRequest{
+		CartID:       req.CartID,
+		CartTotal:    req.CartTotal,
+		Budget:       req.Budget,
+		Tolerance:    req.Tolerance,
+		ProductID:    req.ProductID,
+		PurchaseProb: req.PurchaseProb,
+		Margin:       req.Margin,
+		Confidence:   req.Confidence,
+		RiskCost:     req.RiskCost,
+	})
 }
 
 func calculateTotal(ctx context.Context, deps Dependencies, p json.RawMessage) (any, error) {
@@ -358,11 +334,13 @@ func calculateTotal(ctx context.Context, deps Dependencies, p json.RawMessage) (
 	if err := json.Unmarshal(p, &req); err != nil {
 		return nil, fmt.Errorf("items required")
 	}
-	var total int64
-	for _, it := range req.Items {
-		total += it.UnitPrice * int64(it.Quantity)
+
+	items := make([]tools.CalculateTotalItem, len(req.Items))
+	for i, it := range req.Items {
+		items[i] = tools.CalculateTotalItem{UnitPrice: it.UnitPrice, Quantity: it.Quantity}
 	}
-	return map[string]any{"total": total}, nil
+
+	return tools.CalculateTotal(ctx, tools.CalculateTotalRequest{Items: items})
 }
 
 func requestAuthorization(ctx context.Context, deps Dependencies, p json.RawMessage) (any, error) {
