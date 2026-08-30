@@ -3,13 +3,19 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
+	"time"
+
+	"github.com/garinesaiajay/commerceos/policy"
 )
 
 // Handler exposes the Agent Commerce Contract endpoints.
 type Handler struct {
 	agent     *BuyerAgent
 	loopAgent *ToolCallingAgent
+	runs      RunRecorder
 }
 
 func NewHandler(agent *BuyerAgent) *Handler {
@@ -24,6 +30,47 @@ func NewHandler(agent *BuyerAgent) *Handler {
 func (h *Handler) WithLoopAgent(loopAgent *ToolCallingAgent) *Handler {
 	h.loopAgent = loopAgent
 	return h
+}
+
+// RunRecorder persists an agent's own reasoning trail as an
+// independently-retrievable Run (item 16, PLAN-01-AGENTIC-CORE.md §4).
+// *policy.Service satisfies this directly (see Service.SaveAgentPlan) --
+// declared here as a narrow interface using only policy's already-
+// imported types, rather than a concrete *policy.Service field, so
+// there's no reverse edge from policy back to agents: policy must never
+// import agents.
+type RunRecorder interface {
+	SaveAgentPlan(ctx context.Context, id string, action policy.ProposedAction, steps []policy.RunStep) error
+}
+
+// WithRunRecorder attaches the audit-trail sink (item 16) that lets a
+// successful plan's reasoning trail be persisted as its own Run.
+// Optional and additive, same convention as WithLoopAgent: a nil
+// recorder (the zero value, if this is never called) simply means
+// plans aren't persisted -- PlanCheckout/PlanCheckoutLoop's actual
+// response to the buyer is completely unaffected either way, since
+// recordPlan is always best-effort and never blocks or fails the
+// request over a persistence error.
+func (h *Handler) WithRunRecorder(runs RunRecorder) *Handler {
+	h.runs = runs
+	return h
+}
+
+// recordPlan best-effort persists a successful plan's reasoning trail.
+// Never returns an error and never blocks the response on one -- a
+// caller who forgot to call WithRunRecorder, or a save that fails, must
+// never turn a working checkout proposal into a failed request. Skips
+// silently when there's no recorder configured or the plan has no
+// reasoning trail to save (e.g. a test double CheckoutPlan built by
+// hand, or an old caller that hasn't looked at ReasoningTrail).
+func (h *Handler) recordPlan(ctx context.Context, plan CheckoutPlan) {
+	if h.runs == nil || len(plan.ReasoningTrail) == 0 {
+		return
+	}
+	id := fmt.Sprintf("plan_%d", time.Now().UnixNano())
+	if err := h.runs.SaveAgentPlan(ctx, id, plan.Proposal, plan.ReasoningTrail); err != nil {
+		log.Printf("[agents] failed to save agent plan reasoning trail: %v", err)
+	}
 }
 
 type planRequest struct {
@@ -69,6 +116,8 @@ func (h *Handler) PlanCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.recordPlan(r.Context(), plan)
+
 	writeJSON(w, http.StatusOK, plan)
 }
 
@@ -109,6 +158,10 @@ func (h *Handler) PlanCheckoutLoop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if result.Plan != nil {
+		h.recordPlan(r.Context(), *result.Plan)
+	}
+
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -118,4 +171,3 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-var _ = context.Background

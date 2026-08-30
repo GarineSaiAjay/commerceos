@@ -31,7 +31,27 @@ const STAGE_LABEL: Record<string, string> = {
   policy_evaluated: "Policy evaluated",
   authorized: "Authorized",
   authorization_consumed: "Authorization consumed",
+  // Item 16 (PLAN-01-AGENTIC-CORE.md §4): the buyer-facing agent's own
+  // reasoning trail, persisted as its own Run (policy.AgentPlan) and
+  // shown through this same timeline -- no new UI surface needed.
+  intent_extracted: "Intent extracted",
+  tool_called: "Tool called",
+  tool_result_summary: "Tool result",
+  alternatives_considered: "Alternatives considered",
 };
+
+// decisionBadgeClass mirrors the same three-way approved/pending/
+// rejected read every other decision badge in this dashboard uses,
+// plus one more case: "PLANNED" (policy.PlanDecisionSentinel, item 16)
+// is a reasoning-trail run that was never actually evaluated by the
+// Policy Engine at all -- coloring it like a rejection would be a
+// straightforwardly false readout, not just an unstyled fallback.
+function decisionBadgeClass(decision: string): string {
+  if (decision === "APPROVED") return "bg-emerald-100 text-emerald-800";
+  if (decision === "PENDING_HUMAN_APPROVAL") return "bg-amber-100 text-amber-800";
+  if (decision === "PLANNED") return "bg-sky-100 text-sky-800";
+  return "bg-rose-100 text-rose-800";
+}
 
 export default function RunsPage() {
   const [runs, setRuns] = useState<Run[]>([]);
@@ -94,7 +114,7 @@ export default function RunsPage() {
                       <p className="mt-0.5 text-xs text-slate-500">{run.merchant} · {formatTime(run.created_at)}</p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${run.decision === "APPROVED" ? "bg-emerald-100 text-emerald-800" : run.decision === "PENDING_HUMAN_APPROVAL" ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800"}`}>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${decisionBadgeClass(run.decision)}`}>
                         {run.decision || "—"}
                       </span>
                       <p className="text-sm font-semibold text-slate-900">{formatINR(run.amount)}</p>
@@ -119,7 +139,7 @@ export default function RunsPage() {
               <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Items</dt><dd className="mt-1">{selected.items.join(", ") || "—"}</dd></div>
               <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Policy outcome</dt>
                 <dd className="mt-1">
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${selected.decision === "APPROVED" ? "bg-emerald-100 text-emerald-800" : selected.decision === "PENDING_HUMAN_APPROVAL" ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800"}`}>{selected.decision || "—"}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${decisionBadgeClass(selected.decision)}`}>{selected.decision || "—"}</span>
                   {selected.reason && <p className="mt-1 text-xs text-slate-500">{selected.reason}</p>}
                 </dd>
               </div>

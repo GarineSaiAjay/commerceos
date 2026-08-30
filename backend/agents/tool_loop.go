@@ -284,6 +284,38 @@ type LoopResult struct {
 	Steps   []LoopStep    `json:"steps"`
 }
 
+// reasoningTrail converts a LoopResult's live wire trace (Steps, the
+// "tool_called"/"tool_result"/"clarify"/"proposed" values the frontend
+// and any existing caller already consume unchanged) into the
+// policy.RunStep shape item 16 persists. This is a display-time
+// relabeling only, at this one conversion boundary -- "tool_result"
+// becomes the more descriptive "tool_result_summary" (matching
+// PLAN-01-AGENTIC-CORE.md §4's stage name) here, never on the wire
+// LoopStep itself, so nothing about the already-shipped /agent/loop
+// response shape changes. Returns nil (not an empty slice) when there's
+// no plan to record -- reasoningTrail is only ever called once Run has
+// produced a Plan.
+func (r LoopResult) reasoningTrail() []policy.RunStep {
+	if len(r.Steps) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	steps := make([]policy.RunStep, 0, len(r.Steps))
+	for _, s := range r.Steps {
+		stage := s.Type
+		if stage == "tool_result" {
+			stage = "tool_result_summary"
+		}
+		steps = append(steps, policy.RunStep{
+			Stage:     stage,
+			Detail:    s.Detail,
+			Timestamp: now,
+		})
+	}
+	return steps
+}
+
 // Run executes the bounded tool-calling loop for one buyer prompt.
 func (a *ToolCallingAgent) Run(ctx context.Context, prompt, merchant string) (LoopResult, error) {
 	if a == nil {
@@ -347,6 +379,9 @@ func (a *ToolCallingAgent) Run(ctx context.Context, prompt, merchant string) (Lo
 				}
 				result.Plan = &plan
 				result.Steps = append(result.Steps, LoopStep{Type: "proposed", Detail: plan.Reasoning})
+				// Built after the "proposed" step lands in result.Steps
+				// so the persisted trail's final entry mirrors it too.
+				result.Plan.ReasoningTrail = result.reasoningTrail()
 				proposed = true
 				break
 			}

@@ -265,6 +265,15 @@ func main() {
 	riskEngine := policy.NewRiskEngine()
 	policyService := policy.NewService(policyEngine, riskEngine, policyRepo)
 
+	// item 16: persist the buyer-facing agent's own reasoning trail
+	// (BuyerAgent single-shot pipeline and ToolCallingAgent's bounded
+	// tool-calling loop, item 18) as independently-retrievable Runs --
+	// see agents.RunRecorder and policy.Service.SaveAgentPlan's doc
+	// comments. Wired here, not near agentHandler's earlier
+	// construction/WithLoopAgent call above, because policyService
+	// doesn't exist yet at that point in this file.
+	agentHandler.WithRunRecorder(policyService)
+
 	// PolicyConfig.AllowedProducts (policy/model.go) is a static
 	// fallback list that has gone stale three times now -- twice from a
 	// forgotten hand-edit, and a third time (the bug this wiring fixes)
