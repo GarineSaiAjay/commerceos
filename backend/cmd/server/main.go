@@ -735,8 +735,12 @@ func main() {
 	// requiring the caller to supply them (see growth/suggest.go).
 	// orderService also backs SuggestForOrder's post-checkout surface
 	// (item 19) -- same GetOrder path the buyer's own order-history view
-	// already uses unauthenticated (files/AUTH.md).
-	growthSuggestHandler := growth.NewSuggestHandler(catalogRepo, cartService, orderService, growthAgent, growthStore)
+	// already uses unauthenticated (files/AUTH.md). WithImpressions
+	// (item 20) turns on the per-cart frequency cap and impression/
+	// acceptance recording -- growthStore already implements
+	// ImpressionStore (postgres_store.go).
+	growthSuggestHandler := growth.NewSuggestHandler(catalogRepo, cartService, orderService, growthAgent, growthStore).
+		WithImpressions(growthStore)
 
 	commerceMux.HandleFunc(
 		"/growth/suggest",
@@ -767,6 +771,14 @@ func main() {
 	commerceMux.HandleFunc(
 		"/growth/suggest/dismiss",
 		growthSuggestHandler.Dismiss,
+	)
+
+	// Records that a buyer actually added a suggested product (item 20,
+	// PLAN-03-PROACTIVE-GROWTH-AGENT.md §8) -- feeds the merchant
+	// dashboard's suggestion_impressions/suggestion_acceptances metrics.
+	commerceMux.HandleFunc(
+		"/growth/suggest/accept",
+		growthSuggestHandler.Accept,
 	)
 
 	// Phase 6: dashboard -- merchant-only (files/AUTH.md).

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/garinesaiajay/commerceos/commerce/cart"
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
@@ -41,6 +42,31 @@ type DismissalStore interface {
 	SaveDismissal(ctx context.Context, cartID, productID string) error
 	ListDismissedProductIDs(ctx context.Context, cartID string) ([]string, error)
 }
+
+// ImpressionStore records and reads back suggestion impressions and
+// acceptances (PLAN-03-PROACTIVE-GROWTH-AGENT.md §6, §8, item 20).
+// Implemented by *PostgresStore. Wired in via WithImpressions rather
+// than the constructor -- like DismissalStore's own nil-safety, an
+// unwired SuggestHandler (an older caller, or a test) just means no
+// frequency cap is enforced and no impressions/acceptances are
+// recorded, not an error.
+type ImpressionStore interface {
+	RecordImpression(ctx context.Context, cartID, productID string) error
+	CountRecentImpressions(ctx context.Context, cartID string, since time.Time) (int, error)
+	RecordAcceptance(ctx context.Context, cartID, productID string) error
+}
+
+// SuggestionFrequencyCapCount/-Window (PLAN-03 §6): a buyer session
+// sees at most this many suggestion impressions, across every
+// /growth/suggest* surface COMBINED, within this rolling window -- a
+// deliberate quality-over-quantity choice ("helpful, not annoying" is
+// the user's own framing) so item 19's extra surfaces (product-detail,
+// post-checkout) don't turn cross-sell into the nagging pattern those
+// surfaces were explicitly designed to avoid.
+const (
+	SuggestionFrequencyCapCount  = 2
+	SuggestionFrequencyCapWindow = 10 * time.Minute
+)
 
 // Demo-scoped budget defaults. This project has exactly one mandate
 // (mandate_demo, db/seeds/001_catalog.sql, maximum_amount 3000000 paise
@@ -137,15 +163,28 @@ func heuristicEVInputs(candidatePrice int64, overlapScore int, averageRating flo
 // agents/intent.go's Clarify field) -- rather than guessing at an
 // unrelated product.
 type SuggestHandler struct {
-	catalog    CatalogSearcher
-	cart       CartReader
-	orders     OrderReader
-	agent      *GrowthAgent
-	dismissals DismissalStore
+	catalog     CatalogSearcher
+	cart        CartReader
+	orders      OrderReader
+	agent       *GrowthAgent
+	dismissals  DismissalStore
+	impressions ImpressionStore
 }
 
 func NewSuggestHandler(catalog CatalogSearcher, cartReader CartReader, orders OrderReader, agent *GrowthAgent, dismissals DismissalStore) *SuggestHandler {
 	return &SuggestHandler{catalog: catalog, cart: cartReader, orders: orders, agent: agent, dismissals: dismissals}
+}
+
+// WithImpressions wires in frequency-cap enforcement and impression/
+// acceptance recording (item 20). Matches this codebase's WithX
+// convention for an optional capability (agents.BuyerAgent.
+// WithConversationStore, policy.Engine.WithProductExistsFunc,
+// payment.Handler.WithCallCounter) -- every existing caller of
+// NewSuggestHandler keeps compiling unchanged; main.go is the only one
+// that needs to also call this to turn the capability on.
+func (h *SuggestHandler) WithImpressions(impressions ImpressionStore) *SuggestHandler {
+	h.impressions = impressions
+	return h
 }
 
 // SuggestedProduct carries just enough catalog detail to render the
@@ -266,15 +305,36 @@ func (h *SuggestHandler) loadDismissed(ctx context.Context, id string) (map[stri
 	return dismissed, nil
 }
 
-// evaluate runs the shared EV-scoring + budget-check + persistence step
-// (GrowthAgent.EvaluateCandidate) for a chosen candidate and turns the
-// result into the wire response. cartID is the key every recommendation
-// is stored and deduplicated under (recommendations.id is
-// "rec_<cartID>_<productID>", upserted on re-evaluation) -- every
-// caller below passes a real cart_id so a product suggested from
-// several surfaces during the same shopping session converges on one
-// row, not three.
+// evaluate runs the shared frequency-cap check + EV-scoring +
+// budget-check + persistence + impression-recording step for a chosen
+// candidate and turns the result into the wire response. cartID is the
+// key every recommendation is stored and deduplicated under
+// (recommendations.id is "rec_<cartID>_<productID>", upserted on
+// re-evaluation) AND the key the frequency cap and impression log are
+// scoped by -- every caller below passes a real cart_id so a product
+// suggested from several surfaces during the same shopping session
+// converges on one recommendation row and one shared impression
+// budget, not three of each.
 func (h *SuggestHandler) evaluate(ctx context.Context, cartID string, cartTotal int64, best scoredCandidate) (SuggestResponse, error) {
+	// Frequency cap (PLAN-03-PROACTIVE-GROWTH-AGENT.md §6): checked
+	// before spending an EvaluateCandidate call (and its Save) on a
+	// suggestion that would just be suppressed anyway. A nil
+	// ImpressionStore (unwired caller, or a test) means no cap is
+	// enforced -- matches DismissalStore's own nil-safety above.
+	if h.impressions != nil {
+		since := time.Now().Add(-SuggestionFrequencyCapWindow)
+		count, err := h.impressions.CountRecentImpressions(ctx, cartID, since)
+		if err != nil {
+			return SuggestResponse{}, err
+		}
+		if count >= SuggestionFrequencyCapCount {
+			return SuggestResponse{
+				Available: false,
+				Message:   "reached the suggestion limit for this session -- check back in a few minutes",
+			}, nil
+		}
+	}
+
 	rec, err := h.agent.EvaluateCandidate(
 		ctx,
 		cartID,
@@ -289,6 +349,15 @@ func (h *SuggestHandler) evaluate(ctx context.Context, cartID string, cartTotal 
 
 	if rec.Decision != "RECOMMEND" {
 		return SuggestResponse{Available: false, Message: rec.Reason}, nil
+	}
+
+	// Only a suggestion actually about to be returned to the buyer
+	// counts as a real impression -- a REJECT decision above (over
+	// budget) or "no complementary product" never reaches here.
+	if h.impressions != nil {
+		if err := h.impressions.RecordImpression(ctx, cartID, best.product.ID); err != nil {
+			return SuggestResponse{}, err
+		}
 	}
 
 	return SuggestResponse{
@@ -578,6 +647,44 @@ func (h *SuggestHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.dismissals.SaveDismissal(r.Context(), req.CartID, req.ProductID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeSuggestJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// Accept handles POST /growth/suggest/accept -- records that a buyer
+// actually added a suggested product to their cart (PLAN-03-PROACTIVE-
+// GROWTH-AGENT.md §8, item 20). checkout.tsx calls this right after
+// addToCart succeeds for a suggestion accepted from any surface
+// (cart-based, product-detail, post-checkout). Best-effort like
+// Dismiss above: a missing ImpressionStore, or a cart_id/product_id
+// pair with no matching recommendation row (e.g. a stale client),
+// still returns success -- the buyer's item is already in their cart
+// either way, and a merchant undercounting one acceptance is a far
+// smaller problem than a 500 the buyer can do nothing about.
+func (h *SuggestHandler) Accept(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		CartID    string `json:"cart_id"`
+		ProductID string `json:"product_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CartID == "" || req.ProductID == "" {
+		http.Error(w, "cart_id and product_id required", http.StatusBadRequest)
+		return
+	}
+
+	if h.impressions == nil {
+		writeSuggestJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+
+	if err := h.impressions.RecordAcceptance(r.Context(), req.CartID, req.ProductID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

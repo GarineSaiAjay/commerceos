@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/garinesaiajay/commerceos/commerce/cart"
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
@@ -84,6 +85,42 @@ func (f *fakeDismissals) ListDismissedProductIDs(ctx context.Context, cartID str
 type fakeRecommendationStore struct{}
 
 func (fakeRecommendationStore) Save(ctx context.Context, r Recommendation) error { return nil }
+
+// fakeImpressions is an in-memory ImpressionStore for the frequency-cap
+// and accept-tracking tests (item 20) -- CountRecentImpressions ignores
+// `since` and just returns len(shown[cartID]) since every impression
+// recorded in a single test happens well within any real window,
+// keeping these tests independent of wall-clock timing.
+type fakeImpressions struct {
+	shown     map[string][]string // cart_id -> product_ids, in recording order
+	accepted  map[string]bool     // "cart_id|product_id" -> accepted
+	countErr  error
+	recordErr error
+}
+
+func newFakeImpressions() *fakeImpressions {
+	return &fakeImpressions{shown: map[string][]string{}, accepted: map[string]bool{}}
+}
+
+func (f *fakeImpressions) RecordImpression(ctx context.Context, cartID, productID string) error {
+	if f.recordErr != nil {
+		return f.recordErr
+	}
+	f.shown[cartID] = append(f.shown[cartID], productID)
+	return nil
+}
+
+func (f *fakeImpressions) CountRecentImpressions(ctx context.Context, cartID string, since time.Time) (int, error) {
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return len(f.shown[cartID]), nil
+}
+
+func (f *fakeImpressions) RecordAcceptance(ctx context.Context, cartID, productID string) error {
+	f.accepted[cartID+"|"+productID] = true
+	return nil
+}
 
 func testProduct(id, merchantID string, priceAmount int64, availability int, useCases ...string) catalog.Product {
 	return catalog.Product{
@@ -364,5 +401,170 @@ func TestSuggestForOrderNotFoundReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for an unknown order_id, got %d", rec.Code)
+	}
+}
+
+// --- Frequency cap + impressions/acceptances (item 20, PLAN-03 §6, §8) ---
+
+func TestSuggestRecordsAnImpressionOnEachRealSuggestion(t *testing.T) {
+	products := map[string]catalog.Product{
+		"viewed": testProduct("viewed", "m1", 200_000, 5, "earbuds"),
+		"case":   testProduct("case", "m1", 50_000, 5, "earbuds"),
+	}
+	fc := &fakeCatalog{products: products}
+	agent := NewGrowthAgent(fc, fakeRecommendationStore{})
+	impressions := newFakeImpressions()
+	h := NewSuggestHandler(fc, &fakeCartReader{carts: map[string]cart.Cart{}}, &fakeOrderReader{orders: map[string]order.Order{}}, agent, &fakeDismissals{dismissed: map[string][]string{}}).
+		WithImpressions(impressions)
+
+	req := httptest.NewRequest(http.MethodPost, "/growth/suggest/product", strings.NewReader(`{"product_id":"viewed","cart_id":"cart_1"}`))
+	rec := httptest.NewRecorder()
+	h.SuggestForProduct(rec, req)
+
+	resp := decodeSuggestResponse(t, rec)
+	if !resp.Available {
+		t.Fatalf("expected an available suggestion, got %+v", resp)
+	}
+	if got := impressions.shown["cart_1"]; len(got) != 1 || got[0] != "case" {
+		t.Fatalf("expected exactly one recorded impression for 'case', got %v", got)
+	}
+}
+
+func TestSuggestionFrequencyCapSuppressesFurtherSuggestions(t *testing.T) {
+	products := map[string]catalog.Product{
+		"viewed": testProduct("viewed", "m1", 200_000, 5, "earbuds"),
+		"case":   testProduct("case", "m1", 50_000, 5, "earbuds"),
+	}
+	fc := &fakeCatalog{products: products}
+	agent := NewGrowthAgent(fc, fakeRecommendationStore{})
+	impressions := newFakeImpressions()
+	// Pre-seed the cap: SuggestionFrequencyCapCount (2) impressions
+	// already shown for this cart within the window.
+	impressions.shown["cart_1"] = []string{"already-shown-a", "already-shown-b"}
+	h := NewSuggestHandler(fc, &fakeCartReader{carts: map[string]cart.Cart{}}, &fakeOrderReader{orders: map[string]order.Order{}}, agent, &fakeDismissals{dismissed: map[string][]string{}}).
+		WithImpressions(impressions)
+
+	req := httptest.NewRequest(http.MethodPost, "/growth/suggest/product", strings.NewReader(`{"product_id":"viewed","cart_id":"cart_1"}`))
+	rec := httptest.NewRecorder()
+	h.SuggestForProduct(rec, req)
+
+	resp := decodeSuggestResponse(t, rec)
+	if resp.Available {
+		t.Fatalf("expected the frequency cap to suppress a 3rd suggestion, got %+v", resp)
+	}
+	// The cap must reject BEFORE recording a new impression -- a
+	// suppressed suggestion was never actually shown.
+	if got := len(impressions.shown["cart_1"]); got != 2 {
+		t.Fatalf("expected impression count to stay at 2 (capped, not shown), got %d", got)
+	}
+}
+
+func TestSuggestionFrequencyCapIsPerCartNotGlobal(t *testing.T) {
+	products := map[string]catalog.Product{
+		"viewed": testProduct("viewed", "m1", 200_000, 5, "earbuds"),
+		"case":   testProduct("case", "m1", 50_000, 5, "earbuds"),
+	}
+	fc := &fakeCatalog{products: products}
+	agent := NewGrowthAgent(fc, fakeRecommendationStore{})
+	impressions := newFakeImpressions()
+	// cart_capped is at the cap; cart_fresh has never been shown
+	// anything and must be unaffected by another cart's cap.
+	impressions.shown["cart_capped"] = []string{"a", "b"}
+	h := NewSuggestHandler(fc, &fakeCartReader{carts: map[string]cart.Cart{}}, &fakeOrderReader{orders: map[string]order.Order{}}, agent, &fakeDismissals{dismissed: map[string][]string{}}).
+		WithImpressions(impressions)
+
+	req := httptest.NewRequest(http.MethodPost, "/growth/suggest/product", strings.NewReader(`{"product_id":"viewed","cart_id":"cart_fresh"}`))
+	rec := httptest.NewRecorder()
+	h.SuggestForProduct(rec, req)
+
+	resp := decodeSuggestResponse(t, rec)
+	if !resp.Available {
+		t.Fatalf("expected cart_fresh to be unaffected by cart_capped's cap, got %+v", resp)
+	}
+}
+
+func TestSuggestWorksUnchangedWithoutImpressionsWired(t *testing.T) {
+	// WithImpressions was never called -- must behave exactly like
+	// before item 20 existed (no cap, no recording, no error).
+	products := map[string]catalog.Product{
+		"viewed": testProduct("viewed", "m1", 200_000, 5, "earbuds"),
+		"case":   testProduct("case", "m1", 50_000, 5, "earbuds"),
+	}
+	h := newTestSuggestHandler(products, map[string]cart.Cart{}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/growth/suggest/product", strings.NewReader(`{"product_id":"viewed","cart_id":"cart_1"}`))
+	rec := httptest.NewRecorder()
+	h.SuggestForProduct(rec, req)
+
+	resp := decodeSuggestResponse(t, rec)
+	if !resp.Available {
+		t.Fatalf("expected a suggestion with no ImpressionStore wired, got %+v", resp)
+	}
+}
+
+func TestAcceptRecordsAcceptance(t *testing.T) {
+	fc := &fakeCatalog{products: map[string]catalog.Product{}}
+	agent := NewGrowthAgent(fc, fakeRecommendationStore{})
+	impressions := newFakeImpressions()
+	h := NewSuggestHandler(fc, &fakeCartReader{carts: map[string]cart.Cart{}}, &fakeOrderReader{orders: map[string]order.Order{}}, agent, &fakeDismissals{dismissed: map[string][]string{}}).
+		WithImpressions(impressions)
+
+	req := httptest.NewRequest(http.MethodPost, "/growth/suggest/accept", strings.NewReader(`{"cart_id":"cart_1","product_id":"case"}`))
+	rec := httptest.NewRecorder()
+	h.Accept(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !impressions.accepted["cart_1|case"] {
+		t.Fatal("expected the acceptance to be recorded")
+	}
+}
+
+func TestAcceptRequiresCartIDAndProductID(t *testing.T) {
+	h := newTestSuggestHandler(nil, nil, nil, nil)
+
+	for _, body := range []string{`{"cart_id":"c1"}`, `{"product_id":"p1"}`, `{}`} {
+		req := httptest.NewRequest(http.MethodPost, "/growth/suggest/accept", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.Accept(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q: expected 400, got %d", body, rec.Code)
+		}
+	}
+}
+
+func TestAcceptWithoutImpressionsWiredStillReturnsOK(t *testing.T) {
+	// No WithImpressions call -- must be a harmless no-op, not an error,
+	// same posture as Dismiss with a nil DismissalStore.
+	h := newTestSuggestHandler(nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/growth/suggest/accept", strings.NewReader(`{"cart_id":"cart_1","product_id":"case"}`))
+	rec := httptest.NewRecorder()
+	h.Accept(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 even with no ImpressionStore wired, got %d", rec.Code)
+	}
+}
+
+func TestSuggestPropagatesFrequencyCapLookupError(t *testing.T) {
+	products := map[string]catalog.Product{
+		"viewed": testProduct("viewed", "m1", 200_000, 5, "earbuds"),
+		"case":   testProduct("case", "m1", 50_000, 5, "earbuds"),
+	}
+	fc := &fakeCatalog{products: products}
+	agent := NewGrowthAgent(fc, fakeRecommendationStore{})
+	impressions := newFakeImpressions()
+	impressions.countErr = fmt.Errorf("db unavailable")
+	h := NewSuggestHandler(fc, &fakeCartReader{carts: map[string]cart.Cart{}}, &fakeOrderReader{orders: map[string]order.Order{}}, agent, &fakeDismissals{dismissed: map[string][]string{}}).
+		WithImpressions(impressions)
+
+	req := httptest.NewRequest(http.MethodPost, "/growth/suggest/product", strings.NewReader(`{"product_id":"viewed","cart_id":"cart_1"}`))
+	rec := httptest.NewRecorder()
+	h.SuggestForProduct(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when the frequency-cap lookup itself fails, got %d", rec.Code)
 	}
 }

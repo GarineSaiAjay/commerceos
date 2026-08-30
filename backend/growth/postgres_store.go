@@ -3,6 +3,7 @@ package growth
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -114,14 +115,14 @@ func (s *PostgresStore) GetByID(ctx context.Context, id string) (Recommendation,
 		SELECT id, cart_id, product_id, price, purchase_probability,
 			incremental_margin, confidence, risk_cost, expected_value,
 			decision, policy_version, reason, created_at,
-			cart_total_at_evaluation, budget_at_evaluation
+			cart_total_at_evaluation, budget_at_evaluation, accepted
 		FROM recommendations
 		WHERE id = $1
 	`, id).Scan(
 		&r.ID, &r.CartID, &r.ProductID, &r.Price, &r.PurchaseProbability,
 		&r.IncrementalMargin, &r.Confidence, &r.RiskCost, &r.ExpectedValue,
 		&r.Decision, &r.PolicyVersion, &r.Reason, &r.CreatedAt,
-		&cartTotal, &budgetAmt,
+		&cartTotal, &budgetAmt, &r.Accepted,
 	)
 	if err != nil {
 		return Recommendation{}, fmt.Errorf("get recommendation: %w", err)
@@ -134,4 +135,56 @@ func (s *PostgresStore) GetByID(ctx context.Context, id string) (Recommendation,
 	}
 
 	return r, nil
+}
+
+// RecordImpression logs one real suggestion impression (PLAN-03-
+// PROACTIVE-GROWTH-AGENT.md §6, §8) -- called from suggest.go's shared
+// evaluate() every time a RECOMMEND response is actually about to be
+// returned to a buyer, across all three /growth/suggest* surfaces.
+// Deliberately an append-only INSERT (not an upsert/counter) so
+// CountRecentImpressions below can answer a real windowed count.
+func (s *PostgresStore) RecordImpression(ctx context.Context, cartID, productID string) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO suggestion_impressions (cart_id, product_id)
+		VALUES ($1, $2)
+	`, cartID, productID)
+	if err != nil {
+		return fmt.Errorf("record suggestion impression: %w", err)
+	}
+	return nil
+}
+
+// CountRecentImpressions answers the frequency cap's own question:
+// how many suggestions (any product) have been shown for this cart
+// since `since`. suggest.go's evaluate() compares this against
+// SuggestionFrequencyCapCount before evaluating a new candidate.
+func (s *PostgresStore) CountRecentImpressions(ctx context.Context, cartID string, since time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM suggestion_impressions
+		WHERE cart_id = $1 AND shown_at >= $2
+	`, cartID, since).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count recent suggestion impressions: %w", err)
+	}
+	return count, nil
+}
+
+// RecordAcceptance marks a recommendation as accepted (PLAN-03 §8) --
+// called from POST /growth/suggest/accept once the buyer's addToCart
+// for a suggested product actually succeeds. Matches by (cart_id,
+// product_id) rather than the derived "rec_<cart_id>_<product_id>" id
+// string so it stays correct even if that ID scheme ever changes. A
+// buyer accepting a suggestion the backend never recorded (e.g. a
+// stale client) is a silent no-op, not an error -- there is nothing to
+// mark accepted, which is not the buyer's fault.
+func (s *PostgresStore) RecordAcceptance(ctx context.Context, cartID, productID string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE recommendations SET accepted = TRUE
+		WHERE cart_id = $1 AND product_id = $2
+	`, cartID, productID)
+	if err != nil {
+		return fmt.Errorf("record suggestion acceptance: %w", err)
+	}
+	return nil
 }

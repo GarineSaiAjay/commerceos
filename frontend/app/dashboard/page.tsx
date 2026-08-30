@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 const API_BASE = process.env.COMMERCE_SERVICE_URL ?? "http://localhost:8081";
 
 const emptyOverview: Overview = {
-  metrics: { revenue: 0, ai_revenue: 0, conversion_rate: 0, average_order_value: 0, simulated: false },
+  metrics: { revenue: 0, ai_revenue: 0, conversion_rate: 0, average_order_value: 0, suggestion_impressions: 0, suggestion_acceptances: 0, simulated: false },
   recent_activity: [],
   agent_actions: [],
   audit_integrity: { verified: false, chain_broken: false, rows_checked: 0 },
