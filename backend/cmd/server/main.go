@@ -17,6 +17,7 @@ import (
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 	"github.com/garinesaiajay/commerceos/commerce/order"
 	"github.com/garinesaiajay/commerceos/commerce/payment"
+	"github.com/garinesaiajay/commerceos/commerce/review"
 	"github.com/garinesaiajay/commerceos/events"
 	"github.com/garinesaiajay/commerceos/growth"
 	db "github.com/garinesaiajay/commerceos/infra/db"
@@ -222,6 +223,15 @@ func main() {
 	orderRepo := order.NewPostgresRepository(dbPool)
 	orderService := order.NewService(orderRepo)
 	orderHandler := order.NewHandler(orderService)
+
+	// -------------------------
+	// Reviews (PLAN-02-CATALOG-AND-COMMERCE.md §2, ROADMAP-PRIORITIZED.md
+	// P1 item 11)
+	// -------------------------
+
+	reviewRepo := review.NewPostgresRepository(dbPool)
+	reviewService := review.NewService(reviewRepo, orderService)
+	reviewHandler := review.NewHandler(reviewService)
 
 	// -------------------------
 	// Payment
@@ -441,14 +451,20 @@ func main() {
 	commerceMux.HandleFunc(
 		"/products/",
 		func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodGet:
+			switch {
+			// GET /products/{id}/reviews -- checked first so it never
+			// shadows the plain GET /products/{id} case below.
+			case r.Method == http.MethodGet &&
+				strings.HasSuffix(r.URL.Path, "/reviews"):
+				reviewHandler.ListByProduct(w, r)
+
+			case r.Method == http.MethodGet:
 				catalogHandler.GetProduct(w, r)
 
-			case http.MethodPatch:
+			case r.Method == http.MethodPatch:
 				authService.RequireOperator(catalogHandler.UpdateProduct)(w, r)
 
-			case http.MethodDelete:
+			case r.Method == http.MethodDelete:
 				authService.RequireOperator(catalogHandler.DeleteProduct)(w, r)
 
 			default:
@@ -501,6 +517,12 @@ func main() {
 		"/orders/",
 		func(w http.ResponseWriter, r *http.Request) {
 			switch {
+			// POST /orders/{id}/review -- the post-checkout "Rate this
+			// order" prompt (item 11).
+			case r.Method == http.MethodPost &&
+				strings.HasSuffix(r.URL.Path, "/review"):
+				reviewHandler.Submit(w, r)
+
 			case r.Method == http.MethodPost &&
 				strings.HasSuffix(r.URL.Path, "/payment/verify"):
 				paymentHandler.VerifyPayment(w, r)

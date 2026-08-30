@@ -60,13 +60,46 @@ const (
 	heuristicConfidence      = 0.70
 )
 
-// heuristicEVInputs turns a content-overlap score into EV inputs. Higher
-// overlap with what's already in the cart -> higher assumed purchase
-// probability, capped conservatively.
-func heuristicEVInputs(candidatePrice int64, overlapScore int) EVInputs {
-	prob := heuristicBaseProbability + heuristicProbabilityStep*float64(overlapScore)
+// heuristicRatingNeutral/-Step (PLAN-02-CATALOG-AND-COMMERCE.md §2) turn
+// a candidate's real average_rating into a small, deterministic nudge
+// on the tag-overlap probability estimate: a 4.8-rated accessory is a
+// more defensible suggestion than a 3.1-rated one at equal tag overlap.
+// 4.0 is neutral (no adjustment) rather than 0 or 5, since this
+// catalog's real seeded ratings (db/seeds/003_reviews.sql) cluster in
+// the 3-5 range -- a 0-anchored neutral point would make every rated
+// product look artificially good. Capped small (at most +/-0.05 per
+// full star away from neutral) so a single 1-star review can't swing
+// the estimate on its own.
+const (
+	heuristicRatingNeutral = 4.0
+	heuristicRatingStep    = 0.05
+)
+
+// heuristicRatingAdjustment returns 0 for an unrated candidate
+// (average_rating == 0, i.e. review_count == 0) -- absence of review
+// data is not evidence of a bad product, so it must never be scored as
+// worse than a middling-rated one.
+func heuristicRatingAdjustment(averageRating float64) float64 {
+	if averageRating <= 0 {
+		return 0
+	}
+	return (averageRating - heuristicRatingNeutral) * heuristicRatingStep
+}
+
+// heuristicEVInputs turns a content-overlap score and a candidate's
+// real average_rating into EV inputs. Higher overlap with what's
+// already in the cart, and a better-than-neutral rating, both push
+// purchase probability up; both are capped, together, at
+// heuristicMaxProbability.
+func heuristicEVInputs(candidatePrice int64, overlapScore int, averageRating float64) EVInputs {
+	prob := heuristicBaseProbability +
+		heuristicProbabilityStep*float64(overlapScore) +
+		heuristicRatingAdjustment(averageRating)
 	if prob > heuristicMaxProbability {
 		prob = heuristicMaxProbability
+	}
+	if prob < 0 {
+		prob = 0
 	}
 	return EVInputs{
 		PurchaseProbability: prob,
@@ -247,7 +280,7 @@ func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 		cartTotal,
 		BudgetCheck{CartTotal: cartTotal, Budget: DemoBudgetCeiling, Tolerance: DemoBudgetTolerance},
 		best.product.ID,
-		heuristicEVInputs(best.product.Price.Amount, best.score),
+		heuristicEVInputs(best.product.Price.Amount, best.score, best.product.AverageRating),
 	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

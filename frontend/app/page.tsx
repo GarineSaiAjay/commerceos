@@ -7,6 +7,8 @@ interface Product {
   title: string;
   price: { amount: number; currency: string };
   availability: number;
+  average_rating?: number;
+  review_count?: number;
 }
 
 // This fetch runs server-side (inside the Next.js server process), not
