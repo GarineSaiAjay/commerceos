@@ -158,6 +158,13 @@ interface Intent {
   clarify?: string;
 }
 
+interface AlternativeProduct {
+  product_id: string;
+  title: string;
+  price: number;
+  currency: string;
+}
+
 interface CheckoutPlan {
   intent: Intent;
   proposal: {
@@ -169,6 +176,7 @@ interface CheckoutPlan {
   };
   selected_product_id: string;
   reasoning: string;
+  alternatives?: AlternativeProduct[];
 }
 
 interface SuggestedProduct {
@@ -434,6 +442,26 @@ export default function CheckoutFlow({
       setAgentPlan(null);
       return;
     }
+    setAgentPlan(null);
+    setAgentPrompt("");
+    await addToCart(matched);
+  }
+
+  // Adds one of the agent's next-best alternatives instead of its top
+  // pick -- previously Search() ranked several matches but PlanCheckout
+  // discarded everything past the first, so a buyer who didn't like the
+  // one proposed product had no way to see what else the agent
+  // considered short of retyping their whole request. Alternatives skip
+  // the "Agent proposes" confirm step entirely (same one-click behavior
+  // as the catalog list's own "Add to cart") since choosing one already
+  // *is* the buyer's confirmation.
+  async function chooseAlternative(alt: AlternativeProduct) {
+    const matched = products.find((p) => p.product_id === alt.product_id) ?? {
+      product_id: alt.product_id,
+      title: alt.title,
+      price: { amount: alt.price, currency: alt.currency },
+      availability: 1,
+    };
     setAgentPlan(null);
     setAgentPrompt("");
     await addToCart(matched);
@@ -1055,6 +1083,24 @@ export default function CheckoutFlow({
                       Never mind
                     </button>
                   </div>
+                  {agentPlan.alternatives && agentPlan.alternatives.length > 0 && (
+                    <div className="mt-3 border-t border-zinc-100 pt-3">
+                      <p className="text-xs text-zinc-500">Or:</p>
+                      <ul className="mt-1 space-y-1">
+                        {agentPlan.alternatives.map((alt) => (
+                          <li key={alt.product_id}>
+                            <button
+                              onClick={() => chooseAlternative(alt)}
+                              disabled={loading}
+                              className="text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 disabled:opacity-50"
+                            >
+                              {alt.title} -- {formatINR(alt.price)}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
