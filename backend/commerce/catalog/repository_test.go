@@ -59,6 +59,66 @@ func TestPostgresRepositoryGetProduct(t *testing.T) {
 	}
 }
 
+// TestPostgresRepositoryCreateProductProvisionsDefaultVariant proves
+// the fix for a real reported bug: a product created through
+// CreateProduct (e.g. via frontend/app/dashboard/catalog/page.tsx,
+// item 14) must be immediately addable to a cart, which requires a
+// "<product_id>-default" variant to exist -- checkout.tsx's addToCart
+// hardcodes exactly that ID. Before this fix, CreateProduct only wrote
+// to products, leaving every dashboard-created product with zero
+// variants and a silently-failing "Add to cart" button.
+func TestPostgresRepositoryCreateProductProvisionsDefaultVariant(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(
+		ctx,
+		"postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewPostgresRepository(pool)
+
+	productID := "default-variant-test-product"
+	_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+
+	product := Product{
+		ID:           productID,
+		Title:        "Default Variant Test Product",
+		Price:        Money{Amount: 70000, Currency: "INR"},
+		Availability: 9,
+		Merchant:     MerchantRef{ID: "merchant_001"},
+		ReturnPolicy: ReturnPolicy{Days: 7},
+		Shipping:     Shipping{EstimatedDays: 3},
+	}
+	if err := repo.CreateProduct(ctx, product); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+	}()
+
+	variant, err := repo.GetVariant(ctx, productID+"-default")
+	if err != nil {
+		t.Fatalf("expected a default variant to exist, got: %v", err)
+	}
+	if variant.ProductID != productID {
+		t.Fatalf("expected variant.ProductID %q, got %q", productID, variant.ProductID)
+	}
+	if variant.Price.Amount != product.Price.Amount {
+		t.Fatalf("expected variant price %d (mirroring the product), got %d", product.Price.Amount, variant.Price.Amount)
+	}
+	if variant.Availability != product.Availability {
+		t.Fatalf("expected variant availability %d (mirroring the product), got %d", product.Availability, variant.Availability)
+	}
+}
+
 // TestPostgresRepositoryGetProductIncludesRatingAggregate proves
 // GetProduct's rating join (PLAN-02-CATALOG-AND-COMMERCE.md §2, item
 // 11) both computes a real average/count from the reviews table and
@@ -162,19 +222,24 @@ func TestPostgresRepositoryListProducts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// db/seeds/001_catalog.sql seeds 13 products: the original 10 (as of
+	// db/seeds/001_catalog.sql seeds 13 products (the original 10 as of
 	// commit d30f155, "fix(catalog): tag products so agent matching can
-	// score, and add five more", 2026-08-28) plus airpods-pro-3,
-	// airtag-4pack, and beats-fit-pro added afterward to give the
-	// shopping agent demo more than one product family to differentiate
-	// on. This exact assertion has now gone stale twice for the same
-	// reason (a hardcoded product count with no link back to the seed
-	// file) -- same class of bug as the hardcoded product *lists* fixed
-	// elsewhere this session (policy/model.go, campaign/model.go,
-	// growth/simulator.go): whoever adds the next product needs to
-	// remember this count lives here too.
-	if len(products) != 13 {
-		t.Fatalf("expected 13 products, got %d", len(products))
+	// score, and add five more", 2026-08-28, plus airpods-pro-3,
+	// airtag-4pack, and beats-fit-pro added afterward). This assertion
+	// used to be an exact `!= 13` check and went stale twice for the
+	// same reason (a hardcoded product count with no link back to the
+	// seed file). Since ROADMAP-PRIORITIZED.md item 14
+	// (frontend/app/dashboard/catalog/page.tsx) shipped, exact equality
+	// is now permanently wrong, not just occasionally stale: a merchant
+	// running against this same dev database can add real products
+	// through the dashboard, and a real report against this branch did
+	// exactly that ("refrigerator magnets") -- this test failing on
+	// their machine was this exact assertion working as badly as
+	// designed, not a regression. `>= 13` keeps the one guarantee this
+	// test can actually make (the seed data loaded) without asserting
+	// something dashboard-added products necessarily break.
+	if len(products) < 13 {
+		t.Fatalf("expected at least the 13 seeded products, got %d", len(products))
 	}
 }
 

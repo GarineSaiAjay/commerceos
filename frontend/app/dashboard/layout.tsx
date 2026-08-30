@@ -4,6 +4,7 @@ import SignOutButton from "./sign-out-button";
 
 const NAV = [
   ["Overview", "/dashboard"],
+  ["Catalog", "/dashboard/catalog"],
   ["Analytics", "/dashboard/analytics"],
   ["Approvals", "/dashboard/approvals"],
   ["Campaigns", "/dashboard/campaigns"],

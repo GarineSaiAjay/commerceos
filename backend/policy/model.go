@@ -82,20 +82,29 @@ func DefaultConfig() PolicyConfig {
 		AllowedCurrencies: []string{"INR"},
 		// All monetary amounts are paise; this is a ₹30,000 ceiling.
 		Ceiling: 3_000_000,
-		// AllowedProducts must list every product ID actually seeded into
-		// the catalog (db/seeds/001_catalog.sql). This has already gone
-		// stale twice: first when it only listed the original 4 SKUs
+		// AllowedProducts is now only the FALLBACK product list --
+		// backend/cmd/server/main.go wires Engine.WithProductExistsFunc
+		// to check the live catalog instead, so a product added at
+		// runtime (e.g. via frontend/app/dashboard/catalog/page.tsx,
+		// item 14) is immediately purchasable without touching this
+		// file. This list still matters for: any Engine constructed
+		// without WithProductExistsFunc (every test in this package
+		// does exactly that, deliberately, to keep policy tests free of
+		// a live database), and campaign.DefaultConfig() (see
+		// campaign/model.go), which reuses this exact slice for
+		// campaign-eligibility gating and has not been given the same
+		// live-catalog fix (lower stakes than blocking checkout --
+		// tracked as a follow-up, not fixed here). Kept in sync with
+		// db/seeds/001_catalog.sql for that reason, same as before --
+		// this has already gone stale twice as a *checkout-blocking*
+		// list: first when it only listed the original 4 SKUs
 		// (files/AUDIT-2026-08-29.md §3.2), then again after
 		// airpods-pro-3/airtag-4pack/beats-fit-pro were added and this
-		// list wasn't -- "product beats-fit-pro is not permitted" at
-		// checkout was that second occurrence. There is no dynamic
-		// catalog lookup here -- Engine has no dependency on the
-		// catalog package at all (see engine.go's checkProducts) -- so
-		// this genuinely has to be updated by hand whenever the catalog
-		// changes. campaign.DefaultConfig() reuses this exact slice
-		// (see campaign/model.go) instead of keeping its own separate
-		// copy, specifically so a future catalog addition only has to
-		// be added in ONE place, not two.
+		// list wasn't ("product beats-fit-pro is not permitted"), and a
+		// third time after item 14 shipped, which is what made a static
+		// list -- hand-maintained or generated -- fundamentally
+		// insufficient for checkout specifically, and prompted the live
+		// check above.
 		AllowedProducts: []string{
 			"airpods-pro-2",
 			"airpods-case",

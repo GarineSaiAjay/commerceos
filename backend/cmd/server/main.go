@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -263,6 +264,31 @@ func main() {
 	policyEngine := policy.NewEngine(policy.DefaultConfig(), policyRepo)
 	riskEngine := policy.NewRiskEngine()
 	policyService := policy.NewService(policyEngine, riskEngine, policyRepo)
+
+	// PolicyConfig.AllowedProducts (policy/model.go) is a static
+	// fallback list that has gone stale three times now -- twice from a
+	// forgotten hand-edit, and a third time (the bug this wiring fixes)
+	// because ROADMAP-PRIORITIZED.md item 14
+	// (frontend/app/dashboard/catalog/page.tsx) lets a merchant add a
+	// real product at runtime, which no static list can ever reflect.
+	// WithProductExistsFunc replaces the static membership check with a
+	// live one against catalogService -- a product added through the
+	// dashboard is immediately purchasable, with zero further code
+	// changes needed the next time the catalog changes. Engine itself
+	// stays free of any import on the catalog package (policy/engine.go's
+	// ProductExistsFunc is a plain function type, not a catalog-typed
+	// interface); only this closure, living here in main.go where both
+	// packages are already imported, knows about catalog.ErrProductNotFound.
+	policyEngine.WithProductExistsFunc(func(ctx context.Context, productID string) (bool, error) {
+		_, err := catalogService.GetProduct(ctx, productID)
+		if errors.Is(err, catalog.ErrProductNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	})
 
 	auditVerifier := audit.NewVerifier(dbPool)
 	policyHandler := policy.NewHandler(policyService, auditVerifier)
