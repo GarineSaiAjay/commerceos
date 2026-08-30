@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { authFetch } from "../../../lib/auth";
 
 type ExperimentReport = {
@@ -28,6 +28,26 @@ export default function AnalyticsPage() {
   const [report, setReport] = useState<ExperimentReport | null>(null);
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
+  const [history, setHistory] = useState<ExperimentReport[]>([]);
+  const [historyError, setHistoryError] = useState("");
+
+  // GET /dashboard/experiments -- the persisted history the backend
+  // already wrote to on every run (Run() upserts into `experiments`),
+  // just never previously exposed. Same load-on-mount + reload-after-
+  // action pattern the Safety page uses for its evaluation history.
+  const loadHistory = useCallback(() => {
+    authFetch("/dashboard/experiments", { cache: "no-store" })
+      .then((r) => {
+        if (!r.ok) throw new Error("history request failed");
+        return r.json();
+      })
+      .then((d: ExperimentReport[]) => setHistory(d ?? []))
+      .catch(() => setHistoryError("Could not load experiment history."));
+  }, []);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
 
   async function runExperiment() {
     setRunning(true);
@@ -41,6 +61,7 @@ export default function AnalyticsPage() {
       });
       if (!response.ok) throw new Error("Experiment failed to run");
       setReport((await response.json()) as ExperimentReport);
+      loadHistory();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Experiment failed to run");
     } finally {
@@ -96,6 +117,34 @@ export default function AnalyticsPage() {
           </p>
         </section>
       )}
+
+      <section className="mt-8">
+        <h2 className="text-base font-semibold">Experiment history</h2>
+        <p className="mt-1 text-sm text-slate-600">
+          One row per experiment name -- re-running the same name updates its result rather than adding a new entry.
+        </p>
+        {historyError && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{historyError}</p>}
+        {history.length === 0 ? (
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+            <p className="text-sm font-medium text-slate-700">No experiments yet</p>
+            <p className="mt-2 text-sm text-slate-500">Run one above to see it listed here.</p>
+          </div>
+        ) : (
+          <ul className="mt-4 space-y-3">
+            {history.map((h) => (
+              <li key={h.experiment_id} className="rounded-xl border border-slate-200 bg-white p-4 text-sm shadow-sm">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="font-semibold text-slate-900">{h.name}</span>
+                  <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">{h.source}</span>
+                  <span className="text-slate-600">{h.population.toLocaleString()} sessions</span>
+                  <span className="text-slate-600">lift {fmt(h.lift * 100)}%</span>
+                  <span className="text-slate-500">CI {fmt(h.ci_lower * 100)}% to {fmt(h.ci_upper * 100)}%</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </main>
   );
 }

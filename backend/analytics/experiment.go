@@ -67,6 +67,44 @@ func (s *ExperimentService) catalogProducts(ctx context.Context) ([]growth.Produ
 	return products, nil
 }
 
+// List returns every persisted experiment, most recent first, for the
+// dashboard's experiment history view. Note: Run() upserts by id
+// (id = "exp_"+name, see the ON CONFLICT below), so re-running the same
+// name overwrites that row rather than adding a new history entry --
+// "history" here means one row per distinct experiment *name*, not one
+// row per run. created_at is not touched by the upsert, so a re-run
+// keeps its original position in this ordering rather than jumping to
+// the top.
+func (s *ExperimentService) List(ctx context.Context) ([]ExperimentReport, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, name, metric, population, control_size, treatment_size,
+			control_value, treatment_value, lift, ci_lower, ci_upper, source
+		FROM experiments
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list experiments: %w", err)
+	}
+	defer rows.Close()
+
+	var reports []ExperimentReport
+	for rows.Next() {
+		var r ExperimentReport
+		if err := rows.Scan(
+			&r.ID, &r.Name, &r.Metric, &r.Population, &r.ControlSize, &r.TreatmentSize,
+			&r.ControlValue, &r.TreatmentValue, &r.Lift, &r.CILower, &r.CIUpper, &r.Source,
+		); err != nil {
+			return nil, fmt.Errorf("scan experiment: %w", err)
+		}
+		reports = append(reports, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read experiments: %w", err)
+	}
+
+	return reports, nil
+}
+
 // Run simulates a controlled comparison: splits the Merchant Simulator
 // population into control/treatment and computes revenue-per-session
 // with a normal-approximation 95% CI for the lift.
