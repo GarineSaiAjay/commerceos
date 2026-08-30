@@ -38,10 +38,10 @@ func (a *BuyerAgent) WithConversationStore(store ConversationStore) *BuyerAgent 
 
 // CheckoutPlan is the agent's proposal plus the reasoning.
 type CheckoutPlan struct {
-	Intent       Intent                `json:"intent"`
-	Proposal     policy.ProposedAction `json:"proposal"`
-	SelectedID   string                `json:"selected_product_id"`
-	Reasoning    string                `json:"reasoning"`
+	Intent     Intent                `json:"intent"`
+	Proposal   policy.ProposedAction `json:"proposal"`
+	SelectedID string                `json:"selected_product_id"`
+	Reasoning  string                `json:"reasoning"`
 	// Alternatives are the next-best matches the searcher also found for
 	// this intent (Searcher.Search already ranks every match; previously
 	// everything past results[0] was silently discarded the moment it was
