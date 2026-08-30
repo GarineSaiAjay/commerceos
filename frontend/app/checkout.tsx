@@ -480,8 +480,28 @@ export default function CheckoutFlow({
     await addToCart(matched);
   }
 
+  // Persists the dismissal server-side (POST /growth/suggest/dismiss,
+  // backend/growth/suggest.go's DismissalStore) so it survives a reload
+  // and Suggest excludes this product for the rest of the cart's life --
+  // previously dismissedProductId only ever lived in React state, so a
+  // reload (or the effect simply re-running) could show the exact same
+  // "No thanks"-ed product again. dismissedProductId stays as an
+  // immediate client-side hide for this render; the POST is
+  // best-effort -- if it fails, the suggestion just isn't excluded on
+  // the *next* fetch, which is a much smaller regression than the
+  // dismiss button silently doing nothing, so it isn't surfaced as a
+  // page-level error.
   function dismissSuggestion() {
-    if (suggestion?.product) setDismissedProductId(suggestion.product.product_id);
+    if (suggestion?.product) {
+      setDismissedProductId(suggestion.product.product_id);
+      fetch(`${API_BASE}/growth/suggest/dismiss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cart_id: cartId, product_id: suggestion.product.product_id }),
+      }).catch(() => {
+        // best-effort, see comment above
+      });
+    }
     setSuggestion(null);
   }
 

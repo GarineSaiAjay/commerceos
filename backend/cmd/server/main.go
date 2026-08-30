@@ -632,11 +632,18 @@ func main() {
 	// GrowthAgent.EvaluateCandidate path /growth/evaluate uses, but picks
 	// the candidate and its EV inputs deterministically instead of
 	// requiring the caller to supply them (see growth/suggest.go).
-	growthSuggestHandler := growth.NewSuggestHandler(catalogRepo, cartService, growthAgent)
+	growthSuggestHandler := growth.NewSuggestHandler(catalogRepo, cartService, growthAgent, growthStore)
 
 	commerceMux.HandleFunc(
 		"/growth/suggest",
 		growthSuggestHandler.Suggest,
+	)
+
+	// Persists a buyer's "No thanks" so the same product isn't suggested
+	// again for this cart (growth.DismissalStore, suggest.go).
+	commerceMux.HandleFunc(
+		"/growth/suggest/dismiss",
+		growthSuggestHandler.Dismiss,
 	)
 
 	// Phase 6: dashboard -- merchant-only (files/AUTH.md).
