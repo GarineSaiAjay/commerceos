@@ -903,24 +903,24 @@ export default function CheckoutFlow({
   function renderAuditTrail() {
     if (!runId) return null;
     return (
-      <div className="mt-6 rounded-xl border border-zinc-200 p-5">
-        <p className="text-sm font-semibold text-zinc-900">Audit trail</p>
-        <p className="mt-1 text-xs text-zinc-500">
+      <div className="mt-6 rounded-xl border border-slate-200 p-5">
+        <p className="text-sm font-semibold text-slate-900">Audit trail</p>
+        <p className="mt-1 text-xs text-slate-500">
           Every step the policy engine took for this action, reconstructed
           from the persisted audit log (run {runId}).
         </p>
-        {runLoading && <p className="mt-3 text-xs text-zinc-500">Loading...</p>}
+        {runLoading && <p className="mt-3 text-xs text-slate-500">Loading...</p>}
         {run && run.steps && run.steps.length > 0 && (
-          <ul className="mt-3 space-y-3 border-t border-zinc-100 pt-3">
+          <ul className="mt-3 space-y-3 border-t border-slate-100 pt-3">
             {run.steps.map((s, i) => (
               <li key={i} className="flex items-start gap-3 text-xs">
-                <span className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-zinc-400" />
+                <span className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-slate-400" />
                 <div>
-                  <p className="font-medium capitalize text-zinc-700">
+                  <p className="font-medium capitalize text-slate-700">
                     {s.stage.replace(/_/g, " ")}
                   </p>
-                  <p className="text-zinc-500">{s.detail}</p>
-                  <p className="mt-0.5 text-zinc-400">
+                  <p className="text-slate-500">{s.detail}</p>
+                  <p className="mt-0.5 text-slate-400">
                     {new Date(s.timestamp).toLocaleTimeString()}
                   </p>
                 </div>
@@ -946,7 +946,7 @@ export default function CheckoutFlow({
           <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
             Agent suggests
           </p>
-          <p className="mt-1 font-semibold text-zinc-900">
+          <p className="mt-1 font-semibold text-slate-900">
             Add {suggestion.product.title} -- {formatINR(suggestion.product.price)}
           </p>
           {suggestion.recommendation && (
@@ -971,25 +971,25 @@ export default function CheckoutFlow({
       );
     }
     if (suggestionLoading) {
-      return <p className="mt-3 text-xs text-zinc-400">Checking for a complementary item...</p>;
+      return <p className="mt-3 text-xs text-slate-400">Checking for a complementary item...</p>;
     }
     return null;
   }
 
   return (
-    <main className="min-h-screen bg-zinc-100">
+    <main className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-3xl px-6 py-10">
         <header className="mb-8 flex items-start justify-between">
           <div>
-            <p className="text-sm font-medium text-zinc-500">CommerceOS</p>
-            <h1 className="mt-2 text-3xl font-bold tracking-tight text-zinc-900">
+            <p className="text-sm font-medium text-slate-500">CommerceOS</p>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-900">
               {step === "complete" ? "Order Complete" : step === "orders" ? "Order History" : "Checkout"}
             </h1>
           </div>
           {(step === "catalog" || step === "cart" || step === "orders") && (
             <button
               onClick={() => (step === "orders" ? setStep("catalog") : viewOrderHistory())}
-              className="mt-1 text-sm font-medium text-zinc-600 underline underline-offset-4 hover:text-zinc-900"
+              className="mt-1 text-sm font-medium text-slate-600 underline underline-offset-4 hover:text-slate-900"
             >
               {step === "orders" ? "Back to shopping" : "Order history"}
             </button>
@@ -997,18 +997,18 @@ export default function CheckoutFlow({
         </header>
 
         {message && (
-          <div className="mb-6 rounded-lg bg-zinc-100 p-4 text-sm text-zinc-700">
+          <div className="mb-6 rounded-lg bg-slate-100 p-4 text-sm text-slate-700">
             {message}
           </div>
         )}
 
         {step === "catalog" && (
           <section>
-            <div className="mb-6 rounded-xl border border-zinc-200 bg-zinc-50 p-5">
-              <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+            <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 p-5">
+              <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-500">
                 Ask the shopping agent
               </h2>
-              <p className="mb-3 text-sm text-zinc-600">
+              <p className="mb-3 text-sm text-slate-600">
                 Say what you want and the budget. It reads the catalog and proposes one item -- it never places an order itself; the normal checkout below still runs.
               </p>
               <div className="flex gap-2">
@@ -1020,13 +1020,13 @@ export default function CheckoutFlow({
                     if (e.key === "Enter") askAgent();
                   }}
                   placeholder="earbuds for my sister, budget 25000, good battery life"
-                  className="flex-1 rounded-lg border border-zinc-300 px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+                  className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
                   disabled={agentLoading}
                 />
                 <button
                   onClick={askAgent}
                   disabled={agentLoading || !agentPrompt.trim()}
-                  className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
                 >
                   {agentLoading ? "Thinking..." : "Ask"}
                 </button>
@@ -1035,22 +1035,22 @@ export default function CheckoutFlow({
               {agentError && <p className="mt-3 text-sm text-amber-700">{agentError}</p>}
 
               {agentPlan && (
-                <div className="mt-4 rounded-lg border border-zinc-300 bg-white p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                <div className="mt-4 rounded-lg border border-slate-300 bg-white p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                     Agent proposes
                   </p>
-                  <p className="mt-1 text-sm text-zinc-700">{agentPlan.reasoning}</p>
+                  <p className="mt-1 text-sm text-slate-700">{agentPlan.reasoning}</p>
                   <div className="mt-3 flex gap-3">
                     <button
                       onClick={acceptAgentPlan}
                       disabled={loading}
-                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
                     >
                       Add to cart
                     </button>
                     <button
                       onClick={() => setAgentPlan(null)}
-                      className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
+                      className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
                     >
                       Never mind
                     </button>
@@ -1061,33 +1061,33 @@ export default function CheckoutFlow({
 
             {renderSuggestionCard()}
 
-            <h2 className="mb-4 text-lg font-semibold text-zinc-900">
+            <h2 className="mb-4 text-lg font-semibold text-slate-900">
               Browse Catalog
             </h2>
             {products.length === 0 ? (
-              <p className="text-sm text-zinc-500">
+              <p className="text-sm text-slate-500">
                 No products available. Ensure the Commerce Service is running
                 and the catalog is seeded.
               </p>
             ) : (
-              <ul className="divide-y divide-zinc-200">
+              <ul className="divide-y divide-slate-200">
                 {products.map((product) => (
                   <li
                     key={product.product_id}
                     className="flex items-center justify-between py-4"
                   >
                     <div>
-                      <p className="font-semibold text-zinc-900">
+                      <p className="font-semibold text-slate-900">
                         {product.title}
                       </p>
-                      <p className="text-sm text-zinc-500">
+                      <p className="text-sm text-slate-500">
                         {formatINR(product.price.amount)} · {product.availability} in stock
                       </p>
                     </div>
                     <button
                       onClick={() => addToCart(product)}
                       disabled={loading}
-                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50"
+                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
                     >
                       Add to cart
                     </button>
@@ -1100,18 +1100,18 @@ export default function CheckoutFlow({
 
         {step === "cart" && cart && (
           <section>
-            <h2 className="mb-4 text-lg font-semibold text-zinc-900">
+            <h2 className="mb-4 text-lg font-semibold text-slate-900">
               Your Cart
             </h2>
-            <ul className="divide-y divide-zinc-200">
+            <ul className="divide-y divide-slate-200">
               {cart.items.map((item) => (
                 <li
                   key={item.variant_id}
                   className="flex items-center justify-between py-4"
                 >
                   <div>
-                    <p className="font-semibold text-zinc-900">{item.title}</p>
-                    <p className="text-sm text-zinc-500">
+                    <p className="font-semibold text-slate-900">{item.title}</p>
+                    <p className="text-sm text-slate-500">
                       {formatINR(item.unit_price)} each
                     </p>
                   </div>
@@ -1121,23 +1121,23 @@ export default function CheckoutFlow({
                         onClick={() => updateItemQuantity(item.variant_id, item.quantity - 1)}
                         disabled={loading || item.quantity <= 1}
                         aria-label={`Decrease quantity of ${item.title}`}
-                        className="h-7 w-7 rounded border border-zinc-300 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
+                        className="h-7 w-7 rounded border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
                       >
                         −
                       </button>
-                      <span className="w-5 text-center text-sm font-medium text-zinc-900">
+                      <span className="w-5 text-center text-sm font-medium text-slate-900">
                         {item.quantity}
                       </span>
                       <button
                         onClick={() => updateItemQuantity(item.variant_id, item.quantity + 1)}
                         disabled={loading}
                         aria-label={`Increase quantity of ${item.title}`}
-                        className="h-7 w-7 rounded border border-zinc-300 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
+                        className="h-7 w-7 rounded border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
                       >
                         +
                       </button>
                     </div>
-                    <p className="w-20 text-right font-semibold text-zinc-900">
+                    <p className="w-20 text-right font-semibold text-slate-900">
                       {formatINR(item.total)}
                     </p>
                     <button
@@ -1154,23 +1154,23 @@ export default function CheckoutFlow({
 
             {renderSuggestionCard()}
 
-            <div className="mt-4 flex items-center justify-between rounded-xl border border-zinc-200 p-5">
-              <p className="font-semibold text-zinc-900">Subtotal</p>
-              <p className="text-lg font-semibold text-zinc-900">
+            <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 p-5">
+              <p className="font-semibold text-slate-900">Subtotal</p>
+              <p className="text-lg font-semibold text-slate-900">
                 {formatINR(cart.subtotal)}
               </p>
             </div>
             <div className="mt-6 flex gap-3">
               <button
                 onClick={() => setStep("catalog")}
-                className="rounded-lg border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+                className="rounded-lg border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
               >
                 Keep shopping
               </button>
               <button
                 onClick={proceedToCheckout}
                 disabled={loading || cart.items.length === 0}
-                className="rounded-lg bg-black px-5 py-3 font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50"
+                className="rounded-lg bg-black px-5 py-3 font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
               >
                 Checkout
               </button>
@@ -1180,20 +1180,20 @@ export default function CheckoutFlow({
 
         {step === "checkout" && order && (
           <section>
-            <h2 className="mb-4 text-lg font-semibold text-zinc-900">
+            <h2 className="mb-4 text-lg font-semibold text-slate-900">
               Confirm Order
             </h2>
-            <div className="rounded-xl border border-zinc-200 p-5">
+            <div className="rounded-xl border border-slate-200 p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-semibold text-zinc-900">
+                  <p className="font-semibold text-slate-900">
                     Order {order.order_id}
                   </p>
-                  <p className="mt-1 text-sm text-zinc-500">
+                  <p className="mt-1 text-sm text-slate-500">
                     Status: {order.status}
                   </p>
                 </div>
-                <p className="text-lg font-semibold text-zinc-900">
+                <p className="text-lg font-semibold text-slate-900">
                   {formatINR(order.subtotal)}
                 </p>
               </div>
@@ -1201,7 +1201,7 @@ export default function CheckoutFlow({
             <button
               onClick={startPayment}
               disabled={loading}
-              className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50"
+              className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
             >
               {loading ? "Processing..." : `Pay ${formatINR(order.subtotal)}`}
             </button>
@@ -1210,7 +1210,7 @@ export default function CheckoutFlow({
 
         {step === "approval" && (
           <section>
-            <h2 className="mb-4 text-lg font-semibold text-zinc-900">
+            <h2 className="mb-4 text-lg font-semibold text-slate-900">
               Purchase Requires Approval
             </h2>
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
@@ -1233,14 +1233,14 @@ export default function CheckoutFlow({
               <button
                 onClick={approveAndPay}
                 disabled={loading}
-                className="w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50"
+                className="w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
               >
                 {loading ? "Approving..." : `Approve & Pay ${order ? formatINR(order.subtotal) : ""}`}
               </button>
               <button
                 onClick={rejectApproval}
                 disabled={loading}
-                className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+                className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
               >
                 Reject
               </button>
@@ -1266,13 +1266,13 @@ export default function CheckoutFlow({
             </div>
 
             {approvalSnapshot && (
-              <dl className="grid gap-2 rounded-xl border border-zinc-200 p-5 text-sm text-zinc-900 sm:grid-cols-2">
-                <div><dt className="font-medium text-zinc-500">Merchant</dt><dd>{approvalSnapshot.merchant}</dd></div>
-                <div><dt className="font-medium text-zinc-500">Amount</dt><dd>{formatINR(approvalSnapshot.amount)}</dd></div>
-                <div className="sm:col-span-2"><dt className="font-medium text-zinc-500">Items</dt><dd>{approvalSnapshot.items.join(", ")}</dd></div>
-                <div><dt className="font-medium text-zinc-500">Policy version</dt><dd className="font-mono">{approvalSnapshot.policy_version}</dd></div>
-                <div><dt className="font-medium text-zinc-500">Risk score</dt><dd>{approvalSnapshot.risk_score.toFixed(2)}</dd></div>
-                <div className="sm:col-span-2"><dt className="font-medium text-zinc-500">Approval request</dt><dd className="font-mono">{approvalRequestId}</dd></div>
+              <dl className="grid gap-2 rounded-xl border border-slate-200 p-5 text-sm text-slate-900 sm:grid-cols-2">
+                <div><dt className="font-medium text-slate-500">Merchant</dt><dd>{approvalSnapshot.merchant}</dd></div>
+                <div><dt className="font-medium text-slate-500">Amount</dt><dd>{formatINR(approvalSnapshot.amount)}</dd></div>
+                <div className="sm:col-span-2"><dt className="font-medium text-slate-500">Items</dt><dd>{approvalSnapshot.items.join(", ")}</dd></div>
+                <div><dt className="font-medium text-slate-500">Policy version</dt><dd className="font-mono">{approvalSnapshot.policy_version}</dd></div>
+                <div><dt className="font-medium text-slate-500">Risk score</dt><dd>{approvalSnapshot.risk_score.toFixed(2)}</dd></div>
+                <div className="sm:col-span-2"><dt className="font-medium text-slate-500">Approval request</dt><dd className="font-mono">{approvalRequestId}</dd></div>
               </dl>
             )}
 
@@ -1282,7 +1282,7 @@ export default function CheckoutFlow({
               </div>
             )}
 
-            <label className="mt-6 flex items-start gap-3 rounded-xl border border-zinc-300 p-4 text-sm text-zinc-800">
+            <label className="mt-6 flex items-start gap-3 rounded-xl border border-slate-300 p-4 text-sm text-slate-800">
               <input
                 type="checkbox"
                 checked={gateConfirmed}
@@ -1305,7 +1305,7 @@ export default function CheckoutFlow({
               <button
                 onClick={rejectApproval}
                 disabled={loading}
-                className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+                className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
               >
                 Reject
               </button>
@@ -1313,7 +1313,7 @@ export default function CheckoutFlow({
                 <button
                   onClick={backToOrderFromGate}
                   disabled={loading}
-                  className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+                  className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
                 >
                   Back to order
                 </button>
@@ -1325,16 +1325,16 @@ export default function CheckoutFlow({
 
         {step === "pay" && payment && (
           <section>
-            <h2 className="mb-4 text-lg font-semibold text-zinc-900">
+            <h2 className="mb-4 text-lg font-semibold text-slate-900">
               Complete Payment
             </h2>
-            <p className="text-sm text-zinc-500">
+            <p className="text-sm text-slate-500">
               The Razorpay checkout window should have opened. Complete the
               payment there to finish your order.
             </p>
-            <div className="mt-4 rounded-xl border border-zinc-200 p-5">
-              <p className="text-sm text-zinc-500">Amount due</p>
-              <p className="text-2xl font-bold text-zinc-900">
+            <div className="mt-4 rounded-xl border border-slate-200 p-5">
+              <p className="text-sm text-slate-500">Amount due</p>
+              <p className="text-2xl font-bold text-slate-900">
                 {formatINR(payment.amount)}
               </p>
             </div>
@@ -1349,7 +1349,7 @@ export default function CheckoutFlow({
                 setRun(null);
                 setMessage("Payment cancelled. Your cart was not charged.");
               }}
-              className="mt-4 w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+              className="mt-4 w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
             >
               Cancel payment
             </button>
@@ -1358,7 +1358,7 @@ export default function CheckoutFlow({
 
 	{step === "failed" && (
 		<section>
-			<h2 className="mb-4 text-lg font-semibold text-zinc-900">
+			<h2 className="mb-4 text-lg font-semibold text-slate-900">
 				Payment wasn&apos;t completed
 			</h2>
 			<div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
@@ -1370,34 +1370,34 @@ export default function CheckoutFlow({
 			{renderAuditTrail()}
 
 			{(payment || (recovery && recovery.cart.subtotal > 0)) && (
-				<div className="mt-6 rounded-xl border border-zinc-200 p-5">
-					<p className="text-sm text-zinc-500">Amount due</p>
-					<p className="text-2xl font-bold text-zinc-900">
+				<div className="mt-6 rounded-xl border border-slate-200 p-5">
+					<p className="text-sm text-slate-500">Amount due</p>
+					<p className="text-2xl font-bold text-slate-900">
 						{formatINR((payment ? payment.amount : recovery!.cart.subtotal) || 0)}
 					</p>
 				</div>
 			)}
 
 			{recovery && recovery.removable_items.length > 0 && (
-				<div className="mt-6 rounded-xl border border-zinc-200 p-5">
-					<p className="text-sm font-semibold text-zinc-900">Remove an item to reduce the total</p>
-					<p className="mt-1 text-xs text-zinc-500">
+				<div className="mt-6 rounded-xl border border-slate-200 p-5">
+					<p className="text-sm font-semibold text-slate-900">Remove an item to reduce the total</p>
+					<p className="mt-1 text-xs text-slate-500">
 						Removing an item recomputes your total from the catalog and
 						re-runs policy on the smaller order before payment.
 					</p>
-					<ul className="mt-3 divide-y divide-zinc-200">
+					<ul className="mt-3 divide-y divide-slate-200">
 						{recovery.cart.items
 							.filter((item) => recovery.removable_items.includes(item.variant_id))
 							.map((item) => (
 								<li key={item.variant_id} className="flex items-center justify-between py-3">
 									<div>
-										<p className="text-sm font-medium text-zinc-900">{item.title}</p>
-										<p className="text-xs text-zinc-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
+										<p className="text-sm font-medium text-slate-900">{item.title}</p>
+										<p className="text-xs text-slate-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
 									</div>
 									<button
 										onClick={() => removeAccessoryAndRetry(item.variant_id)}
 										disabled={loading}
-										className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+										className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
 									>
 										Remove
 									</button>
@@ -1411,7 +1411,7 @@ export default function CheckoutFlow({
 				<button
 					onClick={startPayment}
 					disabled={loading || (recovery ? !recovery.retry_allowed : false)}
-					className="w-full rounded-xl bg-black px-5 py-3 font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50"
+					className="w-full rounded-xl bg-black px-5 py-3 font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
 				>
 					{recovery && !recovery.retry_allowed ? "Reservation expired — start a new cart" : "Retry payment"}
 				</button>
@@ -1427,7 +1427,7 @@ export default function CheckoutFlow({
 						startPayment();
 					}}
 					disabled={loading || (recovery ? !recovery.retry_allowed : false)}
-					className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+					className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
 				>
 					Change payment method
 				</button>
@@ -1443,7 +1443,7 @@ export default function CheckoutFlow({
 						setRun(null);
 						setMessage("Payment cancelled. Your cart was not charged.");
 					}}
-					className="w-full rounded-xl border border-zinc-300 px-5 py-3 font-medium text-zinc-700 hover:bg-zinc-100"
+					className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
 				>
 					Cancel
 				</button>
@@ -1453,7 +1453,7 @@ export default function CheckoutFlow({
 
 	{step === "policy_rejected" && order && (
 		<section>
-			<h2 className="mb-4 text-lg font-semibold text-zinc-900">
+			<h2 className="mb-4 text-lg font-semibold text-slate-900">
 				Payment wasn&apos;t authorized
 			</h2>
 			<div className="rounded-xl border border-rose-200 bg-rose-50 p-5">
@@ -1468,23 +1468,23 @@ export default function CheckoutFlow({
 			</div>
 
 			{order.items.length > 1 && (
-				<div className="mt-6 rounded-xl border border-zinc-200 p-5">
-					<p className="text-sm font-semibold text-zinc-900">Remove an item and try again</p>
-					<p className="mt-1 text-xs text-zinc-500">
+				<div className="mt-6 rounded-xl border border-slate-200 p-5">
+					<p className="text-sm font-semibold text-slate-900">Remove an item and try again</p>
+					<p className="mt-1 text-xs text-slate-500">
 						Removing an item recomputes your total from the catalog and
 						re-runs policy on the smaller order before payment.
 					</p>
-					<ul className="mt-3 divide-y divide-zinc-200">
+					<ul className="mt-3 divide-y divide-slate-200">
 						{order.items.map((item) => (
 							<li key={item.variant_id} className="flex items-center justify-between py-3">
 								<div>
-									<p className="text-sm font-medium text-zinc-900">{item.title}</p>
-									<p className="text-xs text-zinc-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
+									<p className="text-sm font-medium text-slate-900">{item.title}</p>
+									<p className="text-xs text-slate-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
 								</div>
 								<button
 									onClick={() => removeAccessoryAndRetry(item.variant_id)}
 									disabled={loading}
-									className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+									className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
 								>
 									Remove
 								</button>
@@ -1497,7 +1497,7 @@ export default function CheckoutFlow({
 			<div className="mt-6 space-y-3">
 				<button
 					onClick={() => resetToCatalog("Purchase not authorized. Your cart was not charged.")}
-					className="w-full rounded-xl bg-black px-5 py-3 font-medium text-white transition hover:bg-zinc-800"
+					className="w-full rounded-xl bg-black px-5 py-3 font-medium text-white transition hover:bg-slate-800"
 				>
 					Return to catalog
 				</button>
@@ -1507,15 +1507,15 @@ export default function CheckoutFlow({
 
         {step === "complete" && payment && (
           <section>
-            <div className="rounded-xl border border-zinc-200 p-6">
-              <p className="text-sm text-zinc-500">Payment status</p>
-              <p className="mt-1 text-xl font-bold text-zinc-900">
+            <div className="rounded-xl border border-slate-200 p-6">
+              <p className="text-sm text-slate-500">Payment status</p>
+              <p className="mt-1 text-xl font-bold text-slate-900">
                 {payment.status}
               </p>
-              <p className="mt-4 text-sm text-zinc-500">
+              <p className="mt-4 text-sm text-slate-500">
                 Payment ID: {payment.payment_id}
               </p>
-              <p className="text-sm text-zinc-500">
+              <p className="text-sm text-slate-500">
                 Order ID: {payment.order_id}
               </p>
             </div>
@@ -1531,7 +1531,7 @@ export default function CheckoutFlow({
                 setRun(null);
                 setMessage("");
               }}
-              className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-zinc-800"
+              className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-slate-800"
             >
               Start a new order
             </button>
@@ -1540,7 +1540,7 @@ export default function CheckoutFlow({
 
         {step === "orders" && (
           <section>
-            {ordersLoading && <p className="text-sm text-zinc-500">Loading orders...</p>}
+            {ordersLoading && <p className="text-sm text-slate-500">Loading orders...</p>}
             {!ordersLoading && ordersError && (
               <p className="text-sm text-rose-700">
                 {ordersError} --{" "}
@@ -1553,39 +1553,39 @@ export default function CheckoutFlow({
               </p>
             )}
             {!ordersLoading && !ordersError && orders.length === 0 && (
-              <p className="text-sm text-zinc-500">
+              <p className="text-sm text-slate-500">
                 No orders yet -- completed checkouts will show up here.
               </p>
             )}
             <ul className="space-y-4">
               {orders.map((o) => (
-                <li key={o.order_id} className="rounded-xl border border-zinc-200 p-5">
+                <li key={o.order_id} className="rounded-xl border border-slate-200 p-5">
                   <div className="flex items-start justify-between">
                     <div>
-                      <p className="font-semibold text-zinc-900">{o.order_id}</p>
+                      <p className="font-semibold text-slate-900">{o.order_id}</p>
                       {o.created_at && (
-                        <p className="text-xs text-zinc-500">
+                        <p className="text-xs text-slate-500">
                           {new Date(o.created_at).toLocaleString()}
                         </p>
                       )}
                     </div>
                     <div className="text-right">
-                      <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                         {o.status}
                       </p>
-                      <p className="font-semibold text-zinc-900">{formatINR(o.subtotal)}</p>
+                      <p className="font-semibold text-slate-900">{formatINR(o.subtotal)}</p>
                     </div>
                   </div>
-                  <ul className="mt-3 divide-y divide-zinc-100 border-t border-zinc-100 pt-3">
+                  <ul className="mt-3 divide-y divide-slate-100 border-t border-slate-100 pt-3">
                     {o.items.map((item) => (
                       <li
                         key={item.variant_id}
                         className="flex items-center justify-between py-1.5 text-sm"
                       >
-                        <span className="text-zinc-700">
+                        <span className="text-slate-700">
                           {item.title} × {item.quantity}
                         </span>
-                        <span className="text-zinc-500">{formatINR(item.total)}</span>
+                        <span className="text-slate-500">{formatINR(item.total)}</span>
                       </li>
                     ))}
                   </ul>
@@ -1595,7 +1595,7 @@ export default function CheckoutFlow({
           </section>
         )}
 
-        <p className="mt-8 text-center text-xs text-zinc-400">
+        <p className="mt-8 text-center text-xs text-slate-400">
           Razorpay Test Mode
         </p>
       </div>

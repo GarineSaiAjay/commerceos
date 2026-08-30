@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* This app has no real dark theme -- every screen (checkout, dashboard)
-   uses explicit light-palette Tailwind classes (bg-white, text-zinc-900,
+   uses explicit light-palette Tailwind classes (bg-white, text-slate-900,
    border-slate-300, ...). The old @media (prefers-color-scheme: dark)
    block below only ever touched body's inherited text color, which meant
    the one or two elements without an explicit text-color class (notably
