@@ -63,6 +63,29 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m)
 }
 
+// ListExperiments handles GET /dashboard/experiments — the persisted
+// history the Experiment handler already writes to on every run
+// (analytics/experiment.go's Run upserts into the `experiments` table),
+// previously never exposed: the dashboard could only ever see the
+// single most-recently-run report, in local frontend state, lost on
+// refresh -- every other list-shaped dashboard page (Campaigns,
+// Approvals, Runs, Safety) persists and lists its history; this brings
+// Analytics in line with that pattern.
+func (h *Handler) ListExperiments(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	reports, err := h.experiment.List(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, reports)
+}
+
 // Experiment handles POST /dashboard/experiment — runs a simulated A/B.
 func (h *Handler) Experiment(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

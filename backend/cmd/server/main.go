@@ -655,6 +655,11 @@ func main() {
 		authService.RequireOperator(analyticsHandler.Experiment),
 	)
 
+	commerceMux.HandleFunc(
+		"/dashboard/experiments",
+		authService.RequireOperator(analyticsHandler.ListExperiments),
+	)
+
 	// Phase 7: MCP endpoint
 	commerceMux.Handle(
 		"/mcp",
