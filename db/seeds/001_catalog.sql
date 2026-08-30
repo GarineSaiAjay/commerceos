@@ -532,3 +532,170 @@ VALUES (
     '{"color": "black"}'
 )
 ON CONFLICT (id) DO NOTHING;
+
+-- Real, differentiated variants (PLAN-02-CATALOG-AND-COMMERCE.md §1,
+-- ROADMAP-PRIORITIZED.md P1 item 10). Purely additive: every product
+-- above already has its own "<id>-default" variant, untouched here.
+-- These give the buyer catalog's new variant picker (checkout.tsx)
+-- and the shopping agent something real to reason over within a
+-- single product -- "out of stock in starlight, 16 left in white" is
+-- now a real, demoable state instead of a hypothetical, since each
+-- variant below carries its own availability.
+
+-- AirPods Case -- colorways. -default (black) already exists above.
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'airpods-case-white',
+    'airpods-case',
+    'AIRPODS-CASE-WHITE',
+    199900,
+    16,
+    '{"color": "white"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'airpods-case-starlight',
+    'airpods-case',
+    'AIRPODS-CASE-STARLIGHT',
+    199900,
+    9,
+    '{"color": "starlight"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- AirTag (4 Pack) -- colorways.
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'airtag-4pack-white',
+    'airtag-4pack',
+    'AIRTAG-4PACK-WHITE',
+    1290000,
+    24,
+    '{"color": "white"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'airtag-4pack-starlight',
+    'airtag-4pack',
+    'AIRTAG-4PACK-STARLIGHT',
+    1290000,
+    11,
+    '{"color": "starlight"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- Wireless Charging Pad -- colorways.
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'wireless-charging-pad-white',
+    'wireless-charging-pad',
+    'WIRELESS-CHARGE-PAD-WHITE',
+    89900,
+    22,
+    '{"color": "white"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'wireless-charging-pad-starlight',
+    'wireless-charging-pad',
+    'WIRELESS-CHARGE-PAD-STARLIGHT',
+    89900,
+    13,
+    '{"color": "starlight"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- MagSafe Charger -- colorways.
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'magsafe-charger-white',
+    'magsafe-charger',
+    'MAGSAFE-CHARGER-WHITE',
+    450000,
+    19,
+    '{"color": "white"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'magsafe-charger-starlight',
+    'magsafe-charger',
+    'MAGSAFE-CHARGER-STARLIGHT',
+    450000,
+    8,
+    '{"color": "starlight"}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- Lightning to USB-C Cable -- length variants with real price deltas.
+-- -default (1m, INR 1,900) already exists above; the product row's own
+-- attributes.length_m: 1 is what labels that default variant in the
+-- UI (checkout.tsx falls back to the parent product's attributes when
+-- a variant doesn't carry its own length_m/color/coverage_years).
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'lightning-usbc-cable-05m',
+    'lightning-usbc-cable',
+    'LIGHTNING-USBC-CABLE-05M',
+    140000,
+    45,
+    '{"length_m": 0.5}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'lightning-usbc-cable-2m',
+    'lightning-usbc-cable',
+    'LIGHTNING-USBC-CABLE-2M',
+    250000,
+    38,
+    '{"length_m": 2}'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- AppleCare -- coverage tiers. -default (2-year, INR 2,500) already
+-- exists above, labeled via the product row's own
+-- attributes.coverage_years: 2, same fallback as the cable above. This
+-- also gives the growth/cross-sell agent a genuine "upgrade the
+-- accessory you just added" case (1-year -> 2-year), distinct from
+-- "add a different product" (PLAN-02 §1).
+INSERT INTO product_variants (
+    id, product_id, sku, price_amount, availability, attributes
+)
+VALUES (
+    'applecare-1yr',
+    'applecare',
+    'APPLECARE-1YR',
+    150000,
+    33,
+    '{"coverage_years": 1}'
+)
+ON CONFLICT (id) DO NOTHING;

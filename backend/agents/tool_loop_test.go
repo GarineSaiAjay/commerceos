@@ -39,6 +39,10 @@ func (loopFakeCatalogRepo) GetVariant(ctx context.Context, id string) (catalog.P
 	return catalog.ProductVariant{ID: id, ProductID: "airpods-pro-2", Price: catalog.Money{Amount: 2_490_000, Currency: "INR"}, Availability: 5}, nil
 }
 
+func (loopFakeCatalogRepo) ListVariantsByProduct(ctx context.Context, productID string) ([]catalog.ProductVariant, error) {
+	return nil, nil
+}
+
 func (loopFakeCatalogRepo) UpdateProduct(ctx context.Context, p catalog.Product) error { return nil }
 
 func (loopFakeCatalogRepo) DeleteProduct(ctx context.Context, id string) error { return nil }

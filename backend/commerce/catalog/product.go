@@ -31,6 +31,16 @@ type Product struct {
 	// effect.
 	AverageRating float64 `json:"average_rating"`
 	ReviewCount   int     `json:"review_count"`
+	// Variants (PLAN-02-CATALOG-AND-COMMERCE.md §1, item 10) is every
+	// product_variants row for this product, populated by
+	// PostgresRepository.GetProduct on every read -- the buyer catalog
+	// (checkout.tsx) renders a picker from this directly, no separate
+	// round trip per product, same "compute once at read time, never a
+	// second fetch" convention item 11's rating aggregate already
+	// established. Every product has at least its own "<id>-default"
+	// entry (CreateProduct provisions it transactionally), so this is
+	// never empty for a real product.
+	Variants []ProductVariant `json:"variants,omitempty"`
 }
 
 type ProductVariant struct {

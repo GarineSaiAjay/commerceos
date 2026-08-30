@@ -33,6 +33,15 @@ func (s *Service) GetVariant(ctx context.Context, id string) (ProductVariant, er
 	return s.repo.GetVariant(ctx, id)
 }
 
+// ListVariantsByProduct returns every variant of one product. Exposed
+// mainly for a future dashboard variant sub-editor (PLAN-05-SELLER-
+// DASHBOARD.md §1's "once PLAN-02 §1 ships real variants" line, not
+// built in item 14) -- GetProduct already returns Variants inline for
+// the buyer catalog picker, so most callers never need this directly.
+func (s *Service) ListVariantsByProduct(ctx context.Context, productID string) ([]ProductVariant, error) {
+	return s.repo.ListVariantsByProduct(ctx, productID)
+}
+
 // UpdateProduct replaces the editable fields of an existing product.
 func (s *Service) UpdateProduct(ctx context.Context, product Product) error {
 	return s.repo.UpdateProduct(ctx, product)

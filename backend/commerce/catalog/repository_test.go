@@ -119,6 +119,95 @@ func TestPostgresRepositoryCreateProductProvisionsDefaultVariant(t *testing.T) {
 	}
 }
 
+// TestPostgresRepositoryGetProductVariantsAreDifferentiated proves item
+// 10 (PLAN-02-CATALOG-AND-COMMERCE.md §1): "airpods-case" is seeded
+// with three variants (its original "-default"/black plus new
+// "-white"/"-starlight" colorways, db/seeds/001_catalog.sql), and
+// GetProduct's Variants field must surface all three with their OWN
+// price/availability -- not the parent product's, which is exactly the
+// bug GetVariant/ListVariantsByProduct's pv.availability fix (see the
+// doc comment on GetVariant) exists to prevent. White and starlight are
+// seeded at different availabilities (16 vs 9) specifically so this
+// test can catch a regression back to "every variant reports the same
+// number" the way the pre-fix p.availability bug would have produced.
+func TestPostgresRepositoryGetProductVariantsAreDifferentiated(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(
+		ctx,
+		"postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewPostgresRepository(pool)
+
+	product, err := repo.GetProduct(ctx, "airpods-case")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := make(map[string]ProductVariant, len(product.Variants))
+	for _, v := range product.Variants {
+		byID[v.ID] = v
+	}
+
+	if len(product.Variants) < 3 {
+		t.Fatalf("expected at least 3 variants for airpods-case (default/white/starlight), got %d", len(product.Variants))
+	}
+
+	white, ok := byID["airpods-case-white"]
+	if !ok {
+		t.Fatal("expected an airpods-case-white variant")
+	}
+	if white.Price.Amount != 199900 {
+		t.Fatalf("expected airpods-case-white price 199900, got %d", white.Price.Amount)
+	}
+	// Seeded at 16, only ever decremented by a real checkout -- never
+	// exceeds the seed, matching the tolerance pattern used by
+	// TestPostgresRepositoryGetProduct above.
+	if white.Availability < 0 || white.Availability > 16 {
+		t.Fatalf("expected airpods-case-white availability in [0,16], got %d", white.Availability)
+	}
+	if white.Attributes["color"] != "white" {
+		t.Fatalf("expected airpods-case-white attributes.color = white, got %v", white.Attributes["color"])
+	}
+
+	starlight, ok := byID["airpods-case-starlight"]
+	if !ok {
+		t.Fatal("expected an airpods-case-starlight variant")
+	}
+	if starlight.Availability < 0 || starlight.Availability > 9 {
+		t.Fatalf("expected airpods-case-starlight availability in [0,9], got %d", starlight.Availability)
+	}
+
+	// The two colorways must never report the same availability number
+	// by coincidence of both reading the parent product's stock instead
+	// of their own -- that's precisely the bug this test guards against.
+	if white.Availability == starlight.Availability {
+		t.Fatalf(
+			"white and starlight availability both read %d -- likely regressed to selecting the parent product's availability instead of each variant's own (see GetVariant's doc comment)",
+			white.Availability,
+		)
+	}
+
+	// ListVariantsByProduct is the same query path GetProduct uses
+	// internally -- assert it's independently callable and consistent.
+	variants, err := repo.ListVariantsByProduct(ctx, "airpods-case")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(variants) != len(product.Variants) {
+		t.Fatalf("expected ListVariantsByProduct to return %d variants (matching GetProduct), got %d", len(product.Variants), len(variants))
+	}
+}
+
 // TestPostgresRepositoryGetProductIncludesRatingAggregate proves
 // GetProduct's rating join (PLAN-02-CATALOG-AND-COMMERCE.md §2, item
 // 11) both computes a real average/count from the reviews table and

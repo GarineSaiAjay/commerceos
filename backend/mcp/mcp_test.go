@@ -40,6 +40,10 @@ func (f fakeCatalogRepo) GetVariant(ctx context.Context, id string) (catalog.Pro
 	}, nil
 }
 
+func (f fakeCatalogRepo) ListVariantsByProduct(ctx context.Context, productID string) ([]catalog.ProductVariant, error) {
+	return nil, nil
+}
+
 func (f fakeCatalogRepo) UpdateProduct(ctx context.Context, p catalog.Product) error { return nil }
 
 func (f fakeCatalogRepo) DeleteProduct(ctx context.Context, id string) error { return nil }
