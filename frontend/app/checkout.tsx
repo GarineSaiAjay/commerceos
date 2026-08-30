@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { API_BASE } from "../lib/api";
 
 declare global {
@@ -331,6 +331,42 @@ export default function CheckoutFlow({
 }) {
   const [step, setStep] = useState<Step>("catalog");
   const [products] = useState<Product[]>(initialProducts);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  type SortOption = "default" | "price_asc" | "price_desc" | "rating" | "availability";
+  const [sortBy, setSortBy] = useState<SortOption>("default");
+
+  const categories = useMemo(() => {
+    const seen = new Set<string>();
+    for (const product of products) {
+      for (const tag of product.use_cases ?? []) seen.add(tag);
+    }
+    return Array.from(seen).sort();
+  }, [products]);
+
+  const filteredProducts = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const filtered = products.filter((product) => {
+      if (selectedCategory && !(product.use_cases ?? []).includes(selectedCategory)) return false;
+      if (!query) return true;
+      const haystack = [product.title, ...(product.features ?? []), ...(product.use_cases ?? [])]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+    switch (sortBy) {
+      case "price_asc":
+        return [...filtered].sort((a, b) => a.price.amount - b.price.amount);
+      case "price_desc":
+        return [...filtered].sort((a, b) => b.price.amount - a.price.amount);
+      case "rating":
+        return [...filtered].sort((a, b) => (b.average_rating ?? 0) - (a.average_rating ?? 0));
+      case "availability":
+        return [...filtered].sort((a, b) => b.availability - a.availability);
+      default:
+        return filtered;
+    }
+  }, [products, searchQuery, selectedCategory, sortBy]);
   const [cartId, setCartId] = useState<string>(() => freshCartId());
   const [cart, setCart] = useState<Cart | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
@@ -1504,8 +1540,53 @@ export default function CheckoutFlow({
                 and the catalog is seeded.
               </p>
             ) : (
-              <ul className="divide-y divide-slate-200">
-                {products.map((product) => {
+              <>
+                <div className="mb-4 space-y-3">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search by name or feature..."
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    {categories.map((category) => (
+                      <button
+                        key={category}
+                        onClick={() => setSelectedCategory((current) => (current === category ? null : category))}
+                        className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                          selectedCategory === category
+                            ? "border-black bg-black text-white"
+                            : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                        }`}
+                      >
+                        {category.replace(/_/g, " ")}
+                      </button>
+                    ))}
+                    <label className="ml-auto flex items-center gap-2 text-sm text-slate-500">
+                      Sort by
+                      <select
+                        value={sortBy}
+                        onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                        className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
+                      >
+                        <option value="default">Featured</option>
+                        <option value="price_asc">Price: low to high</option>
+                        <option value="price_desc">Price: high to low</option>
+                        <option value="rating">Rating</option>
+                        <option value="availability">Availability</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+
+                {filteredProducts.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No products match your search or filter.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-slate-200">
+                    {filteredProducts.map((product) => {
                   // Only a genuine differentiator (>1 variant) gets a
                   // picker rendered -- a product with just its own
                   // "<id>-default" entry shows the plain row exactly as
@@ -1617,8 +1698,10 @@ export default function CheckoutFlow({
                       )}
                     </li>
                   );
-                })}
-              </ul>
+                    })}
+                  </ul>
+                )}
+              </>
             )}
           </section>
         )}
