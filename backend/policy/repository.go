@@ -75,6 +75,14 @@ type Repository interface {
 	// GetRun reconstructs one run and its policy/authorization trail.
 	GetRun(ctx context.Context, runID string) (Run, error)
 
+	// SaveAgentPlan persists an agent's own reasoning trail (item 16)
+	// as an independently-retrievable Run -- see agent_plan.go's doc
+	// comment for why this is deliberately not a column or join target
+	// on agent_actions/SaveAction. Called best-effort by agents.Handler;
+	// a failure here must never block a checkout proposal from
+	// reaching the buyer.
+	SaveAgentPlan(ctx context.Context, p AgentPlan) error
+
 	// UpdateApprovalRequestStatus transitions the request and records the
 	// authorization ID (if issued) and a reason.
 	UpdateApprovalRequestStatus(ctx context.Context, id, status, authorizationID, reason string) error

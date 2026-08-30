@@ -212,6 +212,18 @@ interface AlternativeProduct {
   currency: string;
 }
 
+// RunStep mirrors backend/policy's RunStep JSON shape (stage/detail/
+// timestamp) -- the same audit-trail entry type dashboard/runs/page.tsx
+// already renders. reasoning_trail below carries it, but this page
+// doesn't render it itself (item 16, PLAN-01-AGENTIC-CORE.md §4: "no
+// new UI surface needed" -- a buyer wanting the full trail can already
+// open the same run from the merchant dashboard).
+interface RunStep {
+  stage: string;
+  detail: string;
+  timestamp: string;
+}
+
 interface CheckoutPlan {
   intent: Intent;
   proposal: {
@@ -224,6 +236,7 @@ interface CheckoutPlan {
   selected_product_id: string;
   reasoning: string;
   alternatives?: AlternativeProduct[];
+  reasoning_trail?: RunStep[];
 }
 
 // One turn of the buyer <-> agent transcript, mirrored client-side for

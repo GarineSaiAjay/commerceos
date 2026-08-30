@@ -250,6 +250,22 @@ func (s *Service) GetRun(ctx context.Context, runID string) (Run, error) {
 	return s.repo.GetRun(ctx, runID)
 }
 
+// SaveAgentPlan persists an agent's own reasoning trail as an
+// independently-retrievable Run (item 16, agent_plan.go). Unlike
+// Propose (which mints its own "action_<unixnano>" ID internally), id
+// here is minted by the caller -- agents.Handler mints
+// "plan_<unixnano>" before calling this, since Handler is what needs
+// to know the ID isn't going to collide with an agent_actions row
+// (the "plan_" vs "action_" prefix is what GetRun routes on).
+func (s *Service) SaveAgentPlan(ctx context.Context, id string, action ProposedAction, steps []RunStep) error {
+	return s.repo.SaveAgentPlan(ctx, AgentPlan{
+		ID:        id,
+		Proposal:  action,
+		Steps:     steps,
+		CreatedAt: s.now(),
+	})
+}
+
 // resolveApprover decides who is allowed to approve or reject req, and
 // what identity to record. There are exactly two legitimate callers:
 // the buyer who created this approval request (proven by knowing its

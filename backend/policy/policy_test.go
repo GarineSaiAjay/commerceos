@@ -107,6 +107,15 @@ func (r *fakeRepo) GetRun(ctx context.Context, runID string) (Run, error) {
 	return Run{}, ErrAuthorizationNotFound
 }
 
+// SaveAgentPlan is a no-op here (item 16) -- none of this file's tests
+// exercise the agents package's Handler/RunRecorder path, only
+// policy.Service/Engine directly, so there's nothing for a real fake to
+// record. Exists purely so *fakeRepo keeps satisfying the Repository
+// interface.
+func (r *fakeRepo) SaveAgentPlan(ctx context.Context, p AgentPlan) error {
+	return nil
+}
+
 func (r *fakeRepo) UpdateApprovalRequestStatus(ctx context.Context, id, status, authorizationID, reason string) error {
 	return nil
 }

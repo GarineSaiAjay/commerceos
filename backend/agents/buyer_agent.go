@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/garinesaiajay/commerceos/policy"
 	"github.com/garinesaiajay/commerceos/tools"
@@ -49,6 +51,13 @@ type CheckoutPlan struct {
 	// Search returned them in. Omitted, not an empty array, when there
 	// were no other matches at all.
 	Alternatives []AlternativeProduct `json:"alternatives,omitempty"`
+	// ReasoningTrail is this plan's step-by-step audit trail (item 16,
+	// PLAN-01-AGENTIC-CORE.md §4) -- the same policy.RunStep shape the
+	// existing agent_actions-backed runs use. Handler persists this
+	// best-effort via RunRecorder after a successful plan; it also
+	// rides along on the wire response itself so a caller never has to
+	// make a second request just to see how the pick was made.
+	ReasoningTrail []policy.RunStep `json:"reasoning_trail,omitempty"`
 }
 
 // AlternativeProduct carries just enough catalog detail to render an
@@ -281,10 +290,64 @@ func (a *BuyerAgent) planFromIntent(ctx context.Context, intent Intent, merchant
 	}
 
 	return CheckoutPlan{
-		Intent:       intent,
-		Proposal:     proposal,
-		SelectedID:   top.ID,
-		Reasoning:    reasoning,
-		Alternatives: alternatives,
+		Intent:         intent,
+		Proposal:       proposal,
+		SelectedID:     top.ID,
+		Reasoning:      reasoning,
+		Alternatives:   alternatives,
+		ReasoningTrail: buildReasoningTrail(intent, alternatives, reasoning),
 	}, nil
+}
+
+// buildReasoningTrail assembles planFromIntent's audit trail (item 16):
+// intent_extracted (what the extractor/merge produced), an optional
+// alternatives_considered step (omitted entirely when the searcher found
+// nothing else -- an empty step would just be noise), and proposed (the
+// same sentence already shown to the buyer as Reasoning, so the trail
+// never says anything the buyer wasn't already told). All three stages
+// happen within a single synchronous function call with no meaningful
+// gap between them, so -- unlike the multi-second, real-wall-clock gaps
+// GetRun's existing agent_actions timeline reconstructs -- they share
+// one timestamp rather than fabricating distinct ones.
+func buildReasoningTrail(intent Intent, alternatives []AlternativeProduct, reasoning string) []policy.RunStep {
+	now := time.Now()
+
+	steps := []policy.RunStep{{
+		Stage: "intent_extracted",
+		Detail: fmt.Sprintf(
+			"category=%s budget=₹%d priority=%s recipient=%s",
+			orDash(intent.Category), intent.Budget, orDash(intent.Priority), orDash(intent.Recipient),
+		),
+		Timestamp: now,
+	}}
+
+	if len(alternatives) > 0 {
+		names := make([]string, len(alternatives))
+		for i, alt := range alternatives {
+			names[i] = alt.Title
+		}
+		steps = append(steps, policy.RunStep{
+			Stage:     "alternatives_considered",
+			Detail:    "also considered: " + strings.Join(names, ", "),
+			Timestamp: now,
+		})
+	}
+
+	steps = append(steps, policy.RunStep{
+		Stage:     "proposed",
+		Detail:    reasoning,
+		Timestamp: now,
+	})
+
+	return steps
+}
+
+// orDash renders an optional Intent field for a reasoning-trail detail
+// string -- "" reads as a broken sentence fragment, "—" reads as
+// honestly absent.
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
 }

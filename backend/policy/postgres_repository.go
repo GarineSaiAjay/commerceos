@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -529,7 +530,14 @@ func (r *PostgresRepository) ListApprovalRequests(
 }
 
 // ListRuns returns the most recent agent actions as replayable runs,
-// joined with their policy evaluation + issued authorization when present.
+// joined with their policy evaluation + issued authorization when
+// present, merged with the most recent agent_plans rows (item 16 --
+// see agent_plan.go's doc comment for why these are a separate source
+// rather than a join target on agent_actions). Two queries, merged and
+// re-sorted in Go rather than one UNION: the two sources have
+// meaningfully different shapes (a plan never has a decision/
+// authorization to report), and this keeps the existing, already-
+// tested agent_actions query completely untouched.
 func (r *PostgresRepository) ListRuns(ctx context.Context, limit int) ([]Run, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT aa.id, aa.action, aa.amount, aa.currency, aa.merchant, aa.items,
@@ -562,13 +570,63 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, limit int) ([]Run, er
 		}
 		out = append(out, run)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate runs: %w", err)
+	}
+
+	// Deliberately doesn't SELECT steps here -- Run.Steps's own doc
+	// comment establishes ListRuns as a flat summary for every source,
+	// GetRun as the only place a timeline gets built, and that contract
+	// stays uniform across both agent_actions and agent_plans even
+	// though the agent_plans query has no N+1 reason to hold back.
+	planRows, err := r.db.Query(ctx, `
+		SELECT id, action, amount, currency, merchant, items, created_at
+		FROM agent_plans
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list agent plans: %w", err)
+	}
+	defer planRows.Close()
+
+	for planRows.Next() {
+		var p AgentPlan
+		var items []byte
+		if err := planRows.Scan(
+			&p.ID, &p.Proposal.Action, &p.Proposal.Amount, &p.Proposal.Currency, &p.Proposal.Merchant,
+			&items, &p.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan agent plan: %w", err)
+		}
+		if err := json.Unmarshal(items, &p.Proposal.Items); err != nil {
+			return nil, fmt.Errorf("unmarshal agent plan items: %w", err)
+		}
+		out = append(out, p.toRun())
+	}
+	if err := planRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agent plans: %w", err)
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+
+	return out, nil
 }
 
 // GetRun reconstructs one run and its policy/authorization trail, plus a
 // step-by-step timeline built from the same persisted rows (agent_actions,
-// risk_assessments, policy_evaluations, authorizations).
+// risk_assessments, policy_evaluations, authorizations) -- or, when runID
+// is an agent_plans row (item 16, always prefixed "plan_"), delegates to
+// getAgentPlanRun instead. The prefix check routes the lookup to the
+// right table without a wasted query against the other one first.
 func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (Run, error) {
+	if strings.HasPrefix(runID, "plan_") {
+		return r.getAgentPlanRun(ctx, runID)
+	}
+
 	var run Run
 	var items []byte
 	var policyVersion string
@@ -647,4 +705,64 @@ func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (Run, err
 	}
 
 	return run, nil
+}
+
+// getAgentPlanRun reconstructs one agent_plans-backed run (item 16).
+// Unlike GetRun's agent_actions path, there is no risk_assessments/
+// policy_evaluations/authorizations trail to layer on -- an AgentPlan's
+// Steps column already carries its complete reasoning trail as
+// persisted, so this is a single lookup and unmarshal, not a
+// multi-query timeline build.
+func (r *PostgresRepository) getAgentPlanRun(ctx context.Context, runID string) (Run, error) {
+	var p AgentPlan
+	var items, steps []byte
+
+	err := r.db.QueryRow(ctx, `
+		SELECT id, action, amount, currency, merchant, items, steps, created_at
+		FROM agent_plans
+		WHERE id = $1
+	`, runID).Scan(
+		&p.ID, &p.Proposal.Action, &p.Proposal.Amount, &p.Proposal.Currency, &p.Proposal.Merchant,
+		&items, &steps, &p.CreatedAt,
+	)
+	if err != nil {
+		return Run{}, fmt.Errorf("get agent plan: %w", err)
+	}
+	if err := json.Unmarshal(items, &p.Proposal.Items); err != nil {
+		return Run{}, fmt.Errorf("unmarshal agent plan items: %w", err)
+	}
+	if err := json.Unmarshal(steps, &p.Steps); err != nil {
+		return Run{}, fmt.Errorf("unmarshal agent plan steps: %w", err)
+	}
+
+	return p.toRun(), nil
+}
+
+// SaveAgentPlan persists an agent's own reasoning trail as an
+// independently-retrievable Run (item 16). See agent_plan.go and
+// db/migrations/*_create_agent_plans_table.sql for the full design
+// rationale. Callers (agents.Handler) treat a failure here as
+// best-effort and log-only -- this must never block a checkout
+// proposal from reaching the buyer.
+func (r *PostgresRepository) SaveAgentPlan(ctx context.Context, p AgentPlan) error {
+	items, err := json.Marshal(p.Proposal.Items)
+	if err != nil {
+		return fmt.Errorf("marshal agent plan items: %w", err)
+	}
+	steps, err := json.Marshal(p.Steps)
+	if err != nil {
+		return fmt.Errorf("marshal agent plan steps: %w", err)
+	}
+
+	_, err = r.db.Exec(ctx, `
+		INSERT INTO agent_plans (id, action, amount, currency, merchant, items, steps)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+	`,
+		p.ID, p.Proposal.Action, p.Proposal.Amount, p.Proposal.Currency, p.Proposal.Merchant, items, steps,
+	)
+	if err != nil {
+		return fmt.Errorf("save agent plan: %w", err)
+	}
+
+	return nil
 }
