@@ -59,6 +59,66 @@ func TestPostgresRepositoryGetProduct(t *testing.T) {
 	}
 }
 
+// TestPostgresRepositoryCreateProductProvisionsDefaultVariant proves
+// the fix for a real reported bug: a product created through
+// CreateProduct (e.g. via frontend/app/dashboard/catalog/page.tsx,
+// item 14) must be immediately addable to a cart, which requires a
+// "<product_id>-default" variant to exist -- checkout.tsx's addToCart
+// hardcodes exactly that ID. Before this fix, CreateProduct only wrote
+// to products, leaving every dashboard-created product with zero
+// variants and a silently-failing "Add to cart" button.
+func TestPostgresRepositoryCreateProductProvisionsDefaultVariant(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(
+		ctx,
+		"postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewPostgresRepository(pool)
+
+	productID := "default-variant-test-product"
+	_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+
+	product := Product{
+		ID:           productID,
+		Title:        "Default Variant Test Product",
+		Price:        Money{Amount: 70000, Currency: "INR"},
+		Availability: 9,
+		Merchant:     MerchantRef{ID: "merchant_001"},
+		ReturnPolicy: ReturnPolicy{Days: 7},
+		Shipping:     Shipping{EstimatedDays: 3},
+	}
+	if err := repo.CreateProduct(ctx, product); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, productID)
+	}()
+
+	variant, err := repo.GetVariant(ctx, productID+"-default")
+	if err != nil {
+		t.Fatalf("expected a default variant to exist, got: %v", err)
+	}
+	if variant.ProductID != productID {
+		t.Fatalf("expected variant.ProductID %q, got %q", productID, variant.ProductID)
+	}
+	if variant.Price.Amount != product.Price.Amount {
+		t.Fatalf("expected variant price %d (mirroring the product), got %d", product.Price.Amount, variant.Price.Amount)
+	}
+	if variant.Availability != product.Availability {
+		t.Fatalf("expected variant availability %d (mirroring the product), got %d", product.Availability, variant.Availability)
+	}
+}
+
 // TestPostgresRepositoryGetProductIncludesRatingAggregate proves
 // GetProduct's rating join (PLAN-02-CATALOG-AND-COMMERCE.md §2, item
 // 11) both computes a real average/count from the reviews table and

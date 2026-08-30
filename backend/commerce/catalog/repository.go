@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -84,7 +85,13 @@ func (r *PostgresRepository) CreateProduct(ctx context.Context, product Product)
 		return fmt.Errorf("marshal shipping: %w", err)
 	}
 
-	_, err = r.db.Exec(
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin create product transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(
 		ctx,
 		`
 		INSERT INTO products (
@@ -126,6 +133,43 @@ func (r *PostgresRepository) CreateProduct(ctx context.Context, product Product)
 			return ErrProductAlreadyExists
 		}
 		return fmt.Errorf("create product: %w", err)
+	}
+
+	// Every product needs at least one variant for cart/checkout to
+	// work end-to-end: commerce/cart.Service.AddItem and the MCP
+	// add_item tool both key off variant_id, never product_id directly
+	// (PLAN-02-CATALOG-AND-COMMERCE.md §1). CreateProduct's own request
+	// shape has no way to specify variants yet (that's item 10's real-
+	// variants work), so auto-provision a single "<product_id>-default"
+	// variant mirroring the product's own price/availability -- the
+	// exact convention db/seeds/001_catalog.sql already establishes by
+	// hand for every seeded product, and the exact ID checkout.tsx's
+	// addToCart already assumes exists
+	// (`${product.product_id}-default`). Without this, a product
+	// created through POST /products (including
+	// frontend/app/dashboard/catalog/page.tsx, item 14) had zero
+	// variants and "Add to cart" silently failed for it while working
+	// for every seeded product -- reported against that page directly.
+	// Both inserts share one transaction so a product is never left
+	// half-created with no usable variant if the second insert fails.
+	_, err = tx.Exec(
+		ctx,
+		`
+		INSERT INTO product_variants (id, product_id, sku, price_amount, availability, attributes)
+		VALUES ($1, $2, $3, $4, $5, '{}'::jsonb)
+		`,
+		product.ID+"-default",
+		product.ID,
+		strings.ToUpper(product.ID),
+		product.Price.Amount,
+		product.Availability,
+	)
+	if err != nil {
+		return fmt.Errorf("create default variant: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit create product transaction: %w", err)
 	}
 
 	return nil
