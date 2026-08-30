@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
+	"github.com/garinesaiajay/commerceos/tools"
 )
 
 // fakeCatalog returns a fixed product set.
@@ -72,7 +73,7 @@ func TestIntentExtractionConsistency(t *testing.T) {
 func TestSearchRanksANCAboveNonANC(t *testing.T) {
 	searcher := NewSearcher(fakeCatalog{})
 
-	results, err := searcher.Search(context.Background(), Intent{
+	results, err := searcher.Search(context.Background(), tools.SearchFilter{
 		Budget:   25000,
 		Category: "earbuds",
 		Priority: "active_noise_cancellation",
@@ -97,7 +98,7 @@ func TestSearchRespectsBudget(t *testing.T) {
 
 	// Budget ₹1,500 (150_000 paise) excludes AirPods Pro (₹24,900) but
 	// includes cheaper items.
-	results, err := searcher.Search(context.Background(), Intent{
+	results, err := searcher.Search(context.Background(), tools.SearchFilter{
 		Budget:   1500,
 		Category: "earbuds",
 	})
