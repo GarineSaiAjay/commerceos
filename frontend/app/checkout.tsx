@@ -40,6 +40,21 @@ interface RazorpayInstance {
   open: () => void;
 }
 
+// ProductVariant mirrors backend/commerce/catalog/product.go's
+// ProductVariant JSON shape exactly (PLAN-02-CATALOG-AND-COMMERCE.md
+// §1, item 10) -- every product now always has at least its own
+// "<id>-default" entry (CreateProduct provisions it transactionally),
+// so Product.variants below is never empty for a real product even
+// when it has no color/length/tier differentiation.
+interface ProductVariant {
+  variant_id: string;
+  product_id: string;
+  sku: string;
+  price: { amount: number; currency: string };
+  availability: number;
+  attributes: Record<string, unknown>;
+}
+
 interface Product {
   product_id: string;
   title: string;
@@ -47,6 +62,12 @@ interface Product {
   availability: number;
   average_rating?: number;
   review_count?: number;
+  // attributes is the parent product's own attribute bag -- used only
+  // as a label fallback for a "-default" variant that carries no
+  // label-bearing attribute of its own (see variantLabel below), e.g.
+  // AppleCare's implicit "2-year" or the cable's implicit "1m".
+  attributes?: Record<string, unknown>;
+  variants?: ProductVariant[];
 }
 
 interface CartItem {
@@ -240,6 +261,57 @@ const CART_STORAGE_KEY = "commerceos_cart_id";
 
 type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed" | "policy_rejected" | "orders";
 
+// variantLabel derives a short, human label for a variant picker option
+// (item 10). It checks the variant's OWN attributes first (color,
+// length_m, coverage_years -- the only label-bearing keys any seeded
+// variant currently uses). A "-default" variant seeded before item 10
+// existed carries none of these on itself (e.g. AppleCare's original
+// 2-year row, the cable's original 1m row) -- rather than edit those
+// already-seeded rows, this falls back to the same keys on the PARENT
+// PRODUCT's own attributes, which already had them. "Standard" is the
+// last resort for a product with no differentiating attributes at all.
+function variantLabel(variant: ProductVariant, product: Product): string {
+  const attrs = variant.attributes ?? {};
+  const color = attrs["color"];
+  if (typeof color === "string") return color[0].toUpperCase() + color.slice(1);
+
+  const lengthM = attrs["length_m"];
+  if (typeof lengthM === "number") return `${lengthM}m`;
+
+  const coverageYears = attrs["coverage_years"];
+  if (typeof coverageYears === "number") return `${coverageYears}-year`;
+
+  if (variant.variant_id === `${product.product_id}-default`) {
+    const productAttrs = product.attributes ?? {};
+    const fallbackColor = productAttrs["color"];
+    if (typeof fallbackColor === "string") return fallbackColor[0].toUpperCase() + fallbackColor.slice(1);
+
+    const fallbackLength = productAttrs["length_m"];
+    if (typeof fallbackLength === "number") return `${fallbackLength}m`;
+
+    const fallbackCoverage = productAttrs["coverage_years"];
+    if (typeof fallbackCoverage === "number") return `${fallbackCoverage}-year`;
+  }
+
+  return "Standard";
+}
+
+// defaultVariantFor picks which variant addToCart should use when the
+// buyer hasn't picked one explicitly (the three agent/suggestion entry
+// points below all go through this, not the picker). Prefers the exact
+// "<id>-default" entry every product is guaranteed to have; falls back
+// to whatever variant happens to be first if that's somehow missing,
+// and finally to the old hardcoded-guess string so a product object
+// built from a partial agent/suggestion payload (no variants array at
+// all -- see chooseAlternative/acceptSuggestion's synthetic `matched`
+// fallback objects) still resolves to something.
+function defaultVariantFor(product: Product): string {
+  const exact = product.variants?.find((v) => v.variant_id === `${product.product_id}-default`);
+  if (exact) return exact.variant_id;
+  if (product.variants && product.variants.length > 0) return product.variants[0].variant_id;
+  return `${product.product_id}-default`;
+}
+
 export default function CheckoutFlow({
   initialProducts,
 }: {
@@ -280,6 +352,11 @@ export default function CheckoutFlow({
   	const [run, setRun] = useState<Run | null>(null);
   	const [runLoading, setRunLoading] = useState(false);
   const [reviews, setReviews] = useState<Record<string, ReviewEntry>>({});
+  // Per-product picker selection (item 10) -- keyed by product_id so
+  // each catalog row remembers its own choice independently. Only
+  // populated by the buyer clicking an option; addToCart falls back to
+  // defaultVariantFor(product) when a product has no entry here yet.
+  const [selectedVariant, setSelectedVariant] = useState<Record<string, string>>({});
 
   // Persist the active cart ID so a hard reload doesn't lose the cart
   // (P0.2: previously a fresh ID was minted on every mount).
@@ -339,19 +416,19 @@ export default function CheckoutFlow({
     }
   }
 
-  async function addToCart(product: Product) {
+  async function addToCart(product: Product, variantId?: string) {
     setLoading(true);
     setMessage("");
     try {
       await ensureCart();
-      const variantId = `${product.product_id}-default`;
+      const resolvedVariantId = variantId ?? defaultVariantFor(product);
 
       const res = await fetch(`${API_BASE}/carts/${cartId}/items`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           product_id: product.product_id,
-          variant_id: variantId,
+          variant_id: resolvedVariantId,
           title: product.title,
           quantity: 1,
         }),
@@ -1236,35 +1313,67 @@ export default function CheckoutFlow({
               </p>
             ) : (
               <ul className="divide-y divide-slate-200">
-                {products.map((product) => (
-                  <li
-                    key={product.product_id}
-                    className="flex items-center justify-between py-4"
-                  >
-                    <div>
-                      <p className="font-semibold text-slate-900">
-                        {product.title}
-                      </p>
-                      <p className="text-sm text-slate-500">
-                        {formatINR(product.price.amount)} · {product.availability} in stock
-                        {!!product.review_count && (
-                          <>
-                            {" "}
-                            · <span className="text-amber-600">★ {product.average_rating?.toFixed(1)}</span>{" "}
-                            ({product.review_count})
-                          </>
-                        )}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => addToCart(product)}
-                      disabled={loading}
-                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+                {products.map((product) => {
+                  // Only a genuine differentiator (>1 variant) gets a
+                  // picker rendered -- a product with just its own
+                  // "<id>-default" entry shows the plain row exactly as
+                  // before item 10.
+                  const hasVariants = !!product.variants && product.variants.length > 1;
+                  const activeVariantId = selectedVariant[product.product_id] ?? defaultVariantFor(product);
+                  const activeVariant = product.variants?.find((v) => v.variant_id === activeVariantId);
+                  const displayPrice = activeVariant?.price.amount ?? product.price.amount;
+                  const displayAvailability = activeVariant?.availability ?? product.availability;
+
+                  return (
+                    <li
+                      key={product.product_id}
+                      className="flex items-center justify-between py-4"
                     >
-                      Add to cart
-                    </button>
-                  </li>
-                ))}
+                      <div>
+                        <p className="font-semibold text-slate-900">
+                          {product.title}
+                        </p>
+                        <p className="text-sm text-slate-500">
+                          {formatINR(displayPrice)} · {displayAvailability} in stock
+                          {!!product.review_count && (
+                            <>
+                              {" "}
+                              · <span className="text-amber-600">★ {product.average_rating?.toFixed(1)}</span>{" "}
+                              ({product.review_count})
+                            </>
+                          )}
+                        </p>
+                        {hasVariants && (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {product.variants!.map((variant) => (
+                              <button
+                                key={variant.variant_id}
+                                onClick={() =>
+                                  setSelectedVariant((sel) => ({ ...sel, [product.product_id]: variant.variant_id }))
+                                }
+                                disabled={variant.availability === 0}
+                                className={`rounded-full border px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                                  variant.variant_id === activeVariantId
+                                    ? "border-black bg-black text-white"
+                                    : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                                }`}
+                              >
+                                {variantLabel(variant, product)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => addToCart(product, activeVariantId)}
+                        disabled={loading}
+                        className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        Add to cart
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>

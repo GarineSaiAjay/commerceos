@@ -30,6 +30,13 @@ type Repository interface {
 	ListProducts(ctx context.Context) ([]Product, error)
 	GetVariant(ctx context.Context, id string) (ProductVariant, error)
 
+	// ListVariantsByProduct returns every variant of one product,
+	// ordered by id for a deterministic display order (PLAN-02-CATALOG-
+	// AND-COMMERCE.md §1, item 10) -- the buyer catalog's variant
+	// picker and GetProduct's own Variants field both rely on this
+	// order being stable across calls.
+	ListVariantsByProduct(ctx context.Context, productID string) ([]ProductVariant, error)
+
 	// UpdateProduct replaces the editable fields of an existing product
 	// (everything except id/merchant_id/created_at). Returns
 	// ErrProductNotFound if no such product exists.
@@ -387,6 +394,12 @@ func (r *PostgresRepository) GetProduct(ctx context.Context, id string) (Product
 		return Product{}, fmt.Errorf("decode purchase constraints: %w", err)
 	}
 
+	variants, err := r.ListVariantsByProduct(ctx, product.ID)
+	if err != nil {
+		return Product{}, fmt.Errorf("list variants for product: %w", err)
+	}
+	product.Variants = variants
+
 	return product, nil
 }
 
@@ -428,6 +441,20 @@ func (r *PostgresRepository) ListProducts(ctx context.Context) ([]Product, error
 	return products, nil
 }
 
+// GetVariant looks up one variant by its own ID. Selects pv.availability
+// (the VARIANT's own stock), not the parent product's -- this was a
+// real, previously-invisible bug: every product had exactly one
+// variant whose availability was seeded identically to its parent
+// product, so selecting p.availability instead of pv.availability
+// happened to return the same number and nothing ever caught it. Item
+// 10 (PLAN-02-CATALOG-AND-COMMERCE.md §1) is the first time a product
+// legitimately has variants with DIFFERENT stock levels ("out of stock
+// in starlight, 16 left in white"), which would have made this wrong
+// in a way that actually mattered: cart.Service.AddItem's
+// `newQuantity > variant.Availability` check (backend/commerce/cart/
+// service.go) exists specifically to enforce the number this query
+// returns, so a wrong number here is a real overselling/underselling
+// bug, not a cosmetic one.
 func (r *PostgresRepository) GetVariant(ctx context.Context, id string) (ProductVariant, error) {
 	var variant ProductVariant
 	var attributes []byte
@@ -440,7 +467,7 @@ func (r *PostgresRepository) GetVariant(ctx context.Context, id string) (Product
 			pv.product_id,
 			pv.sku,
 			pv.price_amount,
-			p.availability,
+			pv.availability,
 			pv.attributes,
 			p.price_currency
 		FROM product_variants pv
@@ -473,4 +500,65 @@ func (r *PostgresRepository) GetVariant(ctx context.Context, id string) (Product
 	}
 
 	return variant, nil
+}
+
+// ListVariantsByProduct returns every variant of one product, ordered
+// by id for a deterministic display order. Selects pv.availability for
+// the same reason GetVariant's doc comment explains above.
+func (r *PostgresRepository) ListVariantsByProduct(ctx context.Context, productID string) ([]ProductVariant, error) {
+	rows, err := r.db.Query(
+		ctx,
+		`
+		SELECT
+			pv.id,
+			pv.product_id,
+			pv.sku,
+			pv.price_amount,
+			pv.availability,
+			pv.attributes,
+			p.price_currency
+		FROM product_variants pv
+		JOIN products p ON p.id = pv.product_id
+		WHERE pv.product_id = $1
+		ORDER BY pv.id
+		`,
+		productID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list variants by product: %w", err)
+	}
+	defer rows.Close()
+
+	var variants []ProductVariant
+
+	for rows.Next() {
+		var variant ProductVariant
+		var attributes []byte
+
+		if err := rows.Scan(
+			&variant.ID,
+			&variant.ProductID,
+			&variant.SKU,
+			&variant.Price.Amount,
+			&variant.Availability,
+			&attributes,
+			&variant.Price.Currency,
+		); err != nil {
+			return nil, fmt.Errorf("scan variant: %w", err)
+		}
+
+		if len(attributes) > 0 {
+			if err := json.Unmarshal(attributes, &variant.Attributes); err != nil {
+				return nil, fmt.Errorf("decode variant attributes: %w", err)
+			}
+		}
+
+		variants = append(variants, variant)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate variants: %w", err)
+	}
+
+	return variants, nil
 }
