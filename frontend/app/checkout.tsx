@@ -2,6 +2,11 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { API_BASE } from "../lib/api";
+// Skeleton (item 22, PLAN-04-UI-UX-AND-LATENCY.md §A3): the dashboard's
+// existing loading-state component, reused here rather than
+// reinvented -- checkout.tsx previously had zero skeleton states, just
+// bare "Loading..." text in a handful of places.
+import { Skeleton } from "../lib/format";
 
 declare global {
   interface Window {
@@ -1360,7 +1365,13 @@ export default function CheckoutFlow({
           Every step the policy engine took for this action, reconstructed
           from the persisted audit log (run {runId}).
         </p>
-        {runLoading && <p className="mt-3 text-xs text-slate-500">Loading...</p>}
+        {runLoading && (
+          <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-5/6" />
+            <Skeleton className="h-3 w-2/3" />
+          </div>
+        )}
         {run && run.steps && run.steps.length > 0 && (
           <ul className="mt-3 space-y-3 border-t border-slate-100 pt-3">
             {run.steps.map((s, i) => (
@@ -1422,7 +1433,16 @@ export default function CheckoutFlow({
       );
     }
     if (suggestionLoading) {
-      return <p className="mt-3 text-xs text-slate-400">Checking for a complementary item...</p>;
+      return (
+        <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-5">
+          <Skeleton className="h-3 w-28" />
+          <Skeleton className="mt-2 h-4 w-2/3" />
+          <div className="mt-3 flex gap-3">
+            <Skeleton className="h-9 w-28" />
+            <Skeleton className="h-9 w-24" />
+          </div>
+        </div>
+      );
     }
     return null;
   }
@@ -1498,6 +1518,17 @@ export default function CheckoutFlow({
               </div>
 
               {agentError && <p className="mt-3 text-sm text-amber-700">{agentError}</p>}
+
+              {agentLoading && (
+                <div className="mt-4 rounded-lg border border-slate-300 bg-white p-4">
+                  <Skeleton className="h-3 w-24" />
+                  <Skeleton className="mt-3 h-4 w-full" />
+                  <div className="mt-3 flex gap-3">
+                    <Skeleton className="h-9 w-28" />
+                    <Skeleton className="h-9 w-28" />
+                  </div>
+                </div>
+              )}
 
               {agentPlan && (
                 <div className="mt-4 rounded-lg border border-slate-300 bg-white p-4">
@@ -1686,7 +1717,10 @@ export default function CheckoutFlow({
                           </p>
 
                           {detailSuggestionLoading && (
-                            <p className="mt-3 text-xs text-slate-400">Checking for a complementary item...</p>
+                            <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+                              <Skeleton className="h-3 w-24" />
+                              <Skeleton className="mt-2 h-4 w-1/2" />
+                            </div>
                           )}
                           {!detailSuggestionLoading && detailSuggestion?.product && (
                             <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
@@ -2205,7 +2239,11 @@ export default function CheckoutFlow({
             )}
 
             {postCheckoutSuggestionLoading && (
-              <p className="mt-6 text-xs text-slate-400">Checking for a complementary item...</p>
+              <div className="mt-6 rounded-xl border border-indigo-200 bg-indigo-50 p-6">
+                <Skeleton className="h-3 w-28" />
+                <Skeleton className="mt-2 h-4 w-2/3" />
+                <Skeleton className="mt-3 h-9 w-40" />
+              </div>
             )}
             {!postCheckoutSuggestionLoading && postCheckoutSuggestion?.product && (
               <div className="mt-6 rounded-xl border border-indigo-200 bg-indigo-50 p-6">
@@ -2250,7 +2288,13 @@ export default function CheckoutFlow({
 
         {step === "orders" && (
           <section>
-            {ordersLoading && <p className="text-sm text-slate-500">Loading orders...</p>}
+            {ordersLoading && (
+              <div className="space-y-4">
+                {[0, 1, 2].map((i) => (
+                  <Skeleton key={i} className="h-24 w-full" />
+                ))}
+              </div>
+            )}
             {!ordersLoading && ordersError && (
               <p className="text-sm text-rose-700">
                 {ordersError} --{" "}
