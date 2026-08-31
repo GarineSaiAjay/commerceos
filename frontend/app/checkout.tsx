@@ -22,6 +22,7 @@ import type {
   ReviewEntry,
   SuggestResponse,
   AgentChatMessage,
+  Review,
   Step,
   SortOption,
 } from "./checkout/types";
@@ -164,6 +165,14 @@ export default function CheckoutFlow({
   const [expandedProductId, setExpandedProductId] = useState<string | null>(null);
   const [detailSuggestion, setDetailSuggestion] = useState<SuggestResponse | null>(null);
   const [detailSuggestionLoading, setDetailSuggestionLoading] = useState(false);
+  // Review list for the same expand panel (item 13, PLAN-02-CATALOG-
+  // AND-COMMERCE.md §4 -- "and, once §2 ships, reviews": §2 (item 11)
+  // shipped, but this piece was explicitly left unbuilt by item 19's
+  // commit and completed separately here). Independent of
+  // detailSuggestion/detailSuggestionLoading above -- its own fetch,
+  // its own loading state -- so one failing never blocks the other.
+  const [detailReviews, setDetailReviews] = useState<Review[]>([]);
+  const [detailReviewsLoading, setDetailReviewsLoading] = useState(false);
 
   // Post-checkout "complete the set" cross-sell (item 19, PLAN-03-
   // PROACTIVE-GROWTH-AGENT.md §4) -- scored once against the order that
@@ -507,11 +516,19 @@ export default function CheckoutFlow({
     if (expandedProductId === productId) {
       setExpandedProductId(null);
       setDetailSuggestion(null);
+      setDetailReviews([]);
       return;
     }
     setExpandedProductId(productId);
     setDetailSuggestion(null);
     setDetailSuggestionLoading(true);
+    setDetailReviews([]);
+    setDetailReviewsLoading(true);
+    // Fired independently of the cross-sell suggestion fetch below --
+    // its own try/catch/loading state in fetchDetailReviews, so a slow
+    // or failed reviews fetch never blocks (or is blocked by) the
+    // suggestion one.
+    fetchDetailReviews(productId);
     try {
       const res = await fetch(`${API_BASE}/growth/suggest/product`, {
         method: "POST",
@@ -528,6 +545,29 @@ export default function CheckoutFlow({
       setDetailSuggestion(null);
     } finally {
       setDetailSuggestionLoading(false);
+    }
+  }
+
+  // GET /products/{id}/reviews -- the individual review comments
+  // backing this product's average_rating/review_count aggregate
+  // (catalog.Product, computed separately by a live JOIN -- see
+  // backend/commerce/catalog/service.go's item-23 caching comment for
+  // why that aggregate can lag these individual rows by up to the
+  // cache TTL). Most-recent-first, unpaginated -- ListByProduct
+  // (backend/commerce/review/service.go) returns every review for a
+  // product with no limit, which is fine at this project's scale.
+  async function fetchDetailReviews(productId: string) {
+    try {
+      const res = await fetch(`${API_BASE}/products/${productId}/reviews`);
+      if (res.ok) {
+        setDetailReviews((await res.json()) as Review[]);
+      } else {
+        setDetailReviews([]);
+      }
+    } catch {
+      setDetailReviews([]);
+    } finally {
+      setDetailReviewsLoading(false);
     }
   }
 
@@ -1152,6 +1192,8 @@ export default function CheckoutFlow({
               detailSuggestion={detailSuggestion}
               detailSuggestionLoading={detailSuggestionLoading}
               onAcceptDetailSuggestion={acceptDetailSuggestion}
+              detailReviews={detailReviews}
+              detailReviewsLoading={detailReviewsLoading}
               onAddToCart={addToCart}
               loading={loading}
             />
