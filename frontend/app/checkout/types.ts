@@ -247,6 +247,29 @@ export interface SuggestResponse {
   message?: string;
 }
 
+// SubstituteItem/RejectionRecoverySuggestion mirror
+// backend/agents/rejection_recovery.go's SubstituteItem/
+// RejectionRecoverySuggestion JSON shapes exactly (item 33,
+// PLAN-01-AGENTIC-CORE.md §6's second proactive agent turn: a
+// policy rejection over the platform amount ceiling proactively
+// searches for a cheaper substitute instead of only offering the
+// buyer a manual "remove an item" list).
+export interface SubstituteItem {
+  product_id: string;
+  variant_id?: string;
+  title: string;
+  price: number;
+}
+
+export interface RejectionRecoverySuggestion {
+  available: boolean;
+  reason?: string;
+  replaced_item?: SubstituteItem;
+  substitute?: SubstituteItem;
+  new_subtotal?: number;
+  reasoning?: string;
+}
+
 export type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed" | "policy_rejected" | "orders";
 
 export type SortOption = "default" | "price_asc" | "price_desc" | "rating" | "availability";

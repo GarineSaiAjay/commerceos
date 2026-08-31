@@ -23,6 +23,7 @@ import type {
   SuggestResponse,
   AgentChatMessage,
   Review,
+  RejectionRecoverySuggestion,
   Step,
   SortOption,
 } from "./checkout/types";
@@ -130,6 +131,14 @@ export default function CheckoutFlow({
   	// list) -- distinct from "failed" (a Razorpay payment attempt was
   	// made and declined): here, no payment was ever attempted at all.
   	const [policyRejectionReason, setPolicyRejectionReason] = useState("");
+  	// Proactive substitute offer for a policy-rejected order (item 33,
+  	// PLAN-01-AGENTIC-CORE.md §6) -- fetched automatically the moment
+  	// the policy_rejected screen mounts with a real order (see the
+  	// useEffect near fetchSubstituteSuggestion below), independent of
+  	// and offered ABOVE the existing manual "remove an item" list,
+  	// which stays as the fallback when no substitute is available.
+  	const [substituteSuggestion, setSubstituteSuggestion] = useState<RejectionRecoverySuggestion | null>(null);
+  	const [substituteSuggestionLoading, setSubstituteSuggestionLoading] = useState(false);
   	const [recovery, setRecovery] = useState<Recovery | null>(null);
   	const [approvalLevel, setApprovalLevel] = useState(0);
   	const [approvalSnapshot, setApprovalSnapshot] = useState<ApprovalRequestDetail | null>(null);
@@ -974,6 +983,75 @@ export default function CheckoutFlow({
 				}
 			}
 
+			// Fetch a proactive substitute suggestion (item 33,
+			// PLAN-01-AGENTIC-CORE.md section 6) the instant a policy rejection
+			// lands on screen (see the useEffect above). Offered ABOVE the
+			// manual "remove an item" list below, not instead of it: when no
+			// substitute is available -- or this fetch fails -- it quietly
+			// stays empty and the existing remove-item fallback is
+			// unaffected.
+			async function fetchSubstituteSuggestion(orderId: string) {
+				setSubstituteSuggestionLoading(true);
+				try {
+					const res = await fetch(`${API_BASE}/orders/${orderId}/recovery/suggest-substitute`, {
+						method: "POST",
+					});
+					if (res.ok) {
+						const data = (await res.json()) as RejectionRecoverySuggestion;
+						setSubstituteSuggestion(data.available ? data : null);
+					} else {
+						setSubstituteSuggestion(null);
+					}
+				} catch {
+					setSubstituteSuggestion(null);
+				} finally {
+					setSubstituteSuggestionLoading(false);
+				}
+			}
+
+			// Accept the proactive substitute: swap the over-budget item for
+			// the suggested in-budget one and re-checkout server-side.
+			// Mirrors removeAccessoryAndRetry above -- rebuild from catalog,
+			// re-checkout, land back on the checkout screen where clicking
+			// Pay re-proposes the smaller order to the policy engine. Policy
+			// is never bypassed: this only replaces line items, it never
+			// calls /policy/propose or /payment itself.
+			async function acceptSubstitute() {
+				if (
+					!order ||
+					!substituteSuggestion?.available ||
+					!substituteSuggestion.replaced_item ||
+					!substituteSuggestion.substitute
+				) {
+					return;
+				}
+				setLoading(true);
+				setMessage("Swapping item and recomputing your order...");
+				try {
+					const res = await fetch(`${API_BASE}/orders/${order.order_id}/recovery/replace-item`, {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							variant_id: substituteSuggestion.replaced_item.variant_id,
+							substitute_product_id: substituteSuggestion.substitute.product_id,
+						}),
+					});
+					if (!res.ok) throw new Error(await res.text());
+					const newOrder = (await res.json()) as Order;
+					setOrder(newOrder);
+					setCartId(newOrder.cart_id);
+					setPayment(null);
+					setRecovery(null);
+					setSubstituteSuggestion(null);
+					setMessage("Item swapped. Review your updated order, then pay when ready.");
+					setStep("checkout");
+				} catch (error) {
+					setMessage(error instanceof Error ? error.message : "Could not swap that item");
+				} finally {
+					setLoading(false);
+				}
+			}
+
 			async function resetToCatalog(messageText: string) {
       				setStep("catalog");
       				setCartId(freshCartId());
@@ -1094,6 +1172,19 @@ export default function CheckoutFlow({
     if (step === "complete" && order) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       fetchPostCheckoutSuggestion(order.order_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, order?.order_id]);
+
+  // Fetch the proactive substitute suggestion the moment a policy
+  // rejection lands on screen -- order?.order_id as the dependency
+  // (not just `step`) means this only re-fires for a genuinely new
+  // rejected order, not a re-render of the same one, and not again
+  // after acceptSubstitute() below clears substituteSuggestion.
+  useEffect(() => {
+    if (step === "policy_rejected" && order) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      fetchSubstituteSuggestion(order.order_id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, order?.order_id]);
@@ -1505,6 +1596,43 @@ export default function CheckoutFlow({
 					unaffected.
 				</p>
 			</div>
+
+			{substituteSuggestionLoading && (
+				<div className="mt-6 rounded-xl border border-slate-200 p-5">
+					<p className="text-sm text-slate-500">Checking for an in-budget substitute...</p>
+				</div>
+			)}
+
+			{!substituteSuggestionLoading && substituteSuggestion?.available && substituteSuggestion.replaced_item && substituteSuggestion.substitute && (
+				<div className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 p-5">
+					<p className="text-sm font-semibold text-emerald-900">We found an in-budget substitute</p>
+					{substituteSuggestion.reasoning && (
+						<p className="mt-1 text-xs text-emerald-700">{substituteSuggestion.reasoning}</p>
+					)}
+					<div className="mt-3 flex items-center justify-between rounded-lg bg-white/60 p-3">
+						<div>
+							<p className="text-xs text-slate-500 line-through">{substituteSuggestion.replaced_item.title}</p>
+							<p className="text-sm font-medium text-slate-900">{substituteSuggestion.substitute.title}</p>
+						</div>
+						<div className="text-right">
+							<p className="text-xs text-slate-500 line-through">{formatINR(substituteSuggestion.replaced_item.price)}</p>
+							<p className="text-sm font-semibold text-emerald-900">{formatINR(substituteSuggestion.substitute.price)}</p>
+						</div>
+					</div>
+					{typeof substituteSuggestion.new_subtotal === "number" && (
+						<p className="mt-2 text-xs text-emerald-700">
+							New order total: {formatINR(substituteSuggestion.new_subtotal)}
+						</p>
+					)}
+					<button
+						onClick={acceptSubstitute}
+						disabled={loading}
+						className="mt-3 w-full rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-800 disabled:opacity-50"
+					>
+						Swap &amp; continue
+					</button>
+				</div>
+			)}
 
 			{order.items.length > 1 && (
 				<div className="mt-6 rounded-xl border border-slate-200 p-5">
