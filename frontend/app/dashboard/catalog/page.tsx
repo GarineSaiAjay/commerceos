@@ -23,6 +23,19 @@ type Product = {
   review_count: number;
 };
 
+// Item 23 (PLAN-04-UI-UX-AND-LATENCY.md §B2, "client-side" layer): a
+// short in-memory TTL cache so navigating away from this tab and back
+// (a genuine remount -- CatalogPage's useEffect re-runs load() every
+// time) doesn't refetch the whole catalog for no reason. Module-level,
+// not component state, so it survives the remount itself; a page
+// reload still clears it, same as any in-memory cache. Deliberately
+// NOT applied to the buyer-facing checkout.tsx catalog -- that page
+// has no client-side refetch at all to cache against (it receives
+// initialProducts once, server-rendered by frontend/app/page.tsx,
+// which gets its own module-level TTL cache instead).
+let cachedProducts: { data: Product[]; expiresAt: number } | null = null;
+const PRODUCTS_CACHE_TTL_MS = 30_000;
+
 // Single-merchant demo -- same hardcoded convention checkout.tsx's
 // MERCHANT_ID and growth/suggest.go's DemoBudgetCeiling already use.
 // There is no multi-merchant operator selection anywhere in this
@@ -104,10 +117,33 @@ export default function CatalogPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<Record<string, string>>({});
 
-  const load = useCallback(() => {
+  // skipCache forces a fresh, uncached fetch -- always passed true
+  // after this page's own save()/remove() below, so an operator's own
+  // edit is never masked by a stale cached list for up to the TTL
+  // (the same correctness requirement catalog/service.go's Redis
+  // cache invalidation enforces server-side).
+  const load = useCallback((skipCache = false) => {
+    if (!skipCache && cachedProducts && cachedProducts.expiresAt > Date.now()) {
+      const cached = cachedProducts.data;
+      // Deferred via Promise.resolve() so a cache hit still resolves
+      // in a microtask rather than synchronously inside the mount
+      // effect below (react-hooks/set-state-in-effect) -- mirrors the
+      // async boundary the network path already has naturally via
+      // .then().
+      Promise.resolve().then(() => {
+        setProducts(cached);
+        setLoading(false);
+      });
+      return;
+    }
+    setLoading(true);
     authFetch("/products", { cache: "no-store" })
       .then((r) => r.json())
-      .then((data: Product[]) => setProducts(data ?? []))
+      .then((data: Product[]) => {
+        const list: Product[] = data ?? [];
+        cachedProducts = { data: list, expiresAt: Date.now() + PRODUCTS_CACHE_TTL_MS };
+        setProducts(list);
+      })
       .catch(() => setError("Could not load the catalog."))
       .finally(() => setLoading(false));
   }, []);
@@ -177,7 +213,7 @@ export default function CatalogPage() {
       });
       if (!res.ok) throw new Error(await res.text());
       cancelForm();
-      load();
+      load(true);
     } catch (cause) {
       setFormError(cause instanceof Error ? cause.message : "Could not save the product.");
     } finally {
@@ -197,7 +233,7 @@ export default function CatalogPage() {
     try {
       const res = await authFetch(`/products/${productId}`, { method: "DELETE" });
       if (!res.ok) throw new Error(await res.text());
-      load();
+      load(true);
     } catch (cause) {
       setDeleteError((prev) => ({
         ...prev,

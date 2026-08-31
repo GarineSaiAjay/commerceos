@@ -115,7 +115,16 @@ func main() {
 	// -------------------------
 
 	catalogRepo := catalog.NewPostgresRepository(dbPool)
-	catalogService := catalog.NewService(catalogRepo)
+	// item 23 (PLAN-04-UI-UX-AND-LATENCY.md §B2): an 8s Redis cache of
+	// GET /products, within the plan's own 5-10s recommended range --
+	// short enough that a merchant's own catalog edit (already forced
+	// fresh via WithCache's invalidation on every mutation) is never
+	// the only thing standing between a stale read and a correct one.
+	// Reuses the same redisClient already connected above for the
+	// Streams event bus -- Redis was provisioned but, until this item,
+	// used for nothing else.
+	catalogService := catalog.NewService(catalogRepo).
+		WithCache(catalog.NewRedisProductsCache(redisClient, 8*time.Second))
 	catalogHandler := catalog.NewHandler(catalogService)
 
 	// -------------------------
