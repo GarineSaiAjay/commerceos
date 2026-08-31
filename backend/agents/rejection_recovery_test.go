@@ -137,7 +137,7 @@ func TestSuggestSubstituteBudgetTooSmall(t *testing.T) {
 func TestSuggestSubstituteHappyPath(t *testing.T) {
 	catalogReader := &fakeRecoveryCatalog{products: []catalog.Product{
 		testProduct("expensive", 25_000, "audio"),
-		testProduct("mid", 8_000, "audio"),        // within the 18,000 budget (20,000 - 2,000 overage)
+		testProduct("mid", 8_000, "audio"),         // within the 18,000 budget (20,000 - 2,000 overage)
 		testProduct("pricey-alt", 19_000, "audio"), // over the 18,000 budget, must be excluded by the hard constraint
 	}}
 	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeiling)

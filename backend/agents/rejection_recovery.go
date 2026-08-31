@@ -143,12 +143,12 @@ type SubstituteItem struct {
 // manual "remove an item" list stays the fallback in every such case,
 // unchanged.
 type RejectionRecoverySuggestion struct {
-	Available bool `json:"available"`
-	Reason string `json:"reason,omitempty"`
+	Available    bool            `json:"available"`
+	Reason       string          `json:"reason,omitempty"`
 	ReplacedItem *SubstituteItem `json:"replaced_item,omitempty"`
-	Substitute *SubstituteItem `json:"substitute,omitempty"`
-	NewSubtotal int64 `json:"new_subtotal,omitempty"`
-	Reasoning string `json:"reasoning,omitempty"`
+	Substitute   *SubstituteItem `json:"substitute,omitempty"`
+	NewSubtotal  int64           `json:"new_subtotal,omitempty"`
+	Reasoning    string          `json:"reasoning,omitempty"`
 }
 
 // suggestSubstitute is the pure decision logic behind SuggestSubstitute
