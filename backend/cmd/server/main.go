@@ -270,7 +270,15 @@ func main() {
 
 	// Phase 3: Policy Engine — the hard chokepoint.
 	policyRepo := policy.NewPostgresRepository(dbPool)
-	policyEngine := policy.NewEngine(policy.DefaultConfig(), policyRepo)
+	// Captured as its own variable (rather than the previous inline
+	// policy.DefaultConfig() call) so item 33's rejection-recovery
+	// handler below can read the SAME configured ceiling the engine is
+	// actually enforcing, instead of re-declaring policy.DefaultConfig()
+	// a second time and risking the two silently drifting apart --
+	// exactly the staleness policy.ExplainRejection's own hardcoded
+	// ceiling literal already has.
+	policyConfig := policy.DefaultConfig()
+	policyEngine := policy.NewEngine(policyConfig, policyRepo)
 	riskEngine := policy.NewRiskEngine()
 	policyService := policy.NewService(policyEngine, riskEngine, policyRepo)
 
@@ -338,6 +346,20 @@ func main() {
 	).WithCallCounter(razorpayAdapter).
 		WithRecoveryReaders(cartRepo, paymentAttemptRepo).
 		WithRecoveryActions(cartService, orderService)
+
+	// item 33, PLAN-01-AGENTIC-CORE.md §6 / ROADMAP-PRIORITIZED.md P2:
+	// proactive policy-rejection recovery -- reuses the same
+	// orderRepo/catalogService/cartService/orderService instances
+	// already wired above for paymentHandler's own recovery actions,
+	// plus policyConfig.Ceiling so this can never enforce a different
+	// ceiling than the policy engine actually does.
+	rejectionRecoveryHandler := agents.NewRejectionRecoveryHandler(
+		orderRepo,
+		catalogService,
+		cartService,
+		orderService,
+		policyConfig.Ceiling,
+	)
 
 	// -------------------------
 	// Phase 7: MCP server
@@ -587,6 +609,20 @@ func main() {
 			case r.Method == http.MethodPost &&
 				strings.HasSuffix(r.URL.Path, "/recovery/remove-item"):
 				paymentHandler.RemoveItemAndRecheckout(w, r)
+
+			// item 33: proactive policy-rejection recovery. Checked
+			// before the plain GET /recovery case below via the same
+			// suffix-first ordering already used throughout this
+			// switch (HasSuffix("/recovery") would not match either of
+			// these longer suffixes anyway, but keeping the more
+			// specific cases first matches the existing convention).
+			case r.Method == http.MethodPost &&
+				strings.HasSuffix(r.URL.Path, "/recovery/suggest-substitute"):
+				rejectionRecoveryHandler.SuggestSubstitute(w, r)
+
+			case r.Method == http.MethodPost &&
+				strings.HasSuffix(r.URL.Path, "/recovery/replace-item"):
+				rejectionRecoveryHandler.ReplaceItemAndRecheckout(w, r)
 
 			case r.Method == http.MethodGet &&
 				strings.HasSuffix(r.URL.Path, "/recovery"):
