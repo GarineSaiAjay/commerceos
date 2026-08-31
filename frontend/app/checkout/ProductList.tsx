@@ -2,7 +2,7 @@
 
 import type { Dispatch, SetStateAction } from "react";
 import { Skeleton } from "../../lib/format";
-import type { Product, SortOption, SuggestResponse } from "./types";
+import type { Product, Review, SortOption, SuggestResponse } from "./types";
 import { defaultVariantFor, formatINR, variantLabel } from "./helpers";
 
 // "Browse Catalog" section of the catalog screen: search/filter/sort
@@ -33,6 +33,8 @@ export function ProductList({
   detailSuggestion,
   detailSuggestionLoading,
   onAcceptDetailSuggestion,
+  detailReviews,
+  detailReviewsLoading,
   onAddToCart,
   loading,
 }: {
@@ -52,6 +54,8 @@ export function ProductList({
   detailSuggestion: SuggestResponse | null;
   detailSuggestionLoading: boolean;
   onAcceptDetailSuggestion: () => void;
+  detailReviews: Review[];
+  detailReviewsLoading: boolean;
   onAddToCart: (product: Product, variantId?: string) => void;
   loading: boolean;
 }) {
@@ -196,6 +200,56 @@ export function ProductList({
                         <> · ships in {product.shipping.estimated_days} day{product.shipping.estimated_days > 1 ? "s" : ""}</>
                       )}
                     </p>
+
+                    {/* Reviews (item 13, PLAN-02-CATALOG-AND-COMMERCE.md
+                        §4: "and -- once §2 ships -- reviews"). The row's
+                        own average_rating/review_count summary above
+                        (a live JOIN aggregate, catalog.Product) can lag
+                        this list by up to the catalog cache's TTL (item
+                        23) -- a brand-new review may not move that
+                        number for a few seconds even though it already
+                        appears here, since this list is fetched fresh
+                        on every expand. */}
+                    {detailReviewsLoading && (
+                      <div className="mt-3 space-y-2">
+                        <Skeleton className="h-3 w-full" />
+                        <Skeleton className="h-3 w-2/3" />
+                      </div>
+                    )}
+                    {!detailReviewsLoading && detailReviews.length === 0 && (
+                      <p className="mt-3 text-xs text-slate-400">No reviews yet.</p>
+                    )}
+                    {!detailReviewsLoading && detailReviews.length > 0 && (
+                      <ul className="mt-3 divide-y divide-slate-200 border-t border-slate-200">
+                        {detailReviews.map((review) => (
+                          <li key={review.id} className="py-3">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="text-amber-500"
+                                aria-label={`${review.rating} out of 5 stars`}
+                              >
+                                <span aria-hidden>{"★".repeat(review.rating)}</span>
+                                <span className="text-slate-300" aria-hidden>{"★".repeat(5 - review.rating)}</span>
+                              </span>
+                              <span className="text-xs font-medium text-slate-700">
+                                {review.buyer_reference}
+                              </span>
+                              {review.verified_purchase && (
+                                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700">
+                                  Verified purchase
+                                </span>
+                              )}
+                              <span className="ml-auto text-xs text-slate-400">
+                                {new Date(review.created_at).toLocaleDateString()}
+                              </span>
+                            </div>
+                            {review.comment && (
+                              <p className="mt-1 text-sm text-slate-600">{review.comment}</p>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
 
                     {detailSuggestionLoading && (
                       <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">

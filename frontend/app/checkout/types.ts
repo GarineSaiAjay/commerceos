@@ -85,6 +85,26 @@ export interface ReviewEntry {
   error: string;
 }
 
+// Review mirrors backend/commerce/review's Review JSON shape exactly --
+// one individual review left against a product, always tied to the
+// order it was submitted from (VerifiedPurchase is computed
+// server-side from that link; every review submitted through the API
+// is a verified purchase by construction, see review.Service.Submit).
+// Fetched by GET /products/{id}/reviews for the product-detail expand
+// panel's review list (item 13, PLAN-02-CATALOG-AND-COMMERCE.md §4:
+// "features as plain tags, return policy, shipping estimate, and --
+// once §2 ships -- reviews").
+export interface Review {
+  id: number;
+  product_id: string;
+  order_id?: string;
+  buyer_reference: string;
+  rating: number;
+  comment?: string;
+  verified_purchase: boolean;
+  created_at: string;
+}
+
 export interface Payment {
   payment_id: string;
   order_id: string;
