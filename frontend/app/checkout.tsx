@@ -7,6 +7,37 @@ import { API_BASE } from "../lib/api";
 // reinvented -- checkout.tsx previously had zero skeleton states, just
 // bare "Loading..." text in a handful of places.
 import { Skeleton } from "../lib/format";
+import type {
+  Product,
+  Cart,
+  Order,
+  Payment,
+  Recovery,
+  Mandate,
+  Decision,
+  Run,
+  ApprovalRequestDetail,
+  CheckoutPlan,
+  AlternativeProduct,
+  ReviewEntry,
+  SuggestResponse,
+  AgentChatMessage,
+  Step,
+  SortOption,
+} from "./checkout/types";
+import {
+  MERCHANT_ID,
+  CART_STORAGE_KEY,
+  freshCartId,
+  defaultVariantFor,
+  formatINR,
+} from "./checkout/helpers";
+import { AuditTrailPanel } from "./checkout/AuditTrailPanel";
+import { SuggestionCard } from "./checkout/SuggestionCard";
+import { AgentChatPanel } from "./checkout/AgentChatPanel";
+import { ProductList } from "./checkout/ProductList";
+import { CartPanel } from "./checkout/CartPanel";
+import { OrderHistoryPanel } from "./checkout/OrderHistoryPanel";
 
 declare global {
   interface Window {
@@ -45,303 +76,6 @@ interface RazorpayInstance {
   open: () => void;
 }
 
-// ProductVariant mirrors backend/commerce/catalog/product.go's
-// ProductVariant JSON shape exactly (PLAN-02-CATALOG-AND-COMMERCE.md
-// §1, item 10) -- every product now always has at least its own
-// "<id>-default" entry (CreateProduct provisions it transactionally),
-// so Product.variants below is never empty for a real product even
-// when it has no color/length/tier differentiation.
-interface ProductVariant {
-  variant_id: string;
-  product_id: string;
-  sku: string;
-  price: { amount: number; currency: string };
-  availability: number;
-  attributes: Record<string, unknown>;
-}
-
-interface Product {
-  product_id: string;
-  title: string;
-  price: { amount: number; currency: string };
-  availability: number;
-  average_rating?: number;
-  review_count?: number;
-  // attributes is the parent product's own attribute bag -- used only
-  // as a label fallback for a "-default" variant that carries no
-  // label-bearing attribute of its own (see variantLabel below), e.g.
-  // AppleCare's implicit "2-year" or the cable's implicit "1m".
-  attributes?: Record<string, unknown>;
-  variants?: ProductVariant[];
-  // features/compatibility/use_cases/return_policy/shipping (item 19,
-  // PLAN-02-CATALOG-AND-COMMERCE.md §4) are all present in every real
-  // API response (catalog.Product never omits them) but were never
-  // rendered anywhere until the product-detail expand below -- optional
-  // here only so a partial Product built from an agent/suggestion
-  // payload (see chooseAlternative/acceptSuggestion's synthetic
-  // `matched` fallback) still type-checks without them.
-  features?: string[];
-  compatibility?: string[];
-  use_cases?: string[];
-  return_policy?: { days: number };
-  shipping?: { estimated_days: number };
-}
-
-interface CartItem {
-  product_id: string;
-  variant_id: string;
-  title: string;
-  quantity: number;
-  unit_price: number;
-  total: number;
-}
-
-interface Cart {
-  cart_id: string;
-  items: CartItem[];
-  subtotal: number;
-  currency: string;
-}
-
-interface Order {
-  order_id: string;
-  cart_id: string;
-  status: string;
-  subtotal: number;
-  currency: string;
-  items: CartItem[];
-  created_at?: string;
-}
-
-// ReviewEntry is per-line-item, client-only state for the post-checkout
-// "Rate this order" prompt (PLAN-02-CATALOG-AND-COMMERCE.md §2) --
-// keyed by product_id in the `reviews` state below, one entry per item
-// in the just-completed order.
-interface ReviewEntry {
-  rating: number;
-  comment: string;
-  submitting: boolean;
-  submitted: boolean;
-  error: string;
-}
-
-interface Payment {
-  payment_id: string;
-  order_id: string;
-  provider_order_id: string;
-  amount: number;
-  currency: string;
-  status: string;
-  key_id: string;
-}
-
-interface Recovery {
-  order_id: string;
-  payment_status: string;
-  attempt_status: string;
-  error_code: string;
-  error_description: string;
-  safe_message: string;
-  reservation_expires_at: string;
-  retry_allowed: boolean;
-  cart: { subtotal: number; currency: string; items: { product_id: string; variant_id: string; title: string; quantity: number; unit_price: number; total: number }[] };
-  removable_items: string[];
-}
-
-interface Mandate {
-  mandate_id: string;
-}
-
-interface Decision {
-  decision: string;
-  authorization_id: string;
-  approval_request_id: string;
-  reason: string;
-  level: number;
-  action_id?: string;
-}
-
-// RunStep/Run mirror backend/policy/replay.go's GET /runs/{id} response --
-// the audit trail (proposed -> risk-assessed -> policy-evaluated ->
-// authorized) for the exact action this checkout ran. See
-// files/AUTH.md.
-interface RunStep {
-  stage: string;
-  detail: string;
-  timestamp: string;
-}
-
-interface Run {
-  run_id: string;
-  action: string;
-  amount: number;
-  currency: string;
-  decision: string;
-  reason?: string;
-  failed_check?: string;
-  authorization_id?: string;
-  authorization_status?: string;
-  created_at: string;
-  steps?: RunStep[];
-}
-
-interface ApprovalRequestDetail {
-  approval_request_id: string;
-  mandate_id: string;
-  action: string;
-  amount: number;
-  currency: string;
-  merchant: string;
-  items: string[];
-  cart_id: string;
-  policy_version: string;
-  risk_score: number;
-  level: number;
-  status: string;
-  authorization_id: string;
-  reason: string;
-}
-
-interface Intent {
-  budget: number;
-  category: string;
-  priority: string;
-  recipient: string;
-  clarify?: string;
-}
-
-interface AlternativeProduct {
-  product_id: string;
-  title: string;
-  price: number;
-  currency: string;
-}
-
-// RunStep mirrors backend/policy's RunStep JSON shape (stage/detail/
-// timestamp) -- the same audit-trail entry type dashboard/runs/page.tsx
-// already renders. reasoning_trail below carries it, but this page
-// doesn't render it itself (item 16, PLAN-01-AGENTIC-CORE.md §4: "no
-// new UI surface needed" -- a buyer wanting the full trail can already
-// open the same run from the merchant dashboard).
-interface RunStep {
-  stage: string;
-  detail: string;
-  timestamp: string;
-}
-
-interface CheckoutPlan {
-  intent: Intent;
-  proposal: {
-    action: string;
-    amount: number;
-    currency: string;
-    merchant: string;
-    items: string[];
-  };
-  selected_product_id: string;
-  reasoning: string;
-  alternatives?: AlternativeProduct[];
-  reasoning_trail?: RunStep[];
-}
-
-// One turn of the buyer <-> agent transcript, mirrored client-side for
-// display only -- the actual conversation memory that makes a follow-up
-// like "no, for my brother instead" work lives server-side, keyed by
-// cart_id (see backend/agents/conversation.go), so it survives even if
-// this client-side list is empty after a reload.
-interface AgentChatMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
-interface SuggestedProduct {
-  product_id: string;
-  title: string;
-  price: number;
-  currency: string;
-}
-
-interface SuggestionDetail {
-  expected_value: number;
-  reason: string;
-}
-
-interface SuggestResponse {
-  available: boolean;
-  recommendation?: SuggestionDetail;
-  product?: SuggestedProduct;
-  message?: string;
-}
-
-const MERCHANT_ID = "merchant_001";
-
-// Each order uses a fresh cart ID. A cart is single-use: once it is
-// checked out it is marked `checked_out` and can never be reused, so a
-// fixed ID would leave the UI stuck on a stale, already-checked-out cart.
-function freshCartId() {
-  return `cart_${Date.now()}`;
-}
-
-// Persisted so a hard reload restores whatever the buyer was still
-// shopping (see the restore/persist effects below). Only ever holds an
-// ACTIVE cart's ID -- GET /carts/{id} now 404s for a checked-out cart
-// (backend/commerce/cart/service.go), so a stale ID from a completed
-// order is never resurrected.
-const CART_STORAGE_KEY = "commerceos_cart_id";
-
-type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed" | "policy_rejected" | "orders";
-
-// variantLabel derives a short, human label for a variant picker option
-// (item 10). It checks the variant's OWN attributes first (color,
-// length_m, coverage_years -- the only label-bearing keys any seeded
-// variant currently uses). A "-default" variant seeded before item 10
-// existed carries none of these on itself (e.g. AppleCare's original
-// 2-year row, the cable's original 1m row) -- rather than edit those
-// already-seeded rows, this falls back to the same keys on the PARENT
-// PRODUCT's own attributes, which already had them. "Standard" is the
-// last resort for a product with no differentiating attributes at all.
-function variantLabel(variant: ProductVariant, product: Product): string {
-  const attrs = variant.attributes ?? {};
-  const color = attrs["color"];
-  if (typeof color === "string") return color[0].toUpperCase() + color.slice(1);
-
-  const lengthM = attrs["length_m"];
-  if (typeof lengthM === "number") return `${lengthM}m`;
-
-  const coverageYears = attrs["coverage_years"];
-  if (typeof coverageYears === "number") return `${coverageYears}-year`;
-
-  if (variant.variant_id === `${product.product_id}-default`) {
-    const productAttrs = product.attributes ?? {};
-    const fallbackColor = productAttrs["color"];
-    if (typeof fallbackColor === "string") return fallbackColor[0].toUpperCase() + fallbackColor.slice(1);
-
-    const fallbackLength = productAttrs["length_m"];
-    if (typeof fallbackLength === "number") return `${fallbackLength}m`;
-
-    const fallbackCoverage = productAttrs["coverage_years"];
-    if (typeof fallbackCoverage === "number") return `${fallbackCoverage}-year`;
-  }
-
-  return "Standard";
-}
-
-// defaultVariantFor picks which variant addToCart should use when the
-// buyer hasn't picked one explicitly (the three agent/suggestion entry
-// points below all go through this, not the picker). Prefers the exact
-// "<id>-default" entry every product is guaranteed to have; falls back
-// to whatever variant happens to be first if that's somehow missing,
-// and finally to the old hardcoded-guess string so a product object
-// built from a partial agent/suggestion payload (no variants array at
-// all -- see chooseAlternative/acceptSuggestion's synthetic `matched`
-// fallback objects) still resolves to something.
-function defaultVariantFor(product: Product): string {
-  const exact = product.variants?.find((v) => v.variant_id === `${product.product_id}-default`);
-  if (exact) return exact.variant_id;
-  if (product.variants && product.variants.length > 0) return product.variants[0].variant_id;
-  return `${product.product_id}-default`;
-}
-
 export default function CheckoutFlow({
   initialProducts,
 }: {
@@ -351,7 +85,6 @@ export default function CheckoutFlow({
   const [products] = useState<Product[]>(initialProducts);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  type SortOption = "default" | "price_asc" | "price_desc" | "rating" | "availability";
   const [sortBy, setSortBy] = useState<SortOption>("default");
 
   const categories = useMemo(() => {
@@ -986,8 +719,9 @@ export default function CheckoutFlow({
   // suggestion was ever surfaced again for the rest of the session, even
   // though the growth agent kept working correctly the whole time. See
   // files/REALITY-CHECK-2026-08-30.md §3 and
-  // files/PLAN-03-PROACTIVE-GROWTH-AGENT.md §1. renderSuggestionCard()
-  // now renders on both the catalog and cart screens, so this only needs
+  // files/PLAN-03-PROACTIVE-GROWTH-AGENT.md §1. The shared SuggestionCard
+  // component (item 21 split) now renders on both the catalog and cart
+  // screens, so this only needs
   // to decide *when* to fetch, not *where* to show the result.
   useEffect(() => {
     if (cart && cart.items.length > 0) {
@@ -1348,105 +1082,6 @@ export default function CheckoutFlow({
     }
   }
 
-  function formatINR(amount: number) {
-    return `₹${(amount / 100).toFixed(2)}`;
-  }
-
-  // Inline audit-trail panel shown on the complete/failed screens --
-  // P0.4: the buyer sees the same proposed -> risk-assessed ->
-  // policy-evaluated -> authorized timeline a merchant operator would see
-  // in the dashboard's Runs tab, for the exact action their checkout ran.
-  function renderAuditTrail() {
-    if (!runId) return null;
-    return (
-      <div className="mt-6 rounded-xl border border-slate-200 p-5">
-        <p className="text-sm font-semibold text-slate-900">Audit trail</p>
-        <p className="mt-1 text-xs text-slate-500">
-          Every step the policy engine took for this action, reconstructed
-          from the persisted audit log (run {runId}).
-        </p>
-        {runLoading && (
-          <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-5/6" />
-            <Skeleton className="h-3 w-2/3" />
-          </div>
-        )}
-        {run && run.steps && run.steps.length > 0 && (
-          <ul className="mt-3 space-y-3 border-t border-slate-100 pt-3">
-            {run.steps.map((s, i) => (
-              <li key={i} className="flex items-start gap-3 text-xs">
-                <span className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-slate-400" />
-                <div>
-                  <p className="font-medium capitalize text-slate-700">
-                    {s.stage.replace(/_/g, " ")}
-                  </p>
-                  <p className="text-slate-500">{s.detail}</p>
-                  <p className="mt-0.5 text-slate-400">
-                    {new Date(s.timestamp).toLocaleTimeString()}
-                  </p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    );
-  }
-
-  // Cross-sell card, shared between the catalog and cart screens so a
-  // computed suggestion stays visible regardless of which one the buyer
-  // is on -- previously this only rendered inside the cart screen, so a
-  // buyer who went back to "Keep shopping" (or arrived at a suggestion
-  // via the agent chat, which also lands them on the cart screen only
-  // momentarily) had no way to see it again without navigating back into
-  // the cart. See files/PLAN-03-PROACTIVE-GROWTH-AGENT.md §1-2.
-  function renderSuggestionCard() {
-    if (suggestion?.available && suggestion.product) {
-      return (
-        <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-5">
-          <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
-            Agent suggests
-          </p>
-          <p className="mt-1 font-semibold text-slate-900">
-            Add {suggestion.product.title} -- {formatINR(suggestion.product.price)}
-          </p>
-          {suggestion.recommendation && (
-            <p className="mt-1 text-sm text-indigo-800">{suggestion.recommendation.reason}</p>
-          )}
-          <div className="mt-3 flex gap-3">
-            <button
-              onClick={acceptSuggestion}
-              disabled={loading}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-            >
-              Add to cart
-            </button>
-            <button
-              onClick={dismissSuggestion}
-              className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-800 hover:bg-indigo-100"
-            >
-              No thanks
-            </button>
-          </div>
-        </div>
-      );
-    }
-    if (suggestionLoading) {
-      return (
-        <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-5">
-          <Skeleton className="h-3 w-28" />
-          <Skeleton className="mt-2 h-4 w-2/3" />
-          <div className="mt-3 flex gap-3">
-            <Skeleton className="h-9 w-28" />
-            <Skeleton className="h-9 w-24" />
-          </div>
-        </div>
-      );
-    }
-    return null;
-  }
-
   return (
     <main className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-3xl px-6 py-10">
@@ -1475,361 +1110,68 @@ export default function CheckoutFlow({
 
         {step === "catalog" && (
           <section>
-            <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 p-5">
-              <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-500">
-                Ask the shopping agent
-              </h2>
-              <p className="mb-3 text-sm text-slate-600">
-                Say what you want and the budget. It reads the catalog and proposes one item -- it never places an order itself; the normal checkout below still runs.
-              </p>
+            <AgentChatPanel
+              agentHistory={agentHistory}
+              agentPrompt={agentPrompt}
+              onAgentPromptChange={setAgentPrompt}
+              onAsk={askAgent}
+              agentLoading={agentLoading}
+              agentError={agentError}
+              agentPlan={agentPlan}
+              loading={loading}
+              onAcceptPlan={acceptAgentPlan}
+              onDismissPlan={() => setAgentPlan(null)}
+              onChooseAlternative={chooseAlternative}
+            />
 
-              {agentHistory.length > 0 && (
-                <div className="mb-3 max-h-40 space-y-2 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-3">
-                  {agentHistory.map((msg, i) => (
-                    <p key={i} className="text-sm">
-                      <span className="font-medium text-zinc-500">
-                        {msg.role === "user" ? "You: " : "Agent: "}
-                      </span>
-                      <span className="text-zinc-700">{msg.content}</span>
-                    </p>
-                  ))}
-                </div>
-              )}
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={agentPrompt}
-                  onChange={(e) => setAgentPrompt(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") askAgent();
-                  }}
-                  placeholder="earbuds for my sister, budget 25000, good battery life"
-                  className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
-                  disabled={agentLoading}
-                />
-                <button
-                  onClick={askAgent}
-                  disabled={agentLoading || !agentPrompt.trim()}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-                >
-                  {agentLoading ? "Thinking..." : "Ask"}
-                </button>
-              </div>
-
-              {agentError && <p className="mt-3 text-sm text-amber-700">{agentError}</p>}
-
-              {agentLoading && (
-                <div className="mt-4 rounded-lg border border-slate-300 bg-white p-4">
-                  <Skeleton className="h-3 w-24" />
-                  <Skeleton className="mt-3 h-4 w-full" />
-                  <div className="mt-3 flex gap-3">
-                    <Skeleton className="h-9 w-28" />
-                    <Skeleton className="h-9 w-28" />
-                  </div>
-                </div>
-              )}
-
-              {agentPlan && (
-                <div className="mt-4 rounded-lg border border-slate-300 bg-white p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                    Agent proposes
-                  </p>
-                  <p className="mt-1 text-sm text-slate-700">{agentPlan.reasoning}</p>
-                  <div className="mt-3 flex gap-3">
-                    <button
-                      onClick={acceptAgentPlan}
-                      disabled={loading}
-                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-                    >
-                      Add to cart
-                    </button>
-                    <button
-                      onClick={() => setAgentPlan(null)}
-                      className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
-                    >
-                      Never mind
-                    </button>
-                  </div>
-                  {agentPlan.alternatives && agentPlan.alternatives.length > 0 && (
-                    <div className="mt-3 border-t border-zinc-100 pt-3">
-                      <p className="text-xs text-zinc-500">Or:</p>
-                      <ul className="mt-1 space-y-1">
-                        {agentPlan.alternatives.map((alt) => (
-                          <li key={alt.product_id}>
-                            <button
-                              onClick={() => chooseAlternative(alt)}
-                              disabled={loading}
-                              className="text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 disabled:opacity-50"
-                            >
-                              {alt.title} -- {formatINR(alt.price)}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {renderSuggestionCard()}
+            <SuggestionCard
+              suggestion={suggestion}
+              suggestionLoading={suggestionLoading}
+              loading={loading}
+              onAccept={acceptSuggestion}
+              onDismiss={dismissSuggestion}
+            />
 
             <h2 className="mb-4 text-lg font-semibold text-slate-900">
               Browse Catalog
             </h2>
-            {products.length === 0 ? (
-              <p className="text-sm text-slate-500">
-                No products available. Ensure the Commerce Service is running
-                and the catalog is seeded.
-              </p>
-            ) : (
-              <>
-                <div className="mb-4 space-y-3">
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search by name or feature..."
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
-                  />
-                  <div className="flex flex-wrap items-center gap-2">
-                    {categories.map((category) => (
-                      <button
-                        key={category}
-                        onClick={() => setSelectedCategory((current) => (current === category ? null : category))}
-                        className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
-                          selectedCategory === category
-                            ? "border-black bg-black text-white"
-                            : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
-                        }`}
-                      >
-                        {category.replace(/_/g, " ")}
-                      </button>
-                    ))}
-                    <label className="ml-auto flex items-center gap-2 text-sm text-slate-500">
-                      Sort by
-                      <select
-                        value={sortBy}
-                        onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-                        className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none"
-                      >
-                        <option value="default">Featured</option>
-                        <option value="price_asc">Price: low to high</option>
-                        <option value="price_desc">Price: high to low</option>
-                        <option value="rating">Rating</option>
-                        <option value="availability">Availability</option>
-                      </select>
-                    </label>
-                  </div>
-                </div>
-
-                {filteredProducts.length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    No products match your search or filter.
-                  </p>
-                ) : (
-                  <ul className="divide-y divide-slate-200">
-                    {filteredProducts.map((product) => {
-                  // Only a genuine differentiator (>1 variant) gets a
-                  // picker rendered -- a product with just its own
-                  // "<id>-default" entry shows the plain row exactly as
-                  // before item 10.
-                  const hasVariants = !!product.variants && product.variants.length > 1;
-                  const activeVariantId = selectedVariant[product.product_id] ?? defaultVariantFor(product);
-                  const activeVariant = product.variants?.find((v) => v.variant_id === activeVariantId);
-                  const displayPrice = activeVariant?.price.amount ?? product.price.amount;
-                  const displayAvailability = activeVariant?.availability ?? product.availability;
-
-                  const isExpanded = expandedProductId === product.product_id;
-
-                  return (
-                    <li key={product.product_id} className="py-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <button
-                            onClick={() => toggleProductDetail(product.product_id)}
-                            className="text-left font-semibold text-slate-900 underline-offset-2 hover:underline"
-                          >
-                            {product.title}
-                          </button>
-                          <p className="text-sm text-slate-500">
-                            {formatINR(displayPrice)} · {displayAvailability} in stock
-                            {!!product.review_count && (
-                              <>
-                                {" "}
-                                · <span className="text-amber-600">★ {product.average_rating?.toFixed(1)}</span>{" "}
-                                ({product.review_count})
-                              </>
-                            )}
-                          </p>
-                          {hasVariants && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {product.variants!.map((variant) => (
-                                <button
-                                  key={variant.variant_id}
-                                  onClick={() =>
-                                    setSelectedVariant((sel) => ({ ...sel, [product.product_id]: variant.variant_id }))
-                                  }
-                                  disabled={variant.availability === 0}
-                                  className={`rounded-full border px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                                    variant.variant_id === activeVariantId
-                                      ? "border-black bg-black text-white"
-                                      : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
-                                  }`}
-                                >
-                                  {variantLabel(variant, product)}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        <button
-                          onClick={() => addToCart(product, activeVariantId)}
-                          disabled={loading}
-                          className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
-                        >
-                          Add to cart
-                        </button>
-                      </div>
-
-                      {isExpanded && (
-                        <div className="mt-3 rounded-lg bg-slate-50 p-4 text-sm text-slate-600">
-                          {!!product.features?.length && (
-                            <div className="flex flex-wrap gap-1.5">
-                              {product.features.map((feature) => (
-                                <span
-                                  key={feature}
-                                  className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs text-slate-600"
-                                >
-                                  {feature.replace(/_/g, " ")}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          <p className="mt-3">
-                            {product.return_policy?.days
-                              ? `${product.return_policy.days}-day returns`
-                              : "No returns"}
-                            {!!product.shipping?.estimated_days && (
-                              <> · ships in {product.shipping.estimated_days} day{product.shipping.estimated_days > 1 ? "s" : ""}</>
-                            )}
-                          </p>
-
-                          {detailSuggestionLoading && (
-                            <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-                              <Skeleton className="h-3 w-24" />
-                              <Skeleton className="mt-2 h-4 w-1/2" />
-                            </div>
-                          )}
-                          {!detailSuggestionLoading && detailSuggestion?.product && (
-                            <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-                              <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
-                                Frequently paired with
-                              </p>
-                              <div className="mt-1 flex items-center justify-between">
-                                <p className="text-sm text-slate-900">
-                                  {detailSuggestion.product.title} -- {formatINR(detailSuggestion.product.price)}
-                                </p>
-                                <button
-                                  onClick={acceptDetailSuggestion}
-                                  disabled={loading}
-                                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                                >
-                                  Add
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </li>
-                  );
-                    })}
-                  </ul>
-                )}
-              </>
-            )}
+            <ProductList
+              products={products}
+              filteredProducts={filteredProducts}
+              categories={categories}
+              searchQuery={searchQuery}
+              setSearchQuery={setSearchQuery}
+              selectedCategory={selectedCategory}
+              setSelectedCategory={setSelectedCategory}
+              sortBy={sortBy}
+              setSortBy={setSortBy}
+              selectedVariant={selectedVariant}
+              setSelectedVariant={setSelectedVariant}
+              expandedProductId={expandedProductId}
+              onToggleDetail={toggleProductDetail}
+              detailSuggestion={detailSuggestion}
+              detailSuggestionLoading={detailSuggestionLoading}
+              onAcceptDetailSuggestion={acceptDetailSuggestion}
+              onAddToCart={addToCart}
+              loading={loading}
+            />
           </section>
         )}
 
         {step === "cart" && cart && (
           <section>
-            <h2 className="mb-4 text-lg font-semibold text-slate-900">
-              Your Cart
-            </h2>
-            <ul className="divide-y divide-slate-200">
-              {cart.items.map((item) => (
-                <li
-                  key={item.variant_id}
-                  className="flex items-center justify-between py-4"
-                >
-                  <div>
-                    <p className="font-semibold text-slate-900">{item.title}</p>
-                    <p className="text-sm text-slate-500">
-                      {formatINR(item.unit_price)} each
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => updateItemQuantity(item.variant_id, item.quantity - 1)}
-                        disabled={loading || item.quantity <= 1}
-                        aria-label={`Decrease quantity of ${item.title}`}
-                        className="h-7 w-7 rounded border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-                      >
-                        −
-                      </button>
-                      <span className="w-5 text-center text-sm font-medium text-slate-900">
-                        {item.quantity}
-                      </span>
-                      <button
-                        onClick={() => updateItemQuantity(item.variant_id, item.quantity + 1)}
-                        disabled={loading}
-                        aria-label={`Increase quantity of ${item.title}`}
-                        className="h-7 w-7 rounded border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-                      >
-                        +
-                      </button>
-                    </div>
-                    <p className="w-20 text-right font-semibold text-slate-900">
-                      {formatINR(item.total)}
-                    </p>
-                    <button
-                      onClick={() => removeCartItem(item.variant_id)}
-                      disabled={loading}
-                      className="text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-40"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-
-            {renderSuggestionCard()}
-
-            <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 p-5">
-              <p className="font-semibold text-slate-900">Subtotal</p>
-              <p className="text-lg font-semibold text-slate-900">
-                {formatINR(cart.subtotal)}
-              </p>
-            </div>
-            <div className="mt-6 flex gap-3">
-              <button
-                onClick={() => setStep("catalog")}
-                className="rounded-lg border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
-              >
-                Keep shopping
-              </button>
-              <button
-                onClick={proceedToCheckout}
-                disabled={loading || cart.items.length === 0}
-                className="rounded-lg bg-black px-5 py-3 font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
-              >
-                Checkout
-              </button>
-            </div>
+            <CartPanel
+              cart={cart}
+              loading={loading}
+              onUpdateQuantity={updateItemQuantity}
+              onRemoveItem={removeCartItem}
+              onKeepShopping={() => setStep("catalog")}
+              onProceedToCheckout={proceedToCheckout}
+              suggestion={suggestion}
+              suggestionLoading={suggestionLoading}
+              onAcceptSuggestion={acceptSuggestion}
+              onDismissSuggestion={dismissSuggestion}
+            />
           </section>
         )}
 
@@ -2022,7 +1364,7 @@ export default function CheckoutFlow({
 				</p>
 			</div>
 
-			{renderAuditTrail()}
+			<AuditTrailPanel runId={runId} run={run} runLoading={runLoading} />
 
 			{(payment || (recovery && recovery.cart.subtotal > 0)) && (
 				<div className="mt-6 rounded-xl border border-slate-200 p-5">
@@ -2174,7 +1516,7 @@ export default function CheckoutFlow({
                 Order ID: {payment.order_id}
               </p>
             </div>
-            {renderAuditTrail()}
+            <AuditTrailPanel runId={runId} run={run} runLoading={runLoading} />
             {order && order.items.length > 0 && (
               <div className="mt-6 rounded-xl border border-slate-200 p-6">
                 <p className="text-sm font-semibold text-slate-900">Rate your order</p>
@@ -2288,64 +1630,12 @@ export default function CheckoutFlow({
 
         {step === "orders" && (
           <section>
-            {ordersLoading && (
-              <div className="space-y-4">
-                {[0, 1, 2].map((i) => (
-                  <Skeleton key={i} className="h-24 w-full" />
-                ))}
-              </div>
-            )}
-            {!ordersLoading && ordersError && (
-              <p className="text-sm text-rose-700">
-                {ordersError} --{" "}
-                <button
-                  onClick={fetchOrders}
-                  className="underline underline-offset-2 hover:text-rose-900"
-                >
-                  try again
-                </button>
-              </p>
-            )}
-            {!ordersLoading && !ordersError && orders.length === 0 && (
-              <p className="text-sm text-slate-500">
-                No orders yet -- completed checkouts will show up here.
-              </p>
-            )}
-            <ul className="space-y-4">
-              {orders.map((o) => (
-                <li key={o.order_id} className="rounded-xl border border-slate-200 p-5">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="font-semibold text-slate-900">{o.order_id}</p>
-                      {o.created_at && (
-                        <p className="text-xs text-slate-500">
-                          {new Date(o.created_at).toLocaleString()}
-                        </p>
-                      )}
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                        {o.status}
-                      </p>
-                      <p className="font-semibold text-slate-900">{formatINR(o.subtotal)}</p>
-                    </div>
-                  </div>
-                  <ul className="mt-3 divide-y divide-slate-100 border-t border-slate-100 pt-3">
-                    {o.items.map((item) => (
-                      <li
-                        key={item.variant_id}
-                        className="flex items-center justify-between py-1.5 text-sm"
-                      >
-                        <span className="text-slate-700">
-                          {item.title} × {item.quantity}
-                        </span>
-                        <span className="text-slate-500">{formatINR(item.total)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ul>
+            <OrderHistoryPanel
+              ordersLoading={ordersLoading}
+              ordersError={ordersError}
+              orders={orders}
+              onRetry={fetchOrders}
+            />
           </section>
         )}
 
