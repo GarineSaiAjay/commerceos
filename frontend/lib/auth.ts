@@ -37,11 +37,14 @@ export function isAuthenticated(): boolean {
   return getToken() !== null;
 }
 
+export const AUTH_CHANGED_EVENT = "commerceos:auth-changed";
+
 function setSession(token: string, expiresInSeconds: number, email: string) {
   if (!isBrowser()) return;
   window.localStorage.setItem(TOKEN_KEY, token);
   window.localStorage.setItem(EXPIRES_KEY, String(Date.now() + expiresInSeconds * 1000));
   window.localStorage.setItem(EMAIL_KEY, email);
+  window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
 }
 
 export function clearSession() {
@@ -49,6 +52,7 @@ export function clearSession() {
   window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(EXPIRES_KEY);
   window.localStorage.removeItem(EMAIL_KEY);
+  window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
 }
 
 type LoginResponse = {
