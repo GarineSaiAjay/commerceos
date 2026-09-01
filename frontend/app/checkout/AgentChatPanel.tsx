@@ -71,6 +71,7 @@ export function AgentChatPanel({
             if (e.key === "Enter") onAsk();
           }}
           placeholder="earbuds for my sister, budget 25000, good battery life"
+          aria-label="Message the shopping agent"
           className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
           disabled={agentLoading}
         />
@@ -83,60 +84,72 @@ export function AgentChatPanel({
         </button>
       </div>
 
-      {agentError && <p className="mt-3 text-sm text-amber-700">{agentError}</p>}
+      {/* item 28 (P2, PLAN-04-UI-UX-AND-LATENCY.md §A5): "form inputs
+          like the agent prompt box should gain aria-live on the
+          response region so screen readers announce the agent's
+          proposal." The live region has to already exist in the
+          accessibility tree BEFORE its content changes for most screen
+          readers to reliably announce the change -- a <div
+          aria-live="polite"> that itself only gets inserted at the
+          same moment as the content isn't guaranteed to be picked up.
+          So this wrapper renders unconditionally; only what's inside
+          it (error / loading / proposal) is conditional. */}
+      <div aria-live="polite" aria-atomic="true">
+        {agentError && <p className="mt-3 text-sm text-amber-700">{agentError}</p>}
 
-      {agentLoading && (
-        <div className="mt-4 rounded-lg border border-slate-300 bg-white p-4">
-          <Skeleton className="h-3 w-24" />
-          <Skeleton className="mt-3 h-4 w-full" />
-          <div className="mt-3 flex gap-3">
-            <Skeleton className="h-9 w-28" />
-            <Skeleton className="h-9 w-28" />
-          </div>
-        </div>
-      )}
-
-      {agentPlan && (
-        <div className="mt-4 rounded-lg border border-slate-300 bg-white p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-            Agent proposes
-          </p>
-          <p className="mt-1 text-sm text-slate-700">{agentPlan.reasoning}</p>
-          <div className="mt-3 flex gap-3">
-            <button
-              onClick={onAcceptPlan}
-              disabled={loading}
-              className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-            >
-              Add to cart
-            </button>
-            <button
-              onClick={onDismissPlan}
-              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
-            >
-              Never mind
-            </button>
-          </div>
-          {agentPlan.alternatives && agentPlan.alternatives.length > 0 && (
-            <div className="mt-3 border-t border-zinc-100 pt-3">
-              <p className="text-xs text-zinc-500">Or:</p>
-              <ul className="mt-1 space-y-1">
-                {agentPlan.alternatives.map((alt) => (
-                  <li key={alt.product_id}>
-                    <button
-                      onClick={() => onChooseAlternative(alt)}
-                      disabled={loading}
-                      className="text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 disabled:opacity-50"
-                    >
-                      {alt.title} -- {formatINR(alt.price)}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+        {agentLoading && (
+          <div className="mt-4 rounded-lg border border-slate-300 bg-white p-4">
+            <Skeleton className="h-3 w-24" />
+            <Skeleton className="mt-3 h-4 w-full" />
+            <div className="mt-3 flex gap-3">
+              <Skeleton className="h-9 w-28" />
+              <Skeleton className="h-9 w-28" />
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+
+        {agentPlan && (
+          <div className="mt-4 animate-fade-in rounded-lg border border-slate-300 bg-white p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Agent proposes
+            </p>
+            <p className="mt-1 text-sm text-slate-700">{agentPlan.reasoning}</p>
+            <div className="mt-3 flex gap-3">
+              <button
+                onClick={onAcceptPlan}
+                disabled={loading}
+                className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+              >
+                Add to cart
+              </button>
+              <button
+                onClick={onDismissPlan}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Never mind
+              </button>
+            </div>
+            {agentPlan.alternatives && agentPlan.alternatives.length > 0 && (
+              <div className="mt-3 border-t border-zinc-100 pt-3">
+                <p className="text-xs text-zinc-500">Or:</p>
+                <ul className="mt-1 space-y-1">
+                  {agentPlan.alternatives.map((alt) => (
+                    <li key={alt.product_id}>
+                      <button
+                        onClick={() => onChooseAlternative(alt)}
+                        disabled={loading}
+                        className="text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 disabled:opacity-50"
+                      >
+                        {alt.title} -- {formatINR(alt.price)}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

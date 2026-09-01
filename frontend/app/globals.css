@@ -30,3 +30,32 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Item 28 (P2, PLAN-04-UI-UX-AND-LATENCY.md section A4): "Add a single
+   consistent transition (150ms ease, matching Tailwind's default) to:
+   suggestion card enter/exit, agent plan card enter, ...". A plain
+   Tailwind `transition` utility (already used elsewhere in this app,
+   e.g. checkout.tsx's hover states) only animates a property change on
+   an element already in the DOM -- it does nothing the first time an
+   element mounts, which is what "enter" means for a conditionally-
+   rendered card. A CSS @keyframes animation, unlike a transition,
+   plays automatically the instant an element is inserted into the
+   DOM, so this is the plain-CSS (still "no animation library needed")
+   way to get a real entrance animation with zero JS. Small and
+   purposeful on purpose: opacity + a 4px rise, 150ms, nothing more.
+   Applied via .animate-fade-in in frontend/app/checkout/
+   SuggestionCard.tsx and AgentChatPanel.tsx. */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in-up 150ms ease;
+}
