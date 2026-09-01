@@ -68,6 +68,11 @@
       excessive_amount).
       Policy: BLOCKED at amount_ceiling — zero Razorpay calls made.
       Flip to /dashboard/safety and show the live call-count delta is 0.
+      (item 36: the same evidence -- audit-chain status, call counter,
+      one-click 14-attack suite -- is also at the public /trust page,
+      no operator login required. If a judge is driving the demo
+      themselves rather than watching you present, point them there
+      instead of the gated dashboard.)
 
 4:00  Failure recovery
       Force a payment.failed webhook (Test Mode failure card, or the

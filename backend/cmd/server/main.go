@@ -27,6 +27,7 @@ import (
 	"github.com/garinesaiajay/commerceos/policy"
 	"github.com/garinesaiajay/commerceos/safety"
 	"github.com/garinesaiajay/commerceos/tools"
+	"github.com/garinesaiajay/commerceos/trust"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -415,8 +416,24 @@ func main() {
 
 	// Phase 8: safety / red-team — the runner drives the real policy
 	// pipeline and reports provider-call deltas from the real counter.
+	// safetyStore is kept in its own variable (rather than passed inline
+	// to safety.NewHandler the way it used to be) because item 36's
+	// trustHandler below (backend/trust/handler.go) needs the exact same
+	// *safety.Store to read/write evaluations through the public
+	// /trust/run-suite endpoint -- one store instance, shared by both the
+	// gated /safety/* handler and the public /trust/* handler, not two
+	// separate ones racing to write the same table.
+	safetyStore := safety.NewStore(dbPool)
 	safetyRunner := safety.NewRunner(policyService, razorpayAdapter)
-	safetyHandler := safety.NewHandler(safetyRunner, safety.NewStore(dbPool))
+	safetyHandler := safety.NewHandler(safetyRunner, safetyStore)
+
+	// item 36 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §3): the public,
+	// judge-friendly counterpart to /audit/verify and /safety/evaluations/run
+	// above -- same auditVerifier, same razorpayAdapter call counter, same
+	// safetyRunner/safetyStore, wrapped by trust.Handler instead of
+	// authService.RequireOperator. See backend/trust/handler.go's package
+	// doc comment for why this is deliberately unauthenticated.
+	trustHandler := trust.NewHandler(auditVerifier, razorpayAdapter, safetyRunner, safetyStore)
 
 	paymentService := payment.NewServiceWithAuthorizer(
 		razorpayAdapter,
@@ -870,6 +887,19 @@ func main() {
 	commerceMux.HandleFunc("/safety/evaluations/run", authService.RequireOperator(safetyHandler.RunSuite))
 	commerceMux.HandleFunc("/safety/evaluations/", authService.RequireOperator(safetyHandler.GetEvaluation))
 	commerceMux.HandleFunc("/safety/attacks/", authService.RequireOperator(safetyHandler.RunAttack))
+
+	// item 36 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §3): public
+	// /trust/* -- deliberately NOT wrapped in authService.RequireOperator,
+	// unlike every /safety/* route directly above. The whole point is that
+	// a judge (or a judge's own tooling) with no operator credentials can
+	// see the audit-chain integrity status, the live Razorpay call
+	// counter, and trigger the same 14-attack suite the gated dashboard
+	// runs, without ever logging in. See trust.Handler's own doc comments
+	// for why this is safe to expose (no new evidence, no new capability)
+	// and how RunSuite's write is bounded (a 10s shared cooldown, not a
+	// full rate limiter).
+	commerceMux.HandleFunc("/trust/summary", trustHandler.Summary)
+	commerceMux.HandleFunc("/trust/run-suite", trustHandler.RunSuite)
 
 	// Replay: reconstructed agent runs. Listing every run is merchant-only;
 	// fetching a single run by its own ID stays reachable without login so
