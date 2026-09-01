@@ -139,6 +139,12 @@ export default function CheckoutFlow({
   	// which stays as the fallback when no substitute is available.
   	const [substituteSuggestion, setSubstituteSuggestion] = useState<RejectionRecoverySuggestion | null>(null);
   	const [substituteSuggestionLoading, setSubstituteSuggestionLoading] = useState(false);
+  	// item 28 (P2, PLAN-04-UI-UX-AND-LATENCY.md §A4): "policy-rejection
+  	// screen item removal" -- which item (if any) is mid-removal, so the
+  	// policy_rejected screen's list can fade that one row out while the
+  	// request is in flight instead of it just vanishing the instant the
+  	// new (smaller) order replaces the old one.
+  	const [removingVariantId, setRemovingVariantId] = useState<string | null>(null);
   	const [recovery, setRecovery] = useState<Recovery | null>(null);
   	const [approvalLevel, setApprovalLevel] = useState(0);
   	const [approvalSnapshot, setApprovalSnapshot] = useState<ApprovalRequestDetail | null>(null);
@@ -960,6 +966,7 @@ export default function CheckoutFlow({
 			// new total -- policy is never bypassed for the smaller cart.
 			async function removeAccessoryAndRetry(variantId: string) {
 				if (!order) return;
+				setRemovingVariantId(variantId);
 				setLoading(true);
 				setMessage("Removing item and recomputing your order...");
 				try {
@@ -980,6 +987,7 @@ export default function CheckoutFlow({
 					setMessage(error instanceof Error ? error.message : "Could not remove that item");
 				} finally {
 					setLoading(false);
+					setRemovingVariantId(null);
 				}
 			}
 
@@ -1233,8 +1241,15 @@ export default function CheckoutFlow({
           )}
         </header>
 
+        {/* item 28 (P2, PLAN-04-UI-UX-AND-LATENCY.md §A5) extension:
+            not named explicitly in the plan, but this banner is the
+            single most-reused dynamic status message in the app
+            (every step routes feedback through it -- "Item removed...",
+            "Purchase not authorized...", etc.), so the same "screen
+            readers should hear this" reasoning the plan applies to the
+            agent response region applies here at least as strongly. */}
         {message && (
-          <div className="mb-6 rounded-lg bg-slate-100 p-4 text-sm text-slate-700">
+          <div role="status" aria-live="polite" className="mb-6 rounded-lg bg-slate-100 p-4 text-sm text-slate-700">
             {message}
           </div>
         )}
@@ -1587,7 +1602,12 @@ export default function CheckoutFlow({
 				Payment wasn&apos;t authorized
 			</h2>
 			<div className="rounded-xl border border-rose-200 bg-rose-50 p-5">
-				<p className="text-sm text-rose-900">
+				{/* item 28 (P2, PLAN-04-UI-UX-AND-LATENCY.md §A5) extension:
+				    the single most consequential message on this screen --
+				    role="alert" (implicit aria-live="assertive" + atomic)
+				    so a screen reader announces it immediately rather than
+				    only if the user happens to navigate onto it. */}
+				<p role="alert" className="text-sm text-rose-900">
 					{policyRejectionReason}
 				</p>
 				<p className="mt-2 text-xs text-rose-700">
@@ -1643,7 +1663,12 @@ export default function CheckoutFlow({
 					</p>
 					<ul className="mt-3 divide-y divide-slate-200">
 						{order.items.map((item) => (
-							<li key={item.variant_id} className="flex items-center justify-between py-3">
+							<li
+								key={item.variant_id}
+								className={`flex items-center justify-between py-3 transition-opacity duration-150 ${
+									removingVariantId === item.variant_id ? "opacity-30" : ""
+								}`}
+							>
 								<div>
 									<p className="text-sm font-medium text-slate-900">{item.title}</p>
 									<p className="text-xs text-slate-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
