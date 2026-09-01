@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatINR, formatTime } from "../../../lib/format";
 import { authFetch } from "../../../lib/auth";
+import { downloadFile } from "../../../lib/download";
 
 type Campaign = {
   campaign_id: string;
@@ -74,6 +75,7 @@ export default function CampaignsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [exporting, setExporting] = useState(false);
 
   const [windowDays, setWindowDays] = useState(7);
   const [discountPercent, setDiscountPercent] = useState(15);
@@ -119,6 +121,25 @@ export default function CampaignsPage() {
     }
   }
 
+  // item 27 (P2, PLAN-05-SELLER-DASHBOARD.md section 6): export every
+  // campaign this page is showing as a CSV, via the same operator-
+  // scoped GET /campaigns/export the list above reads from -- so this
+  // can never disagree with what's on screen. Reuses the same `error`
+  // state act()'s failures already render, rather than a dedicated
+  // export-only error slot, since both are just "something the
+  // operator clicked on this page failed."
+  async function exportCSV() {
+    setExporting(true);
+    setError("");
+    try {
+      await downloadFile("/campaigns/export", "campaigns.csv");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not export campaigns");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function act(id: string, endpoint: "approve" | "reject") {
     setBusy(id);
     setError("");
@@ -139,14 +160,23 @@ export default function CampaignsPage() {
 
   return (
     <main className="px-5 py-7 sm:px-8 lg:px-10">
-      <header className="border-b border-slate-200 pb-6">
-        <h1 className="text-3xl font-semibold tracking-tight">Campaigns</h1>
-        <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">
-          Bounded discount campaigns proposed from real rejected cross-sell demand (customers the
-          growth agent wanted to upsell but couldn&apos;t, due to budget). Every proposal is sized to
-          observed volume and gated by a deterministic policy engine, then requires your approval
-          before it can discount anything at checkout.
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 pb-6">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Campaigns</h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">
+            Bounded discount campaigns proposed from real rejected cross-sell demand (customers the
+            growth agent wanted to upsell but couldn&apos;t, due to budget). Every proposal is sized to
+            observed volume and gated by a deterministic policy engine, then requires your approval
+            before it can discount anything at checkout.
+          </p>
+        </div>
+        <button
+          onClick={exportCSV}
+          disabled={exporting || campaigns.length === 0}
+          className="shrink-0 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {exporting ? "Exporting…" : "Export CSV"}
+        </button>
       </header>
 
       <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

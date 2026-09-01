@@ -771,6 +771,12 @@ func main() {
 	// uses RequireOperator rather than OptionalOperator.
 	commerceMux.HandleFunc("/campaigns/propose", authService.RequireOperator(campaignHandler.Propose))
 	commerceMux.HandleFunc("/campaigns", authService.RequireOperator(campaignHandler.List))
+	// item 27 (P2, PLAN-05-SELLER-DASHBOARD.md section 6): CSV export of
+	// campaigns -- registered here as its own exact route, exactly like
+	// "/campaigns/propose" immediately above, so it's never shadowed by
+	// or confused with the "/campaigns/" {id}-based subtree registered
+	// below (see ExportCSV's own doc comment in campaign/handler.go).
+	commerceMux.HandleFunc("/campaigns/export", authService.RequireOperator(campaignHandler.ExportCSV))
 	commerceMux.HandleFunc("/campaigns/", authService.RequireOperator(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/campaigns/")
 		path = strings.Trim(path, "/")
@@ -942,6 +948,17 @@ func main() {
 	commerceMux.HandleFunc(
 		"/dashboard/orders",
 		authService.RequireOperator(orderHandler.ListOrdersForOperator),
+	)
+
+	// item 27 (P2, PLAN-05-SELLER-DASHBOARD.md section 6): CSV export of
+	// orders, same operator scoping as the list route directly above --
+	// registered as its own path rather than a query parameter
+	// (?format=csv) on /dashboard/orders so the browser's native
+	// download handling (Content-Disposition: attachment) applies
+	// cleanly to a plain GET.
+	commerceMux.HandleFunc(
+		"/dashboard/orders/export",
+		authService.RequireOperator(orderHandler.ExportOrdersCSV),
 	)
 
 	// Phase 7: MCP endpoint
