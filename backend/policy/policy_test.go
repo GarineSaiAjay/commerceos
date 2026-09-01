@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ type fakeRepo struct {
 	authorizations map[string]Authorization
 	evals          []Evaluation
 	config         *PolicyConfig // nil until SaveConfig is called, matching ErrPolicyConfigNotFound's real precondition
+	saveConfigErr  error         // when set, SaveConfig fails instead of writing -- for TestServiceUpdatePolicyConfigLeavesEngineUntouchedOnSaveFailure
 }
 
 func newFakeRepo() *fakeRepo {
@@ -30,6 +32,9 @@ func (r *fakeRepo) GetConfig(ctx context.Context) (PolicyConfig, error) {
 }
 
 func (r *fakeRepo) SaveConfig(ctx context.Context, cfg PolicyConfig, updatedBy string) error {
+	if r.saveConfigErr != nil {
+		return r.saveConfigErr
+	}
 	r.config = &cfg
 	return nil
 }
@@ -469,5 +474,161 @@ func TestRejectedProposalRetryNotBlocked(t *testing.T) {
 	}
 	if second.ApprovalRequestID == "" {
 		t.Fatal("expected an approval request for the retried Level 3 proposal")
+	}
+}
+
+// --- item 25 (P2, PLAN-05-SELLER-DASHBOARD.md §4) coverage ---
+//
+// Engine.Config/UpdateConfig and Service.GetPolicyConfig/
+// UpdatePolicyConfig shipped with item 25 but no test coverage of
+// their own -- every existing test in this file only ever constructs
+// an Engine once via NewEngine and never mutates it afterward, so
+// none of them would have caught a bug in the new mutation path. This
+// section fills that gap: found and fixed as its own small commit
+// before starting item 32, rather than left for later.
+
+func TestEngineUpdateConfigTakesEffectOnNextEvaluate(t *testing.T) {
+	repo := newFakeRepo()
+	// MaximumAmount matches the proposed amount exactly (same convention
+	// checkout.tsx's real POST /policy/mandates call always uses -- see
+	// rejection_recovery.go's own doc comment on this), so once the
+	// ceiling is raised nothing else in the checklist has a reason to
+	// reject this proposal either -- the only thing that changes between
+	// "before" and "after" is UpdateConfig, not some other confound.
+	repo.mandates["mand"] = activeMandate("merchant_001", 6_000_000, time.Now().Add(time.Hour))
+	engine := NewEngine(DefaultConfig(), repo)
+	svc := NewService(engine, NewRiskEngine(), repo)
+
+	action := ProposedAction{
+		Action:   "CREATE_ORDER",
+		Amount:   6_000_000, // above DefaultConfig()'s 3,000,000 ceiling
+		Currency: "INR",
+		Merchant: "merchant_001",
+		Items:    []string{"airpods-pro-2"},
+	}
+
+	before, err := svc.Propose(context.Background(), action, "mand")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Decision != DecisionRejected || before.FailedCheck != CheckAmountCeiling {
+		t.Fatalf("expected REJECTED/amount_ceiling before raising the ceiling, got %s/%s", before.Decision, before.FailedCheck)
+	}
+
+	raised := DefaultConfig()
+	raised.Ceiling = 10_000_000 // ₹100,000 -- comfortably above the 6,000,000 action amount
+	engine.UpdateConfig(raised)
+
+	after, err := svc.Propose(context.Background(), action, "mand")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 6,000,000 paise is Level 3 (routeLevel: > 1,000,000 paise), so this
+	// clears every check and comes back PENDING_HUMAN_APPROVAL, not
+	// REJECTED -- the point either way is that it's no longer rejected at
+	// all, let alone specifically for amount_ceiling.
+	if after.Decision == DecisionRejected {
+		t.Fatalf("expected the raised ceiling to take effect immediately (no longer REJECTED), got %s (%s/%s)", after.Decision, after.FailedCheck, after.Reason)
+	}
+}
+
+func TestEngineUpdateConfigPreservesAllowedProducts(t *testing.T) {
+	original := DefaultConfig()
+	if len(original.AllowedProducts) == 0 {
+		t.Fatal("test assumption broken: DefaultConfig().AllowedProducts is empty")
+	}
+
+	engine := NewEngine(original, newFakeRepo())
+
+	// A caller-supplied config with AllowedProducts left as its zero
+	// value (nil) -- exactly the shape Service.UpdatePolicyConfig's
+	// HTTP request path produces, since AllowedProducts was
+	// deliberately never part of the wire request. UpdateConfig must
+	// never let this null out the real fallback list.
+	engine.UpdateConfig(PolicyConfig{
+		Ceiling:           1_000_000,
+		BudgetTolerance:   0.2,
+		AllowedCurrencies: []string{"INR"},
+		AllowedMerchants:  []string{"merchant_001"},
+	})
+
+	got := engine.Config()
+	if len(got.AllowedProducts) != len(original.AllowedProducts) {
+		t.Fatalf("expected AllowedProducts to survive UpdateConfig untouched (%d items), got %d", len(original.AllowedProducts), len(got.AllowedProducts))
+	}
+	if got.AllowedProducts[0] != original.AllowedProducts[0] {
+		t.Fatalf("expected AllowedProducts to survive UpdateConfig untouched, got %v", got.AllowedProducts)
+	}
+	// The rest of the config DID change, proving this isn't just
+	// silently ignoring the whole UpdateConfig call.
+	if got.Ceiling != 1_000_000 {
+		t.Fatalf("expected Ceiling to have been updated, got %d", got.Ceiling)
+	}
+}
+
+func TestServiceUpdatePolicyConfigPersistsAndAppliesLive(t *testing.T) {
+	repo := newFakeRepo()
+	engine := NewEngine(DefaultConfig(), repo)
+	svc := NewService(engine, NewRiskEngine(), repo)
+
+	newCfg := PolicyConfig{
+		Ceiling:           5_000_000,
+		BudgetTolerance:   0.15,
+		AllowedCurrencies: []string{"INR", "USD"},
+		AllowedMerchants:  []string{"merchant_001", "merchant_002"},
+	}
+
+	updated, err := svc.UpdatePolicyConfig(context.Background(), newCfg, "owner@commerceos.demo")
+	if err != nil {
+		t.Fatalf("UpdatePolicyConfig returned an error: %v", err)
+	}
+	if updated.Ceiling != newCfg.Ceiling || updated.BudgetTolerance != newCfg.BudgetTolerance {
+		t.Fatalf("expected the returned config to reflect the update, got %+v", updated)
+	}
+
+	// Persisted: the repository actually has a row now.
+	if repo.config == nil {
+		t.Fatal("expected SaveConfig to have been called, but repo.config is still nil")
+	}
+	if repo.config.Ceiling != newCfg.Ceiling {
+		t.Fatalf("expected the persisted ceiling to be %d, got %d", newCfg.Ceiling, repo.config.Ceiling)
+	}
+
+	// Applied live: the engine (and therefore GetPolicyConfig) reflects
+	// it immediately, without needing a restart or a fresh GetConfig read.
+	live := svc.GetPolicyConfig()
+	if live.Ceiling != newCfg.Ceiling {
+		t.Fatalf("expected the live engine config to reflect the update, got ceiling %d", live.Ceiling)
+	}
+	if len(live.AllowedCurrencies) != 2 {
+		t.Fatalf("expected 2 allowed currencies live, got %v", live.AllowedCurrencies)
+	}
+}
+
+func TestServiceUpdatePolicyConfigLeavesEngineUntouchedOnSaveFailure(t *testing.T) {
+	repo := newFakeRepo()
+	repo.saveConfigErr = errors.New("simulated database failure")
+	engine := NewEngine(DefaultConfig(), repo)
+	svc := NewService(engine, NewRiskEngine(), repo)
+
+	before := svc.GetPolicyConfig()
+
+	_, err := svc.UpdatePolicyConfig(context.Background(), PolicyConfig{
+		Ceiling:           1,
+		BudgetTolerance:   0,
+		AllowedCurrencies: []string{"INR"},
+		AllowedMerchants:  []string{"merchant_001"},
+	}, "owner@commerceos.demo")
+	if err == nil {
+		t.Fatal("expected UpdatePolicyConfig to return an error when SaveConfig fails")
+	}
+
+	// The whole point: a DB failure must never let an in-memory-only
+	// change take effect. If it did, a settings change could look like
+	// it "took" (the engine enforcing it right now) but silently
+	// vanish on the next restart, since nothing durable exists.
+	after := svc.GetPolicyConfig()
+	if after.Ceiling != before.Ceiling {
+		t.Fatalf("expected the live engine config to be unchanged after a failed save (still %d), got %d", before.Ceiling, after.Ceiling)
 	}
 }
