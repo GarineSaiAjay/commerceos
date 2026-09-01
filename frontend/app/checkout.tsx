@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import dynamic from "next/dynamic";
 import { API_BASE } from "../lib/api";
 // Skeleton (item 22, PLAN-04-UI-UX-AND-LATENCY.md §A3): the dashboard's
 // existing loading-state component, reused here rather than
@@ -35,12 +36,44 @@ import {
   formatINR,
 } from "./checkout/helpers";
 import { bestCandidateClientSide } from "./checkout/optimisticSuggest";
-import { AuditTrailPanel } from "./checkout/AuditTrailPanel";
 import { SuggestionCard } from "./checkout/SuggestionCard";
 import { AgentChatPanel } from "./checkout/AgentChatPanel";
 import { ProductList } from "./checkout/ProductList";
 import { CartPanel } from "./checkout/CartPanel";
-import { OrderHistoryPanel } from "./checkout/OrderHistoryPanel";
+
+// item 30 (P2, PLAN-04-UI-UX-AND-LATENCY.md §B4): "Once checkout.tsx is
+// split into components (A2), lazy-load rarely-used panels
+// (OrderHistoryPanel, AuditTrailPanel) via next/dynamic so the initial
+// catalog-view bundle stays small." Both are only ever reached after
+// at least one round trip (a checkout attempt, or explicitly opening
+// order history) -- never on the initial catalog view every buyer
+// lands on -- so neither needs to be in that first bundle at all.
+// `.then((mod) => mod.X)` is the standard next/dynamic shape for a
+// NAMED export (both files export a plain function, not a default
+// export, matching every other component in this directory).
+//
+// AuditTrailPanel's own top-level `if (!runId) return null` already
+// means it frequently renders nothing at all, so its `loading` is left
+// unset (defaults to null) rather than adding a skeleton that would
+// often just flash and disappear. OrderHistoryPanel IS the entire
+// content of the "orders" step, so its loading fallback mirrors the
+// exact skeleton shape that component itself already shows for its
+// OWN ordersLoading state (three h-24 skeleton rows) -- the chunk-load
+// wait and the data-load wait render identically, so a buyer never
+// sees two different loading treatments back to back.
+const AuditTrailPanel = dynamic(() => import("./checkout/AuditTrailPanel").then((mod) => mod.AuditTrailPanel));
+const OrderHistoryPanel = dynamic(
+  () => import("./checkout/OrderHistoryPanel").then((mod) => mod.OrderHistoryPanel),
+  {
+    loading: () => (
+      <div className="space-y-4">
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-24 w-full" />
+        ))}
+      </div>
+    ),
+  },
+);
 
 declare global {
   interface Window {
