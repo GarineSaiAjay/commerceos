@@ -17,6 +17,16 @@ var ErrApprovalRequestNotFound = errors.New("approval request not found")
 // backend/auth). See files/AUTH.md.
 var ErrApprovalUnauthorized = errors.New("not authorized to act on this approval request")
 
+// ErrPolicyConfigNotFound means no policy_settings row exists yet for
+// this merchant -- expected on a fresh database before db/seeds/
+// 004_policy_settings.sql (or an operator's first save) has run.
+// Service.startup handling (backend/cmd/server/main.go) falls back to
+// policy.DefaultConfig() when it sees this, so the server still starts
+// with correct, working defaults rather than a zero-value PolicyConfig
+// that would reject every purchase (Ceiling 0) or every currency
+// (AllowedCurrencies nil).
+var ErrPolicyConfigNotFound = errors.New("policy config not found")
+
 // Repository persists policy entities.
 type Repository interface {
 	GetMandate(ctx context.Context, id string) (Mandate, error)
@@ -86,6 +96,22 @@ type Repository interface {
 	// UpdateApprovalRequestStatus transitions the request and records the
 	// authorization ID (if issued) and a reason.
 	UpdateApprovalRequestStatus(ctx context.Context, id, status, authorizationID, reason string) error
+
+	// GetConfig returns the persisted policy configuration (item 25, P2,
+	// PLAN-05-SELLER-DASHBOARD.md §4), or ErrPolicyConfigNotFound if no
+	// row has ever been saved. AllowedProducts is never persisted here
+	// (see Engine.UpdateConfig's doc comment) -- callers that need it
+	// use policy.DefaultConfig().AllowedProducts instead.
+	GetConfig(ctx context.Context) (PolicyConfig, error)
+
+	// SaveConfig persists cfg as the live policy configuration,
+	// attributing the change to updatedBy (the operator's email) for
+	// the settings row's own updated_by/updated_at columns -- separate
+	// from, and in addition to, the audit.Writer event
+	// Service.UpdatePolicyConfig also writes. AllowedProducts is not
+	// a column here and is silently ignored on cfg -- see
+	// Engine.UpdateConfig's doc comment for why.
+	SaveConfig(ctx context.Context, cfg PolicyConfig, updatedBy string) error
 }
 
 // RiskAssessment is a persisted risk score for a proposed action.

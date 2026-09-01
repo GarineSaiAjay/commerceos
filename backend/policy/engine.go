@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -21,7 +22,20 @@ type ProductExistsFunc func(ctx context.Context, productID string) (bool, error)
 
 // Engine evaluates proposed actions against the deterministic policy
 // checklist. It never delegates to the LLM.
+//
+// configMu guards config (item 25, ROADMAP-PRIORITIZED.md P2 /
+// PLAN-05-SELLER-DASHBOARD.md §4): before this, config was set once at
+// NewEngine and never touched again, so a bare struct field was safe.
+// Now Service.UpdatePolicyConfig can call UpdateConfig concurrently
+// with in-flight Evaluate calls from live checkouts, so every read/
+// write goes through the mutex. Evaluate takes ONE snapshot (Config())
+// at the top of the call and threads that same copy through every
+// check for the rest of that call -- not a fresh e.config read per
+// check -- so a single proposal is always evaluated against one
+// consistent config, never a torn mix of pre- and post-update values
+// if an operator happens to save new settings mid-evaluation.
 type Engine struct {
+	configMu sync.RWMutex
 	config   PolicyConfig
 	repo     Repository
 	now      func() time.Time
@@ -34,6 +48,31 @@ func NewEngine(config PolicyConfig, repo Repository) *Engine {
 		repo:   repo,
 		now:    time.Now,
 	}
+}
+
+// Config returns a copy of the engine's current live configuration.
+// Safe to call concurrently with Evaluate/UpdateConfig.
+func (e *Engine) Config() PolicyConfig {
+	e.configMu.RLock()
+	defer e.configMu.RUnlock()
+	return e.config
+}
+
+// UpdateConfig replaces the engine's live configuration, taking effect
+// for every Evaluate call that starts after this returns. AllowedProducts
+// is deliberately preserved from the PREVIOUS config, never taken from
+// cfg -- it's a test/campaign-only fallback list today (superseded by a
+// live catalog check via WithProductExistsFunc in production, see
+// checkProducts's doc comment), not a real merchant-editable policy
+// knob, so there is nothing for a caller to legitimately change here.
+// Callers (policy.Service.UpdatePolicyConfig) are expected to persist
+// cfg durably BEFORE calling this -- UpdateConfig itself only ever
+// touches the in-memory copy Evaluate reads from.
+func (e *Engine) UpdateConfig(cfg PolicyConfig) {
+	e.configMu.Lock()
+	defer e.configMu.Unlock()
+	cfg.AllowedProducts = e.config.AllowedProducts
+	e.config = cfg
 }
 
 // WithProductExistsFunc wires a live product-existence check, replacing
@@ -56,12 +95,14 @@ func (e *Engine) Evaluate(
 	mandate Mandate,
 	riskScore float64,
 ) Decision {
+	cfg := e.Config()
+
 	checks := []CheckResult{
-		e.checkMerchantAllowlisted(action.Merchant),
-		e.checkCurrency(action.Currency),
-		e.checkCeiling(action.Amount),
-		e.checkProducts(ctx, action.Items),
-		e.checkBudget(action.Amount, mandate),
+		e.checkMerchantAllowlisted(cfg, action.Merchant),
+		e.checkCurrency(cfg, action.Currency),
+		e.checkCeiling(cfg, action.Amount),
+		e.checkProducts(ctx, cfg, action.Items),
+		e.checkBudget(cfg, action.Amount, mandate),
 		e.checkMandateExpired(mandate),
 		e.checkMandateBound(action, mandate),
 		e.checkMandateCartBound(action, mandate),
@@ -88,8 +129,8 @@ func (e *Engine) Evaluate(
 	}
 }
 
-func (e *Engine) checkMerchantAllowlisted(merchant string) CheckResult {
-	for _, m := range e.config.AllowedMerchants {
+func (e *Engine) checkMerchantAllowlisted(cfg PolicyConfig, merchant string) CheckResult {
+	for _, m := range cfg.AllowedMerchants {
 		if m == merchant {
 			return CheckResult{Name: CheckMerchantAllowlisted, Passed: true}
 		}
@@ -97,8 +138,8 @@ func (e *Engine) checkMerchantAllowlisted(merchant string) CheckResult {
 	return CheckResult{Name: CheckMerchantAllowlisted, Reason: fmt.Sprintf("merchant %s is not allowlisted", merchant)}
 }
 
-func (e *Engine) checkCurrency(currency string) CheckResult {
-	for _, c := range e.config.AllowedCurrencies {
+func (e *Engine) checkCurrency(cfg PolicyConfig, currency string) CheckResult {
+	for _, c := range cfg.AllowedCurrencies {
 		if c == currency {
 			return CheckResult{Name: CheckCurrencyAllowed, Passed: true}
 		}
@@ -106,11 +147,11 @@ func (e *Engine) checkCurrency(currency string) CheckResult {
 	return CheckResult{Name: CheckCurrencyAllowed, Reason: fmt.Sprintf("currency %s is not allowed", currency)}
 }
 
-func (e *Engine) checkCeiling(amount int64) CheckResult {
-	if amount <= e.config.Ceiling {
+func (e *Engine) checkCeiling(cfg PolicyConfig, amount int64) CheckResult {
+	if amount <= cfg.Ceiling {
 		return CheckResult{Name: CheckAmountCeiling, Passed: true}
 	}
-	return CheckResult{Name: CheckAmountCeiling, Reason: fmt.Sprintf("amount %d exceeds ceiling %d", amount, e.config.Ceiling)}
+	return CheckResult{Name: CheckAmountCeiling, Reason: fmt.Sprintf("amount %d exceeds ceiling %d", amount, cfg.Ceiling)}
 }
 
 // checkProducts confirms every item in a proposal is a real, currently
@@ -128,9 +169,9 @@ func (e *Engine) checkCeiling(amount int64) CheckResult {
 // every test and any deployment that never wires a live check --
 // PolicyConfig.AllowedProducts's own doc comment documents that
 // tradeoff in depth.
-func (e *Engine) checkProducts(ctx context.Context, items []string) CheckResult {
+func (e *Engine) checkProducts(ctx context.Context, cfg PolicyConfig, items []string) CheckResult {
 	for _, item := range items {
-		ok, err := e.productExists(ctx, item)
+		ok, err := e.productExists(ctx, cfg, item)
 		if err != nil {
 			// Fail closed: an error means "could not verify," never
 			// "assume it's fine." Payment authorization is exactly the
@@ -145,11 +186,11 @@ func (e *Engine) checkProducts(ctx context.Context, items []string) CheckResult 
 	return CheckResult{Name: CheckProductPermitted, Passed: true}
 }
 
-func (e *Engine) productExists(ctx context.Context, productID string) (bool, error) {
+func (e *Engine) productExists(ctx context.Context, cfg PolicyConfig, productID string) (bool, error) {
 	if e.products != nil {
 		return e.products(ctx, productID)
 	}
-	for _, p := range e.config.AllowedProducts {
+	for _, p := range cfg.AllowedProducts {
 		if p == productID {
 			return true, nil
 		}
@@ -160,8 +201,8 @@ func (e *Engine) productExists(ctx context.Context, productID string) (bool, err
 // checkBudget enforces the mandate ceiling with the configured tolerance.
 // The tolerance is applied as a percentage of the mandate maximum so it
 // matches the growth agent's BudgetCheck semantics (§5.1).
-func (e *Engine) checkBudget(amount int64, m Mandate) CheckResult {
-	tolerance := int64(float64(m.MaximumAmount) * e.config.BudgetTolerance)
+func (e *Engine) checkBudget(cfg PolicyConfig, amount int64, m Mandate) CheckResult {
+	tolerance := int64(float64(m.MaximumAmount) * cfg.BudgetTolerance)
 	if amount <= m.MaximumAmount+tolerance {
 		return CheckResult{Name: CheckBudgetTolerance, Passed: true}
 	}

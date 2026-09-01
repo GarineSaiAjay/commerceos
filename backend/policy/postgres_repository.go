@@ -106,6 +106,74 @@ func nilIfEmpty(value string) any {
 	return value
 }
 
+// policySettingsMerchantID is the single merchant_id this single-tenant
+// deployment's policy_settings row is keyed on -- matches
+// policy.DefaultConfig().AllowedMerchants[0] and every other place in
+// this codebase (campaigns, checkout, isTrustedMerchant in engine.go)
+// that already hardcodes "merchant_001" rather than threading a real
+// multi-tenant merchant ID through. Not a new limitation introduced
+// here; consistent with the rest of the system as it stands today.
+const policySettingsMerchantID = "merchant_001"
+
+func (r *PostgresRepository) GetConfig(ctx context.Context) (PolicyConfig, error) {
+	var cfg PolicyConfig
+	var currencies, merchants []byte
+
+	err := r.db.QueryRow(ctx, `
+		SELECT ceiling, budget_tolerance, allowed_currencies, allowed_merchants
+		FROM policy_settings
+		WHERE merchant_id = $1
+	`, policySettingsMerchantID).Scan(&cfg.Ceiling, &cfg.BudgetTolerance, &currencies, &merchants)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PolicyConfig{}, ErrPolicyConfigNotFound
+	}
+	if err != nil {
+		return PolicyConfig{}, fmt.Errorf("get policy config: %w", err)
+	}
+
+	if err := json.Unmarshal(currencies, &cfg.AllowedCurrencies); err != nil {
+		return PolicyConfig{}, fmt.Errorf("unmarshal allowed currencies: %w", err)
+	}
+	if err := json.Unmarshal(merchants, &cfg.AllowedMerchants); err != nil {
+		return PolicyConfig{}, fmt.Errorf("unmarshal allowed merchants: %w", err)
+	}
+
+	// AllowedProducts is deliberately never read from this table -- see
+	// Repository.GetConfig's doc comment.
+	return cfg, nil
+}
+
+func (r *PostgresRepository) SaveConfig(ctx context.Context, cfg PolicyConfig, updatedBy string) error {
+	currencies, err := json.Marshal(cfg.AllowedCurrencies)
+	if err != nil {
+		return fmt.Errorf("marshal allowed currencies: %w", err)
+	}
+	merchants, err := json.Marshal(cfg.AllowedMerchants)
+	if err != nil {
+		return fmt.Errorf("marshal allowed merchants: %w", err)
+	}
+
+	_, err = r.db.Exec(ctx, `
+		INSERT INTO policy_settings (
+			merchant_id, ceiling, budget_tolerance, allowed_currencies,
+			allowed_merchants, updated_by, updated_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,NOW())
+		ON CONFLICT (merchant_id) DO UPDATE SET
+			ceiling = EXCLUDED.ceiling,
+			budget_tolerance = EXCLUDED.budget_tolerance,
+			allowed_currencies = EXCLUDED.allowed_currencies,
+			allowed_merchants = EXCLUDED.allowed_merchants,
+			updated_by = EXCLUDED.updated_by,
+			updated_at = EXCLUDED.updated_at
+	`, policySettingsMerchantID, cfg.Ceiling, cfg.BudgetTolerance, currencies, merchants, updatedBy)
+	if err != nil {
+		return fmt.Errorf("save policy config: %w", err)
+	}
+	return nil
+}
+
 func (r *PostgresRepository) GetAuthorization(
 	ctx context.Context,
 	id string,

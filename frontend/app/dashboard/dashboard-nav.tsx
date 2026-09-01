@@ -13,6 +13,7 @@ const NAV: Array<[string, string]> = [
   ["Growth", "/dashboard/growth"],
   ["Runs", "/dashboard/runs"],
   ["Safety", "/dashboard/safety"],
+  ["Settings", "/dashboard/settings"],
 ];
 
 // Item 26 (PLAN-05-SELLER-DASHBOARD.md §5): a pending-approvals count

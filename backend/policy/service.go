@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/garinesaiajay/commerceos/audit"
 )
 
 // Service is the hard chokepoint between agents and the Payment Service.
@@ -13,6 +15,13 @@ type Service struct {
 	risk   *RiskEngine
 	repo   Repository
 	now    func() time.Time
+	// auditWriter is optional (nil until WithAuditWriter is called) and
+	// used only by UpdatePolicyConfig today -- every other write in this
+	// service already has its own durable trail (policy_evaluations,
+	// approval_requests, ...), so there was nothing else here to wire it
+	// to. See UpdatePolicyConfig's doc comment for why config changes
+	// specifically get a general audit_events entry too.
+	auditWriter audit.Writer
 }
 
 func NewService(engine *Engine, risk *RiskEngine, repo Repository) *Service {
@@ -24,8 +33,77 @@ func NewService(engine *Engine, risk *RiskEngine, repo Repository) *Service {
 	}
 }
 
+// WithAuditWriter wires the general hash-chained audit ledger (item 25,
+// P2, PLAN-05-SELLER-DASHBOARD.md §4), same fluent-setter convention as
+// order.PostgresRepository.WithAuditWriter and every other WithX(...) in
+// this codebase. Existing callers that never call this keep the exact
+// prior behavior -- UpdatePolicyConfig degrades to "skip the audit
+// write" rather than failing the config update itself.
+func (s *Service) WithAuditWriter(w audit.Writer) *Service {
+	s.auditWriter = w
+	return s
+}
+
 func (s *Service) CreateMandate(ctx context.Context, mandate Mandate) error {
 	return s.repo.SaveMandate(ctx, mandate)
+}
+
+// GetPolicyConfig returns the engine's current LIVE configuration --
+// not a fresh DB read. These are always identical while this process
+// is the only writer (true today: UpdatePolicyConfig is the only path
+// that ever changes either), and reading the in-memory copy is both
+// cheaper and, unlike a DB round trip, can never itself disagree with
+// what Evaluate is actually enforcing right now.
+func (s *Service) GetPolicyConfig() PolicyConfig {
+	return s.engine.Config()
+}
+
+// UpdatePolicyConfig persists cfg, then applies it to the live engine,
+// then (best-effort) records the change on the general audit ledger.
+// AllowedProducts on cfg is ignored either way -- see
+// Engine.UpdateConfig's doc comment -- so before/after in the audit
+// event always reflects what the engine is actually enforcing, not
+// whatever the caller happened to leave that field as.
+//
+// Ordering matters: SaveConfig (durable) happens BEFORE UpdateConfig
+// (in-memory). If the DB write fails, the live engine is left
+// untouched and the caller gets an error -- never a config change that
+// took effect immediately but silently failed to survive a restart.
+// The audit write happens last and is deliberately best-effort (like
+// SaveAgentPlan and the campaign_budget_exhausted write elsewhere in
+// this codebase): a missing audit_events row for a settings change is
+// bad, but rolling back an already-durable, already-live policy change
+// because the audit ledger had a transient problem would be worse.
+func (s *Service) UpdatePolicyConfig(ctx context.Context, cfg PolicyConfig, updatedBy string) (PolicyConfig, error) {
+	before := s.engine.Config()
+
+	if err := s.repo.SaveConfig(ctx, cfg, updatedBy); err != nil {
+		return PolicyConfig{}, fmt.Errorf("save policy config: %w", err)
+	}
+	s.engine.UpdateConfig(cfg)
+	after := s.engine.Config() // re-read: reflects AllowedProducts as UpdateConfig actually preserved it, not whatever cfg had
+
+	if s.auditWriter != nil {
+		detail := map[string]any{
+			"before": map[string]any{
+				"ceiling":            before.Ceiling,
+				"budget_tolerance":   before.BudgetTolerance,
+				"allowed_currencies": before.AllowedCurrencies,
+				"allowed_merchants":  before.AllowedMerchants,
+			},
+			"after": map[string]any{
+				"ceiling":            after.Ceiling,
+				"budget_tolerance":   after.BudgetTolerance,
+				"allowed_currencies": after.AllowedCurrencies,
+				"allowed_merchants":  after.AllowedMerchants,
+			},
+		}
+		if err := s.auditWriter.Write(ctx, updatedBy, "policy_settings_updated", "policy_config", policySettingsMerchantID, detail); err != nil {
+			fmt.Printf("[policy] audit write failed for policy_settings_updated (updated_by %s): %v\n", updatedBy, err)
+		}
+	}
+
+	return after, nil
 }
 
 // Propose validates and evaluates a proposed action against a mandate.

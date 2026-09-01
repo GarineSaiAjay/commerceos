@@ -270,14 +270,28 @@ func main() {
 
 	// Phase 3: Policy Engine — the hard chokepoint.
 	policyRepo := policy.NewPostgresRepository(dbPool)
-	// Captured as its own variable (rather than the previous inline
-	// policy.DefaultConfig() call) so item 33's rejection-recovery
-	// handler below can read the SAME configured ceiling the engine is
-	// actually enforcing, instead of re-declaring policy.DefaultConfig()
-	// a second time and risking the two silently drifting apart --
-	// exactly the staleness policy.ExplainRejection's own hardcoded
-	// ceiling literal already has.
+	// Item 25 (P2, PLAN-05-SELLER-DASHBOARD.md §4): the policy config is
+	// now persisted (policy_settings table, seeded by db/seeds/
+	// 004_policy_settings.sql with these exact same values) instead of
+	// only ever being this Go literal. Loaded once at startup here;
+	// policyEngine.Config() is the live source of truth from this point
+	// on -- policyService.UpdatePolicyConfig keeps the DB row and the
+	// engine's in-memory copy in sync on every operator edit (see
+	// policy/service.go). Falling back to policy.DefaultConfig() on any
+	// load error (a fresh database before the seed has run, or a
+	// transient DB problem) is a deliberate "fail open to known-good
+	// defaults" choice for server BOOTSTRAP specifically -- a different
+	// risk profile from Engine's own checks, which fail closed when
+	// evaluating one live proposal. A server that refused to start
+	// because a settings row was momentarily unreadable would be a
+	// worse outcome than starting with the same ceiling this app has
+	// shipped with the whole time.
 	policyConfig := policy.DefaultConfig()
+	if loaded, err := policyRepo.GetConfig(ctx); err == nil {
+		policyConfig = loaded
+	} else if !errors.Is(err, policy.ErrPolicyConfigNotFound) {
+		fmt.Printf("[policy] could not load persisted policy config, falling back to defaults: %v\n", err)
+	}
 	policyEngine := policy.NewEngine(policyConfig, policyRepo)
 	riskEngine := policy.NewRiskEngine()
 	policyService := policy.NewService(policyEngine, riskEngine, policyRepo)
@@ -351,14 +365,18 @@ func main() {
 	// proactive policy-rejection recovery -- reuses the same
 	// orderRepo/catalogService/cartService/orderService instances
 	// already wired above for paymentHandler's own recovery actions,
-	// plus policyConfig.Ceiling so this can never enforce a different
-	// ceiling than the policy engine actually does.
+	// plus a live read of policyEngine.Config().Ceiling (not the
+	// policyConfig startup snapshot) so this can never enforce a
+	// ceiling that has drifted from what the policy engine is actually
+	// checking -- item 25 (P2, PLAN-05-SELLER-DASHBOARD.md §4) made the
+	// ceiling operator-editable at runtime, which is exactly what would
+	// otherwise go stale here.
 	rejectionRecoveryHandler := agents.NewRejectionRecoveryHandler(
 		orderRepo,
 		catalogService,
 		cartService,
 		orderService,
-		policyConfig.Ceiling,
+		func() int64 { return policyEngine.Config().Ceiling },
 	)
 
 	// -------------------------
@@ -374,7 +392,12 @@ func main() {
 		Policy:  policyService,
 		Growth:  growthAgent,
 		Explain: func(a policy.ProposedAction, m policy.Mandate, check string) string {
-			return policy.ExplainRejection(check, a, m)
+			// policyEngine.Config().Ceiling, not policyConfig.Ceiling: the
+			// latter is a one-time snapshot taken at startup, which item 25
+			// (P2, PLAN-05-SELLER-DASHBOARD.md §4) made stale the moment the
+			// ceiling became operator-editable at runtime via
+			// /dashboard/settings/policy.
+			return policy.ExplainRejection(check, a, m, policyEngine.Config().Ceiling)
 		},
 	})
 	mcpHandler := mcp.NewHTTPServer(mcpServer)
@@ -402,6 +425,16 @@ func main() {
 	// comment above that call site for why it can't be part of the
 	// checkout transaction itself.
 	orderRepo = orderRepo.WithAuditWriter(auditWriter)
+
+	// item 25 (P2, PLAN-05-SELLER-DASHBOARD.md §4): a policy settings
+	// change is significant enough (it changes what checkout enforces
+	// for every future proposal) to belong on the same general audit
+	// ledger campaign/order/webhook events already use, not just the
+	// policy package's own policy_evaluations trail (which only records
+	// per-proposal decisions, never config changes). Wired here, not at
+	// policyService's own construction above, because auditWriter
+	// doesn't exist yet at that point in this function.
+	policyService = policyService.WithAuditWriter(auditWriter)
 
 	outboxRepo := events.NewPostgresOutboxRepository(dbPool)
 
@@ -858,6 +891,26 @@ func main() {
 	commerceMux.HandleFunc(
 		"/dashboard/experiment",
 		authService.RequireOperator(analyticsHandler.Experiment),
+	)
+
+	// item 25 (P2, PLAN-05-SELLER-DASHBOARD.md §4): view/edit the
+	// policy engine's live configuration. One route, two methods (same
+	// dispatch-by-method convention as the /orders/ and /products/
+	// muxes elsewhere in this file) rather than two separate paths --
+	// GET and PATCH on the same resource is the more RESTful shape here
+	// and there's no suffix ambiguity to resolve, unlike those.
+	commerceMux.HandleFunc(
+		"/dashboard/settings/policy",
+		authService.RequireOperator(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				policyHandler.GetSettings(w, r)
+			case http.MethodPatch:
+				policyHandler.UpdateSettings(w, r)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		}),
 	)
 
 	commerceMux.HandleFunc(

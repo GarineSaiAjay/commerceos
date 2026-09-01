@@ -12,6 +12,7 @@ type fakeRepo struct {
 	mandates       map[string]Mandate
 	authorizations map[string]Authorization
 	evals          []Evaluation
+	config         *PolicyConfig // nil until SaveConfig is called, matching ErrPolicyConfigNotFound's real precondition
 }
 
 func newFakeRepo() *fakeRepo {
@@ -19,6 +20,18 @@ func newFakeRepo() *fakeRepo {
 		mandates:       map[string]Mandate{},
 		authorizations: map[string]Authorization{},
 	}
+}
+
+func (r *fakeRepo) GetConfig(ctx context.Context) (PolicyConfig, error) {
+	if r.config == nil {
+		return PolicyConfig{}, ErrPolicyConfigNotFound
+	}
+	return *r.config, nil
+}
+
+func (r *fakeRepo) SaveConfig(ctx context.Context, cfg PolicyConfig, updatedBy string) error {
+	r.config = &cfg
+	return nil
 }
 
 func (r *fakeRepo) GetMandate(ctx context.Context, id string) (Mandate, error) {
@@ -210,7 +223,7 @@ func TestFailureDemo2(t *testing.T) {
 		t.Fatalf("expected budget_tolerance, got %s", decision.FailedCheck)
 	}
 
-	explanation := ExplainRejection(decision.FailedCheck, action, repo.mandates["mand"])
+	explanation := ExplainRejection(decision.FailedCheck, action, repo.mandates["mand"], DefaultConfig().Ceiling)
 	if !contains(explanation, "26,900") || !contains(explanation, "25,000") {
 		t.Fatalf("explanation missing numbers: %s", explanation)
 	}

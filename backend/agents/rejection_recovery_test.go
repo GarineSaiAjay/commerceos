@@ -62,8 +62,15 @@ func testOrderItem(productID string, totalRupees int64) order.OrderItem {
 
 const testCeiling = int64(30_000_00) // ₹30,000, matches policy.DefaultConfig()'s real ceiling
 
+// testCeilingFunc: NewRejectionRecoveryHandler takes a func() int64, not a
+// plain int64, since item 25 (P2, PLAN-05-SELLER-DASHBOARD.md §4) made the
+// real ceiling live/operator-editable via policyEngine.Config().Ceiling --
+// this fixed closure is the test-only equivalent of "the ceiling never
+// changes during this test," which is all any of these tests need.
+func testCeilingFunc() int64 { return testCeiling }
+
 func TestSuggestSubstituteWithinCeilingNotAvailable(t *testing.T) {
-	h := NewRejectionRecoveryHandler(nil, &fakeRecoveryCatalog{}, nil, nil, testCeiling)
+	h := NewRejectionRecoveryHandler(nil, &fakeRecoveryCatalog{}, nil, nil, testCeilingFunc)
 	ord := order.Order{
 		Subtotal: testCeiling, // exactly at the ceiling -- not over it
 		Items:    []order.OrderItem{testOrderItem("p1", 30_000)},
@@ -78,7 +85,7 @@ func TestSuggestSubstituteWithinCeilingNotAvailable(t *testing.T) {
 }
 
 func TestSuggestSubstituteNoItems(t *testing.T) {
-	h := NewRejectionRecoveryHandler(nil, &fakeRecoveryCatalog{}, nil, nil, testCeiling)
+	h := NewRejectionRecoveryHandler(nil, &fakeRecoveryCatalog{}, nil, nil, testCeilingFunc)
 	ord := order.Order{Subtotal: testCeiling + 100_00, Items: nil}
 	got, err := h.suggestSubstitute(context.Background(), ord)
 	if err != nil {
@@ -95,7 +102,7 @@ func TestSuggestSubstitutePicksMostExpensiveItem(t *testing.T) {
 		testProduct("p2", 12_000, "audio"),
 		testProduct("cheap-sub", 6_000, "audio"), // within budget once p2 (the pricier item) is swapped out
 	}}
-	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeiling)
+	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeilingFunc)
 	// Subtotal 32,000 > ceiling 30,000 by 2,000. Items: p1 (20,000) and
 	// p2 (12,000). p1 is more expensive, so it should be the replace
 	// candidate -- budget for its substitute is 20,000 - 2,000 = 18,000.
@@ -116,7 +123,7 @@ func TestSuggestSubstitutePicksMostExpensiveItem(t *testing.T) {
 }
 
 func TestSuggestSubstituteBudgetTooSmall(t *testing.T) {
-	h := NewRejectionRecoveryHandler(nil, &fakeRecoveryCatalog{}, nil, nil, testCeiling)
+	h := NewRejectionRecoveryHandler(nil, &fakeRecoveryCatalog{}, nil, nil, testCeilingFunc)
 	// Subtotal 60,000 > ceiling 30,000 by 30,000 -- but the only item
 	// only costs 20,000, less than the overage itself. Even removing
 	// it entirely wouldn't be enough, let alone swapping it for
@@ -140,7 +147,7 @@ func TestSuggestSubstituteHappyPath(t *testing.T) {
 		testProduct("mid", 8_000, "audio"),         // within the 18,000 budget (20,000 - 2,000 overage)
 		testProduct("pricey-alt", 19_000, "audio"), // over the 18,000 budget, must be excluded by the hard constraint
 	}}
-	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeiling)
+	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeilingFunc)
 	// Subtotal 32,000 > ceiling 30,000 by 2,000. Single item "expensive"
 	// at 20,000 -> budget for its substitute is 20,000 - 2,000 = 18,000.
 	ord := order.Order{
@@ -177,7 +184,7 @@ func TestSuggestSubstituteExcludesItemsAlreadyInOrder(t *testing.T) {
 		testProduct("expensive", 20_000, "audio"),
 		testProduct("already-in-cart", 5_000, "audio"),
 	}}
-	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeiling)
+	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeilingFunc)
 	ord := order.Order{
 		Subtotal: 32_000_00,
 		Items: []order.OrderItem{
@@ -198,7 +205,7 @@ func TestSuggestSubstituteNoInBudgetProduct(t *testing.T) {
 	catalogReader := &fakeRecoveryCatalog{products: []catalog.Product{
 		testProduct("still-too-expensive", 19_000, "audio"),
 	}}
-	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeiling)
+	h := NewRejectionRecoveryHandler(nil, catalogReader, nil, nil, testCeilingFunc)
 	ord := order.Order{
 		Subtotal: 32_000_00,
 		Items:    []order.OrderItem{testOrderItem("expensive", 20_000)},
