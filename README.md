@@ -111,6 +111,7 @@ cd frontend && npm run lint && npm run build
 | `POST /orders/{id}/payment/verify` | Client-side signature verification |
 | `POST /webhooks/razorpay` | Razorpay webhook (signature + dedup) |
 | `POST /mcp` | MCP server (JSON-RPC) |
+| `GET /.well-known/agent-commerce.json` | Agent-readable manifest: MCP tools, REST endpoints, mandate/policy model, example flows |
 | `GET /dashboard/overview` · `/analytics` · `/experiment` | Dashboard |
 | `GET /adapter/calls` | Razorpay call counter (audit proof) |
 

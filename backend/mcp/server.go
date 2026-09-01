@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -84,6 +85,30 @@ func NewServer() *Server {
 // Register adds a narrow tool. Each tool is independently verifiable.
 func (s *Server) Register(t *Tool) {
 	s.tools[t.Name] = t
+}
+
+// Tools returns the registered tools sorted by name for deterministic
+// output. Go's map iteration order is randomized; this accessor exists
+// for the GET /.well-known/agent-commerce.json manifest handler
+// (manifest.go, item 35 / PLAN-06-ADDITIONAL-OPPORTUNITIES.md §2), so
+// the published tool order doesn't change on every process restart --
+// a needless diff for any external agent or judge tooling that caches
+// the manifest. tools/list below doesn't need this (a JSON-RPC client
+// treats "tools" as an unordered array per the MCP spec) and is left
+// exactly as-is rather than switched to use it, to avoid touching
+// already-tested, working behavior for something it doesn't need.
+func (s *Server) Tools() []*Tool {
+	names := make([]string, 0, len(s.tools))
+	for name := range s.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]*Tool, 0, len(names))
+	for _, name := range names {
+		out = append(out, s.tools[name])
+	}
+	return out
 }
 
 // Handle processes one JSON-RPC message and returns the response bytes.
