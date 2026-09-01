@@ -254,4 +254,3 @@ func TestRunSuiteRejectsNonPOST(t *testing.T) {
 		t.Fatalf("expected 405, got %d", rec.Code)
 	}
 }
-
