@@ -61,7 +61,9 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
    - Postgres `:5433`, Redis `:6379`, backend `:8080–8083`, frontend
      `:3000` (open `http://localhost:3000`; the merchant dashboard is
      at `http://localhost:3000/dashboard` -- `files/AUTH.md` has the
-     demo login credentials).
+     demo login credentials; a public, no-login `http://localhost:3000/trust`
+     page shows the same audit-chain/safety-suite evidence for a judge
+     who doesn't have those credentials).
    - A one-off `migrate` service applies goose migrations and then both
      seed files automatically before `backend` starts (every seed
      `INSERT` uses `ON CONFLICT ... DO NOTHING`, so this is safe to run
@@ -114,6 +116,7 @@ cd frontend && npm run lint && npm run build
 | `GET /.well-known/agent-commerce.json` | Agent-readable manifest: MCP tools, REST endpoints, mandate/policy model, example flows |
 | `GET /dashboard/overview` · `/analytics` · `/experiment` | Dashboard |
 | `GET /adapter/calls` | Razorpay call counter (audit proof) |
+| `GET /trust/summary` · `POST /trust/run-suite` | Public audit-chain status, call counter, and one-click 14-attack suite (no auth) |
 
 ## Docs
 
