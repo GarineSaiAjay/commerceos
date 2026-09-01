@@ -34,6 +34,7 @@ import {
   defaultVariantFor,
   formatINR,
 } from "./checkout/helpers";
+import { bestCandidateClientSide } from "./checkout/optimisticSuggest";
 import { AuditTrailPanel } from "./checkout/AuditTrailPanel";
 import { SuggestionCard } from "./checkout/SuggestionCard";
 import { AgentChatPanel } from "./checkout/AgentChatPanel";
@@ -778,6 +779,28 @@ export default function CheckoutFlow({
   // component (item 21 split) now renders on both the catalog and cart
   // screens, so this only needs
   // to decide *when* to fetch, not *where* to show the result.
+  // item 29 (P2, PLAN-04-UI-UX-AND-LATENCY.md §B3): "Optimistic
+  // client-side pre-score for cross-sell." The full catalog (products,
+  // fetched once at mount) already carries every product's tags, so
+  // the same tag-overlap winner backend/growth/suggest.go's
+  // bestCandidate would pick can be computed synchronously, client-
+  // side, with no network round trip -- purely so SuggestionCard has
+  // something to show the instant the cart changes, instead of a bare
+  // skeleton for the ~one round trip POST /growth/suggest below takes.
+  // useMemo (not state+effect): this is a pure derivation of existing
+  // state, not a side effect, so it recomputes in the same render the
+  // moment any input changes -- no extra render pass, no flash of
+  // "nothing" before the guess appears.
+  const optimisticSuggestion = useMemo(() => {
+    if (!cart || cart.items.length === 0) return null;
+    const exclude = new Set(cart.items.map((item) => item.product_id));
+    if (dismissedProductId) exclude.add(dismissedProductId);
+    const signalProducts = cart.items
+      .map((item) => products.find((p) => p.product_id === item.product_id))
+      .filter((p): p is Product => !!p);
+    return bestCandidateClientSide(products, signalProducts, exclude);
+  }, [cart, products, dismissedProductId]);
+
   useEffect(() => {
     if (cart && cart.items.length > 0) {
       // Fetching from an external system (the growth service) on a
@@ -1274,6 +1297,7 @@ export default function CheckoutFlow({
               suggestion={suggestion}
               suggestionLoading={suggestionLoading}
               loading={loading}
+              optimistic={optimisticSuggestion}
               onAccept={acceptSuggestion}
               onDismiss={dismissSuggestion}
             />
@@ -1317,6 +1341,7 @@ export default function CheckoutFlow({
               onProceedToCheckout={proceedToCheckout}
               suggestion={suggestion}
               suggestionLoading={suggestionLoading}
+              optimisticSuggestion={optimisticSuggestion}
               onAcceptSuggestion={acceptSuggestion}
               onDismissSuggestion={dismissSuggestion}
             />

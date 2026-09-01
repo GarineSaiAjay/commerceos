@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Skeleton } from "../../lib/format";
-import type { SuggestResponse } from "./types";
+import type { Product, SuggestResponse } from "./types";
 import { formatINR } from "./helpers";
 
 // Cross-sell card, shared between the catalog and cart screens so a
@@ -32,6 +32,17 @@ import { formatINR } from "./helpers";
 // rendering that snapshot for one more transition duration at reduced
 // opacity, then actually unmounts. Self-contained -- no other file
 // needs to know this happens.
+//
+// Item 29 (P2, PLAN-04-UI-UX-AND-LATENCY.md §B3) added the `optimistic`
+// prop: while suggestionLoading is true and the real POST
+// /growth/suggest response hasn't landed yet, a client-computed guess
+// (checkout/optimisticSuggest.ts) is shown instead of the bare
+// skeleton, as a tentative, NON-interactive "Maybe" card -- no Add to
+// cart/No thanks buttons, since it hasn't been through the server's
+// budget/EV check and is only ever a perceived-latency placeholder.
+// The real, fully-interactive card above always replaces it the moment
+// the authoritative response arrives; see optimisticSuggest.ts's own
+// doc comment for why "the server always wins" here.
 const EXIT_DURATION_MS = 150;
 
 type Phase = "hidden" | "visible" | "leaving";
@@ -40,18 +51,20 @@ export function SuggestionCard({
   suggestion,
   suggestionLoading,
   loading,
+  optimistic,
   onAccept,
   onDismiss,
 }: {
   suggestion: SuggestResponse | null;
   suggestionLoading: boolean;
   loading: boolean;
+  optimistic: Product | null;
   onAccept: () => void;
   onDismiss: () => void;
 }) {
   const visible = suggestionLoading || !!(suggestion?.available && suggestion.product);
 
-  const [snapshot, setSnapshot] = useState({ suggestion, suggestionLoading });
+  const [snapshot, setSnapshot] = useState({ suggestion, suggestionLoading, optimistic });
   const [prevVisible, setPrevVisible] = useState(visible);
   const [phase, setPhase] = useState<Phase>(visible ? "visible" : "hidden");
 
@@ -66,7 +79,7 @@ export function SuggestionCard({
   if (visible !== prevVisible) {
     setPrevVisible(visible);
     if (visible) {
-      setSnapshot({ suggestion, suggestionLoading });
+      setSnapshot({ suggestion, suggestionLoading, optimistic });
       setPhase("visible");
     } else if (phase !== "hidden") {
       setPhase("leaving");
@@ -119,6 +132,20 @@ export function SuggestionCard({
     );
   }
   if (snapshot.suggestionLoading) {
+    if (snapshot.optimistic) {
+      return (
+        <div
+          className={`mt-4 animate-fade-in rounded-xl border border-dashed border-indigo-200 bg-indigo-50/60 p-5 transition-opacity duration-150 ${exitClass}`}
+        >
+          <p className="text-xs font-medium uppercase tracking-wide text-indigo-400">
+            Maybe
+          </p>
+          <p className="mt-1 font-medium text-slate-500">
+            {snapshot.optimistic.title} -- {formatINR(snapshot.optimistic.price.amount)}
+          </p>
+        </div>
+      );
+    }
     return (
       <div
         className={`mt-4 animate-fade-in rounded-xl border border-indigo-200 bg-indigo-50 p-5 transition-opacity duration-150 ${exitClass}`}
