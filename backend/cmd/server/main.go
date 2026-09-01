@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -50,6 +51,77 @@ func corsMiddleware(allowedOrigin string, next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// compressionMiddleware gzip-compresses a response when the client
+// advertises support for it (Accept-Encoding: gzip) -- item 31 (P2,
+// PLAN-04-UI-UX-AND-LATENCY.md section B5): "Confirm (and if missing,
+// add) gzip/br response compression on the Go backend for GET
+// /products and dashboard JSON endpoints -- net/http doesn't compress
+// by default... Content-Length-sensitive endpoints (webhooks, payment)
+// should be excluded... apply the middleware selectively." Brotli
+// isn't in the Go standard library (would need a third-party
+// dependency this environment has no Go toolchain to vet); gzip is,
+// via compress/gzip, and every browser this app targets already sends
+// "Accept-Encoding: gzip" by default, so this covers the actual win --
+// smaller JSON payloads over the wire for the catalog list and
+// dashboard endpoints the plan calls out by name -- with zero new
+// dependencies.
+//
+// shouldSkipCompression excludes webhook and payment routes by the
+// SAME suffix-matching the "/orders/" mux below already uses for those
+// exact routes (POST /orders/{id}/payment, POST/GET .../payment,
+// POST .../payment/verify) plus the one webhook route -- a payment
+// provider's callback response, or a payment record a client is about
+// to run signature/amount verification against, should reach the
+// caller byte-for-byte untouched, never re-encoded.
+func shouldSkipCompression(path string) bool {
+	return path == "/webhooks/razorpay" ||
+		strings.HasSuffix(path, "/payment") ||
+		strings.HasSuffix(path, "/payment/verify")
+}
+
+func compressionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if shouldSkipCompression(r.URL.Path) || !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		// Whatever Content-Length a downstream handler might set would
+		// describe the UNCOMPRESSED body -- wrong the instant gzip.Writer
+		// rewrites the bytes actually sent on the wire. No handler in
+		// this codebase sets it manually today (every JSON response goes
+		// through json.NewEncoder(w).Encode or an io.Writer like
+		// encoding/csv's Writer), but this middleware wraps every
+		// response on the mux, so it can't assume that stays true
+		// forever -- deleting it here just means net/http falls back to
+		// chunked transfer encoding, which is correct either way.
+		w.Header().Del("Content-Length")
+
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+
+		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, Writer: gz}, r)
+	})
+}
+
+// gzipResponseWriter overrides only Write, so every downstream handler
+// keeps calling the plain http.ResponseWriter methods it already does
+// everywhere in this codebase (Header().Set(...), WriteHeader(status),
+// Write(...) via json.NewEncoder or encoding/csv) completely unchanged
+// -- Header() and WriteHeader() pass straight through via the embedded
+// http.ResponseWriter, only the actual body bytes are routed through
+// gzip.Writer instead of the connection directly.
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	Writer *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.Writer.Write(b)
 }
 
 func main() {
@@ -1011,9 +1083,15 @@ func main() {
 	go func() {
 		fmt.Printf("Commerce Service listening on :%s\n", commercePort)
 
+		// compressionMiddleware sits INSIDE corsMiddleware (closer to
+		// commerceMux): an OPTIONS preflight request is intercepted and
+		// answered by corsMiddleware itself (see its own body above)
+		// before ever reaching compressionMiddleware, so a 204 preflight
+		// response is never pointlessly gzip-wrapped -- only real
+		// responses from commerceMux's handlers are.
 		if err := http.ListenAndServe(
 			":"+commercePort,
-			corsMiddleware(frontendOrigin, commerceMux),
+			corsMiddleware(frontendOrigin, compressionMiddleware(commerceMux)),
 		); err != nil {
 			fmt.Printf("Commerce Service stopped: %v\n", err)
 		}
