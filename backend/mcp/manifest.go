@@ -76,8 +76,8 @@ func buildManifest(s *Server, cfg policy.PolicyConfig) manifest {
 	}
 
 	return manifest{
-		Name:        "commerceos",
-		Description: "Agentic commerce backend for the Razorpay Buildathon: a policy-gated checkout an AI agent can drive end to end, buyer- and seller-side, without ever holding unmediated payment authority.",
+		Name:          "commerceos",
+		Description:   "Agentic commerce backend for the Razorpay Buildathon: a policy-gated checkout an AI agent can drive end to end, buyer- and seller-side, without ever holding unmediated payment authority.",
 		GoverningRule: "Every money-moving call requires an authorization_id from the Policy Engine (POST /policy/propose, or the request_authorization MCP tool), re-verified inside the Payment Service before any Razorpay call. There is no alternate entry point.",
 		MCP: manifestMCP{
 			Endpoint:  "/mcp",
