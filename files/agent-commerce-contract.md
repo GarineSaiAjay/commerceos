@@ -12,6 +12,14 @@ decomposed `/agent/catalog` → `/agent/search` → `/agent/cart` →
 `/agent/authorize` → `/agent/payment` flow that was never implemented;
 the real surface is below.
 
+**Machine-readable version:** `GET /.well-known/agent-commerce.json`
+(`backend/mcp/manifest.go`) publishes this same contract as structured
+JSON — the MCP endpoint, all 11 tool schemas (read live off the actual
+tool registry, not a hand-maintained duplicate of this doc), the
+mandate/policy model, and the example flows below — so an external
+agent or a judge's own tooling can fetch and act on it directly instead
+of parsing this markdown.
+
 ---
 
 ## GET /products

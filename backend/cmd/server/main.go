@@ -1039,6 +1039,21 @@ func main() {
 		mcpHandler,
 	)
 
+	// item 35 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §2): agent-readable
+	// catalog manifest. Deliberately NOT wrapped in authService.RequireOperator
+	// like every /dashboard/* route above -- this is meant to be fetched by an
+	// external agent or a judge's own tooling that holds no operator
+	// credentials, before it ever calls anything else. configFn reads
+	// policyEngine.Config() live (not the policyConfig startup snapshot) for
+	// the same reason the request_authorization Explain closure above does:
+	// item 25 made the ceiling operator-editable at runtime, and a manifest
+	// that cached the startup value would go stale the moment an operator
+	// changed it.
+	commerceMux.HandleFunc(
+		"/.well-known/agent-commerce.json",
+		mcp.ManifestHandler(mcpServer, func() policy.PolicyConfig { return policyEngine.Config() }),
+	)
+
 	// -------------------------
 	// Agent API Service
 	// -------------------------
