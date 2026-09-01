@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { actionLabel, formatINR, formatTime } from "../../../lib/format";
 import { authFetch } from "../../../lib/auth";
+import { downloadFile } from "../../../lib/download";
 
 // Mirrors backend/commerce/order/model.go's Order/OrderItem JSON shape.
 // payment_status (item 15, PLAN-05-SELLER-DASHBOARD.md §2) comes from a
@@ -84,6 +85,8 @@ export default function OrdersPage() {
   const [selected, setSelected] = useState<Order | null>(null);
   const [payment, setPayment] = useState<Payment | null>(null);
   const [paymentState, setPaymentState] = useState<"idle" | "loading" | "found" | "none">("idle");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
 
   const loadOrders = useCallback(() => {
     authFetch("/dashboard/orders", { cache: "no-store" })
@@ -98,6 +101,22 @@ export default function OrdersPage() {
   useEffect(() => {
     loadOrders();
   }, [loadOrders]);
+
+  // item 27 (P2, PLAN-05-SELLER-DASHBOARD.md section 6): export every
+  // order this page is showing as a CSV, via the same operator-scoped
+  // GET /dashboard/orders/export the list above reads from -- so this
+  // can never disagree with what's on screen.
+  async function exportCSV() {
+    setExporting(true);
+    setExportError("");
+    try {
+      await downloadFile("/dashboard/orders/export", "orders.csv");
+    } catch (cause) {
+      setExportError(cause instanceof Error ? cause.message : "Could not export orders");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   async function selectOrder(order: Order) {
     setSelected(order);
@@ -119,18 +138,33 @@ export default function OrdersPage() {
 
   return (
     <main className="px-5 py-7 sm:px-8 lg:px-10">
-      <header className="border-b border-slate-200 pb-6">
-        <h1 className="text-3xl font-semibold tracking-tight">Orders</h1>
-        <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">
-          Every order placed against this merchant, most recent first, with its linked payment
-          record. Read-only -- no refund or cancel action exists in the payment service yet beyond
-          the recovery/retry flow for a failed payment attempt.
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 pb-6">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Orders</h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">
+            Every order placed against this merchant, most recent first, with its linked payment
+            record. Read-only -- no refund or cancel action exists in the payment service yet beyond
+            the recovery/retry flow for a failed payment attempt.
+          </p>
+        </div>
+        <button
+          onClick={exportCSV}
+          disabled={exporting || orders.length === 0}
+          className="shrink-0 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {exporting ? "Exporting…" : "Export CSV"}
+        </button>
       </header>
 
       {error && (
         <p role="alert" className="mt-6 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
           {error}
+        </p>
+      )}
+
+      {exportError && (
+        <p role="alert" className="mt-6 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          {exportError}
         </p>
       )}
 

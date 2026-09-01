@@ -1,9 +1,12 @@
 package order
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/garinesaiajay/commerceos/auth"
 )
@@ -129,6 +132,80 @@ func (h *Handler) ListOrdersForOperator(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, orders)
+}
+
+// ExportOrdersCSV handles GET /dashboard/orders/export -- item 27 (P2,
+// PLAN-05-SELLER-DASHBOARD.md section 6): "CSV export of orders and
+// campaigns ... a thin CSV-serialization endpoint over data the
+// existing handlers already query; no new business logic." This reuses
+// the exact same Service.ListOrders(ctx, operator.MerchantID) call
+// ListOrdersForOperator already makes -- the only difference is the
+// response is serialized as CSV instead of JSON, so there is nothing
+// here that could disagree with what the Orders page already shows.
+//
+// One row per order, not per line item: OrderItem detail is
+// deliberately left out of this CSV (available via the existing GET
+// /orders/{id} JSON detail endpoint instead) because a merchant
+// reconciling this against Razorpay settlement data or their own
+// accounting wants one row per transaction with an item_count column,
+// not a row per SKU that would repeat every order-level total N times
+// and break any naive SUM() over the file.
+//
+// Monetary columns are raw paise (subtotal_paise, discount_amount_paise),
+// matching every other amount in this codebase (see e.g.
+// policy.PolicyConfig.Ceiling's own comment) rather than converting to
+// rupees here -- an INR conversion is a presentation concern
+// (frontend/lib/format.tsx's formatINR), and doing it in Go too would
+// risk a rounding disagreement between the CSV and the UI for the
+// exact same order. A merchant importing this into a spreadsheet can
+// divide by 100 themselves.
+func (h *Handler) ExportOrdersCSV(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	operator, ok := auth.OperatorFromContext(r.Context())
+	if !ok {
+		http.Error(w, "operator session required", http.StatusUnauthorized)
+		return
+	}
+
+	orders, err := h.service.ListOrders(r.Context(), operator.MerchantID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="orders.csv"`)
+	w.WriteHeader(http.StatusOK)
+
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{
+		"order_id", "cart_id", "status", "payment_status", "currency",
+		"subtotal_paise", "discount_amount_paise", "campaign_id",
+		"item_count", "created_at",
+	})
+	for _, o := range orders {
+		_ = writer.Write([]string{
+			o.ID,
+			o.CartID,
+			o.Status,
+			o.PaymentStatus,
+			o.Currency,
+			strconv.FormatInt(o.Subtotal, 10),
+			strconv.FormatInt(o.DiscountAmount, 10),
+			o.CampaignID,
+			strconv.Itoa(len(o.Items)),
+			o.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	// Best-effort flush: the header/status line is already committed by
+	// the time any per-row Write above could fail, so there is no
+	// remaining error-response path -- same constraint every other CSV/
+	// streaming writer in Go faces, nothing specific to this handler.
+	writer.Flush()
 }
 
 // GetOrder handles GET /orders/{id} -- a single order's detail, used by

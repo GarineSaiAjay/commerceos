@@ -1,10 +1,13 @@
 package campaign
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/garinesaiajay/commerceos/auth"
 )
@@ -98,6 +101,85 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		campaigns = []Campaign{}
 	}
 	writeJSON(w, http.StatusOK, campaigns)
+}
+
+// ExportCSV handles GET /campaigns/export, optionally filtered by the
+// same ?status= query parameter List already supports -- item 27 (P2,
+// PLAN-05-SELLER-DASHBOARD.md section 6): "CSV export of orders and
+// campaigns ... a thin CSV-serialization endpoint over data the
+// existing handlers already query; no new business logic." Reuses the
+// exact same h.repo.List(ctx, operator.MerchantID, status) call List
+// already makes.
+//
+// Registered as its own exact route ("/campaigns/export"), the same
+// way "/campaigns/propose" already is alongside the "/campaigns/"
+// catch-all below -- Go's http.ServeMux always prefers a matching
+// exact pattern over a matching subtree ("/campaigns/") pattern
+// regardless of registration order, so this can never be shadowed by
+// or confused with the {id}-based routes campaignID() parses.
+//
+// Monetary columns are raw paise (budget_cap_paise, spent_paise),
+// matching every other amount in this codebase and ExportOrdersCSV's
+// identical choice in commerce/order/handler.go -- see that handler's
+// doc comment for the reasoning (avoids a rounding disagreement
+// between this file and the UI's own INR formatting).
+func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	operator, ok := auth.OperatorFromContext(r.Context())
+	if !ok {
+		http.Error(w, "operator session required", http.StatusUnauthorized)
+		return
+	}
+
+	campaigns, err := h.repo.List(r.Context(), operator.MerchantID, r.URL.Query().Get("status"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="campaigns.csv"`)
+	w.WriteHeader(http.StatusOK)
+
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{
+		"campaign_id", "product_id", "discount_percent", "budget_cap_paise",
+		"spent_paise", "duration_days", "status", "rejected_demand_count",
+		"policy_version", "approved_by", "rejected_reason", "starts_at",
+		"ends_at", "created_at",
+	})
+	for _, c := range campaigns {
+		var startsAt, endsAt string
+		if c.StartsAt != nil {
+			startsAt = c.StartsAt.Format(time.RFC3339)
+		}
+		if c.EndsAt != nil {
+			endsAt = c.EndsAt.Format(time.RFC3339)
+		}
+		_ = writer.Write([]string{
+			c.ID,
+			c.ProductID,
+			strconv.Itoa(c.DiscountPercent),
+			strconv.FormatInt(c.BudgetCap, 10),
+			strconv.FormatInt(c.Spent, 10),
+			strconv.Itoa(c.DurationDays),
+			c.Status,
+			strconv.Itoa(c.RejectedDemandCount),
+			c.PolicyVersion,
+			c.ApprovedBy,
+			c.RejectedReason,
+			startsAt,
+			endsAt,
+			c.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	// Best-effort flush -- see ExportOrdersCSV's identical comment in
+	// commerce/order/handler.go for why there is no remaining
+	// error-response path once the header/status line is committed.
+	writer.Flush()
 }
 
 // campaignID extracts the campaign id from a /campaigns/{id}[/action] path.
