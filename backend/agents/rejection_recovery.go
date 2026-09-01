@@ -101,14 +101,16 @@ type RejectionRecoveryHandler struct {
 	catalog  RecoveryCatalogReader
 	carts    RecoveryCartBuilder
 	checkout RecoveryOrderCheckout
-	// ceiling is the policy engine's configured platform amount
-	// ceiling (policy.PolicyConfig.Ceiling, paise) -- passed in from
-	// main.go's own policyConfig rather than re-declaring
-	// policy.DefaultConfig() here, so this can never silently drift
-	// from the ceiling the policy engine is actually enforcing (the
-	// exact staleness policy.ExplainRejection's own hardcoded literal
-	// already has -- deliberately not repeating that mistake here).
-	ceiling int64
+	// ceiling reads the policy engine's configured platform amount
+	// ceiling (policy.PolicyConfig.Ceiling, paise) LIVE on every call,
+	// rather than a value captured once at construction -- item 25 (P2,
+	// PLAN-05-SELLER-DASHBOARD.md §4) made the ceiling operator-editable
+	// at runtime via /dashboard/settings/policy, which would otherwise
+	// leave this handler silently enforcing a stale ceiling exactly the
+	// way policy.ExplainRejection's own hardcoded literal used to
+	// before that same item fixed it (see explain.go). main.go wires
+	// this to policyEngine.Config().Ceiling.
+	ceiling func() int64
 }
 
 func NewRejectionRecoveryHandler(
@@ -116,7 +118,7 @@ func NewRejectionRecoveryHandler(
 	catalog RecoveryCatalogReader,
 	carts RecoveryCartBuilder,
 	checkout RecoveryOrderCheckout,
-	ceiling int64,
+	ceiling func() int64,
 ) *RejectionRecoveryHandler {
 	return &RejectionRecoveryHandler{
 		orders:   orders,
@@ -173,7 +175,7 @@ type RejectionRecoverySuggestion struct {
 // unpermitted item, mandate drift) and no budget-driven substitute
 // makes sense -- Available is false.
 func (h *RejectionRecoveryHandler) suggestSubstitute(ctx context.Context, ord order.Order) (RejectionRecoverySuggestion, error) {
-	overBudgetBy := ord.Subtotal - h.ceiling
+	overBudgetBy := ord.Subtotal - h.ceiling()
 	if overBudgetBy <= 0 {
 		return RejectionRecoverySuggestion{
 			Available: false,
@@ -287,7 +289,7 @@ func (h *RejectionRecoveryHandler) suggestSubstitute(ctx context.Context, ord or
 		NewSubtotal: newSubtotal,
 		Reasoning: fmt.Sprintf(
 			"Swapping %q for %q brings this order to %d, back under the %d ceiling.",
-			candidate.Title, substitute.Title, newSubtotal, h.ceiling,
+			candidate.Title, substitute.Title, newSubtotal, h.ceiling(),
 		),
 	}, nil
 }

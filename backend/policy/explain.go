@@ -4,7 +4,7 @@ import "fmt"
 
 // ExplainRejection renders a plain-language explanation for a failed
 // policy check. Every rejection in the system uses this shared function.
-func ExplainRejection(failedCheck string, action ProposedAction, mandate Mandate) string {
+func ExplainRejection(failedCheck string, action ProposedAction, mandate Mandate, ceiling int64) string {
 	switch failedCheck {
 	case CheckMerchantAllowlisted:
 		return fmt.Sprintf(
@@ -19,10 +19,18 @@ func ExplainRejection(failedCheck string, action ProposedAction, mandate Mandate
 		)
 
 	case CheckAmountCeiling:
+		// ceiling is threaded in from the caller (policy.Engine.Config().Ceiling
+		// in production -- see main.go's MCP Explain wiring) rather than a
+		// literal here, so this stays correct once item 25 (P2,
+		// PLAN-05-SELLER-DASHBOARD.md §4) makes the ceiling operator-editable
+		// at runtime. This used to hardcode 3_000_000 -- harmless while the
+		// ceiling really was a compile-time constant, but a real bug in the
+		// making the moment it stopped being one; fixed as part of that work
+		// rather than left to go stale a second time.
 		return fmt.Sprintf(
 			"The amount ₹%d exceeds the configured ceiling of ₹%d. I did not proceed, and no payment action was attempted.",
 			action.Amount,
-			3_000_000,
+			ceiling,
 		)
 
 	case CheckProductPermitted:

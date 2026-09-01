@@ -260,4 +260,127 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+type policySettingsResponse struct {
+	Ceiling           int64    `json:"ceiling"`
+	BudgetTolerance   float64  `json:"budget_tolerance"`
+	AllowedCurrencies []string `json:"allowed_currencies"`
+	AllowedMerchants  []string `json:"allowed_merchants"`
+}
+
+type updatePolicySettingsRequest struct {
+	Ceiling           int64    `json:"ceiling"`
+	BudgetTolerance   float64  `json:"budget_tolerance"`
+	AllowedCurrencies []string `json:"allowed_currencies"`
+	AllowedMerchants  []string `json:"allowed_merchants"`
+}
+
+// GetSettings serves GET /dashboard/settings/policy: a read-only window
+// into the live policy configuration (item 25, P2,
+// PLAN-05-SELLER-DASHBOARD.md §4). RequireOperator-gated at the route
+// (main.go), same as every other /dashboard/* endpoint. Reads
+// Service.GetPolicyConfig -- the engine's in-memory copy, not a fresh
+// DB row -- so this always reflects exactly what Evaluate is enforcing
+// right now, not what a concurrent SaveConfig might have persisted a
+// moment ago but not yet applied.
+func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cfg := h.service.GetPolicyConfig()
+	writeJSON(w, http.StatusOK, policySettingsResponse{
+		Ceiling:           cfg.Ceiling,
+		BudgetTolerance:   cfg.BudgetTolerance,
+		AllowedCurrencies: cfg.AllowedCurrencies,
+		AllowedMerchants:  cfg.AllowedMerchants,
+	})
+}
+
+// UpdateSettings serves PATCH /dashboard/settings/policy. AllowedProducts
+// is not part of the request shape at all -- it isn't a real editable
+// knob, see Engine.UpdateConfig's doc comment -- so there's no field
+// here a caller could even attempt to set it through. Still validated
+// deterministically server-side by policy.Engine exactly as before:
+// this endpoint changes nothing about HOW policy decides, only WHAT the
+// numbers/lists it decides against are (PLAN-05-SELLER-DASHBOARD.md
+// §4's own framing).
+func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req updatePolicySettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if msg := validatePolicySettings(req); msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+
+	operatorEmail := ""
+	if operator, ok := auth.OperatorFromContext(r.Context()); ok {
+		operatorEmail = operator.Email
+	}
+
+	cfg := PolicyConfig{
+		Ceiling:           req.Ceiling,
+		BudgetTolerance:   req.BudgetTolerance,
+		AllowedCurrencies: req.AllowedCurrencies,
+		AllowedMerchants:  req.AllowedMerchants,
+	}
+
+	updated, err := h.service.UpdatePolicyConfig(r.Context(), cfg, operatorEmail)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, policySettingsResponse{
+		Ceiling:           updated.Ceiling,
+		BudgetTolerance:   updated.BudgetTolerance,
+		AllowedCurrencies: updated.AllowedCurrencies,
+		AllowedMerchants:  updated.AllowedMerchants,
+	})
+}
+
+// validatePolicySettings mirrors catalog.validateProduct's convention: a
+// plain function returning a non-empty message on the first problem
+// found, empty string when the request is acceptable. Deliberately
+// conservative -- rejecting a config that would make policy.Engine
+// reject every future proposal (empty allowlists, a non-positive
+// ceiling) is far cheaper to catch here than to debug "why is checkout
+// broken" after the fact.
+func validatePolicySettings(req updatePolicySettingsRequest) string {
+	if req.Ceiling <= 0 {
+		return "ceiling must be a positive number of paise"
+	}
+	if req.BudgetTolerance < 0 {
+		return "budget_tolerance cannot be negative"
+	}
+	if req.BudgetTolerance > 5 {
+		return "budget_tolerance looks like a mistake (over 500%); double-check the value"
+	}
+	if len(req.AllowedCurrencies) == 0 {
+		return "allowed_currencies cannot be empty"
+	}
+	for _, currency := range req.AllowedCurrencies {
+		if strings.TrimSpace(currency) == "" {
+			return "allowed_currencies cannot contain a blank entry"
+		}
+	}
+	if len(req.AllowedMerchants) == 0 {
+		return "allowed_merchants cannot be empty"
+	}
+	for _, merchant := range req.AllowedMerchants {
+		if strings.TrimSpace(merchant) == "" {
+			return "allowed_merchants cannot contain a blank entry"
+		}
+	}
+	return ""
+}
+
 var _ = context.Background
