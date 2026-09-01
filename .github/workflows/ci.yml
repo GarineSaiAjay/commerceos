@@ -52,6 +52,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Runs before Go/Postgres/Redis are even set up: this check is pure
+      # file parsing (db/seeds/001_catalog.sql, backend/policy/model.go),
+      # no build or database needed, so it's the cheapest possible thing
+      # to fail fast on. See scripts/gen_catalog_allowlist.py's own
+      # docstring for the full "why" (PLAN-02-CATALOG-AND-COMMERCE.md
+      # section 6, and the three real staleness incidents this replaces --
+      # documented in backend/policy/engine.go's checkProducts doc
+      # comment). Regenerate-then-diff, not a separate --check-only run,
+      # so a local `python3 scripts/gen_catalog_allowlist.py` is the exact
+      # fix for a failure here, not a different command than what CI ran.
+      - name: Check catalog/allowlist sync
+        working-directory: .
+        run: |
+          python3 scripts/gen_catalog_allowlist.py
+          git diff --exit-code backend/policy/model.go
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
