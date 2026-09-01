@@ -1,6 +1,6 @@
 "use client";
 
-import type { Cart, SuggestResponse } from "./types";
+import type { Cart, Product, SuggestResponse } from "./types";
 import { formatINR } from "./helpers";
 import { SuggestionCard } from "./SuggestionCard";
 
@@ -21,6 +21,7 @@ export function CartPanel({
   onProceedToCheckout,
   suggestion,
   suggestionLoading,
+  optimisticSuggestion,
   onAcceptSuggestion,
   onDismissSuggestion,
 }: {
@@ -32,6 +33,7 @@ export function CartPanel({
   onProceedToCheckout: () => void;
   suggestion: SuggestResponse | null;
   suggestionLoading: boolean;
+  optimisticSuggestion: Product | null;
   onAcceptSuggestion: () => void;
   onDismissSuggestion: () => void;
 }) {
@@ -93,6 +95,7 @@ export function CartPanel({
         suggestion={suggestion}
         suggestionLoading={suggestionLoading}
         loading={loading}
+        optimistic={optimisticSuggestion}
         onAccept={onAcceptSuggestion}
         onDismiss={onDismissSuggestion}
       />
