@@ -73,7 +73,7 @@ export function AgentChatPanel({
       </p>
 
       {agentHistory.length > 0 && (
-        <div className="mb-3 max-h-64 space-y-2 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-3">
+        <div className="mb-3 max-h-64 space-y-2 overflow-y-auto rounded-lg border border-slate-200 bg-white p-3">
           {agentHistory.map((msg, i) => {
             // crossSellCard: this message is the one askAgent's cart-
             // mutation-triggered fetchSuggestion() labeled with a
@@ -93,10 +93,10 @@ export function AgentChatPanel({
             return (
               <div key={i}>
                 <p className="text-sm">
-                  <span className="font-medium text-zinc-500">
+                  <span className="font-medium text-slate-500">
                     {msg.role === "user" ? "You: " : "Agent: "}
                   </span>
-                  <span className="text-zinc-700">{msg.content}</span>
+                  <span className="text-slate-700">{msg.content}</span>
                 </p>
                 {crossSellCard && (
                   <SuggestionCard
@@ -182,15 +182,15 @@ export function AgentChatPanel({
               </button>
             </div>
             {agentPlan.alternatives && agentPlan.alternatives.length > 0 && (
-              <div className="mt-3 border-t border-zinc-100 pt-3">
-                <p className="text-xs text-zinc-500">Or:</p>
+              <div className="mt-3 border-t border-slate-100 pt-3">
+                <p className="text-xs text-slate-500">Or:</p>
                 <ul className="mt-1 space-y-1">
                   {agentPlan.alternatives.map((alt) => (
                     <li key={alt.product_id}>
                       <button
                         onClick={() => onChooseAlternative(alt)}
                         disabled={loading}
-                        className="text-sm font-medium text-zinc-700 underline underline-offset-4 hover:text-zinc-900 disabled:opacity-50"
+                        className="text-sm font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900 disabled:opacity-50"
                       >
                         {alt.title} -- {formatINR(alt.price)}
                       </button>
