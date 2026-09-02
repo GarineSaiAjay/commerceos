@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -58,6 +59,13 @@ type ToolCallingAgent struct {
 	model   string
 	client  *http.Client
 	deps    tools.Dependencies
+
+	// conversations opts RunInConversation into memory
+	// (PLAN-01-AGENTIC-CORE.md §3), same field name and same
+	// nil-is-a-valid-state convention as BuyerAgent.conversations.
+	// Unset by default -- Run and RunInConversation both work
+	// identically without it.
+	conversations ConversationStore
 }
 
 // NewToolCallingAgent builds a loop agent. baseURL defaults to
@@ -92,6 +100,23 @@ func NewToolCallingAgentFromEnv(deps tools.Dependencies) *ToolCallingAgent {
 		return nil
 	}
 	return NewToolCallingAgent(apiKey, os.Getenv("LLM_BASE_URL"), os.Getenv("LLM_MODEL"), deps)
+}
+
+// WithConversationStore opts a ToolCallingAgent into conversation
+// memory (PLAN-01-AGENTIC-CORE.md §3) for RunInConversation, mirroring
+// BuyerAgent.WithConversationStore exactly -- same interface, same
+// return-the-receiver-for-chaining shape, and the same nil-safety: a
+// nil receiver (e.g. cmd/server/main.go chaining this straight onto
+// NewToolCallingAgentFromEnv's result, which is nil without
+// OPENROUTER_API_KEY) is a documented, supported no-op rather than a
+// panic. Leaving this unset is fully supported: Run and
+// RunInConversation both work identically without it.
+func (a *ToolCallingAgent) WithConversationStore(store ConversationStore) *ToolCallingAgent {
+	if a == nil {
+		return nil
+	}
+	a.conversations = store
+	return a
 }
 
 // loopSystemPrompt instructs the model on the tool palette and the two
@@ -316,7 +341,9 @@ func (r LoopResult) reasoningTrail() []policy.RunStep {
 	return steps
 }
 
-// Run executes the bounded tool-calling loop for one buyer prompt.
+// Run executes the bounded tool-calling loop for one buyer prompt, with
+// no memory of any prior turn. See RunInConversation for the
+// cart_id-scoped memory variant.
 func (a *ToolCallingAgent) Run(ctx context.Context, prompt, merchant string) (LoopResult, error) {
 	if a == nil {
 		return LoopResult{}, fmt.Errorf("tool-calling agent not configured")
@@ -325,13 +352,108 @@ func (a *ToolCallingAgent) Run(ctx context.Context, prompt, merchant string) (Lo
 		return LoopResult{}, ErrAmbiguousIntent
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, loopTimeout)
-	defer cancel()
-
 	messages := []loopMessage{
 		{Role: "system", Content: strPtr(loopSystemPrompt)},
 		{Role: "user", Content: strPtr(prompt)},
 	}
+
+	return a.runLoop(ctx, messages, merchant)
+}
+
+// loopHistoryTurns bounds how many prior conversation turns
+// RunInConversation replays into the model's context: three
+// back-and-forth exchanges (six turns). Older turns are simply
+// dropped, not summarized -- a deliberately simple cap so a long-running
+// cart conversation can't grow the request sent to the model (and this
+// package's own fixed loopTimeout/loopMaxToolCalls budget,
+// PLAN-01-AGENTIC-CORE.md §2) without bound. Matches this package's
+// existing "simple, not sophisticated" latitude for a buildathon demo
+// (see e.g. the login-lockout or ratelimit.Limiter doc comments
+// elsewhere in this codebase for the same posture).
+const loopHistoryTurns = 6
+
+// RunInConversation is Run plus conversation memory
+// (PLAN-01-AGENTIC-CORE.md §3), scoped to cartID exactly like
+// BuyerAgent.PlanCheckoutInConversation -- in cmd/server/main.go, the
+// exact same *PostgresConversationStore instance backs both. Unlike
+// PlanCheckoutInConversation, which merges a single Intent snapshot
+// turn over turn, this replays the raw prior messages as real chat
+// history ahead of the new prompt: ConversationTurn already stores
+// plain role+content, which maps directly onto this package's own
+// loopMessage, whereas the loop has no Intent object to merge in the
+// first place -- it reasons over free text and tool results directly,
+// not a structured slot-filled intent.
+//
+// Degrades to plain Run with zero behavior change when cartID is empty
+// or no ConversationStore is configured (WithConversationStore was
+// never called) -- memory is strictly additive, same convention as
+// BuyerAgent's. A ConversationStore failure while reading history also
+// degrades to plain Run for this call rather than failing the request:
+// memory is an enhancement here too, never a dependency the loop's core
+// job should ever be blocked on.
+//
+// Known, deliberately out-of-scope limitation shared with
+// BuyerAgent.recordTurn: if a mutation doesn't change the conversation
+// (e.g. this exact prompt was already the most recent turn, which
+// shouldn't happen in practice since every real call carries a new
+// buyer prompt), nothing here deduplicates it -- same trade-off, not a
+// new one introduced by this method.
+func (a *ToolCallingAgent) RunInConversation(ctx context.Context, cartID, prompt, merchant string) (LoopResult, error) {
+	if a == nil {
+		return LoopResult{}, fmt.Errorf("tool-calling agent not configured")
+	}
+	if a.conversations == nil || cartID == "" {
+		return a.Run(ctx, prompt, merchant)
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return LoopResult{}, ErrAmbiguousIntent
+	}
+
+	history, histErr := a.conversations.History(ctx, cartID)
+	if histErr != nil {
+		log.Printf("[agents] loop conversation history unavailable for cart %s, continuing without memory: %v", cartID, histErr)
+		return a.Run(ctx, prompt, merchant)
+	}
+	if len(history) > loopHistoryTurns {
+		history = history[len(history)-loopHistoryTurns:]
+	}
+
+	messages := make([]loopMessage, 0, len(history)+2)
+	messages = append(messages, loopMessage{Role: "system", Content: strPtr(loopSystemPrompt)})
+	for _, turn := range history {
+		messages = append(messages, loopMessage{Role: turn.Role, Content: strPtr(turn.Content)})
+	}
+	messages = append(messages, loopMessage{Role: "user", Content: strPtr(prompt)})
+
+	result, runErr := a.runLoop(ctx, messages, merchant)
+
+	// Best-effort from here, same convention as BuyerAgent.recordTurn/
+	// recordAssistantTurn: a memory-write failure must never fail the
+	// buyer-facing request it's layered on top of. No Intent snapshot to
+	// store here (unlike BuyerAgent) -- the loop produces none.
+	if appendErr := a.conversations.AppendTurn(ctx, cartID, "user", prompt, nil); appendErr != nil {
+		log.Printf("[agents] failed to record loop user turn for cart %s: %v", cartID, appendErr)
+	}
+	if runErr == nil {
+		reply := result.Clarify
+		if result.Plan != nil {
+			reply = result.Plan.Reasoning
+		}
+		if appendErr := a.conversations.AppendTurn(ctx, cartID, "assistant", reply, nil); appendErr != nil {
+			log.Printf("[agents] failed to record loop assistant turn for cart %s: %v", cartID, appendErr)
+		}
+	}
+
+	return result, runErr
+}
+
+// runLoop is Run and RunInConversation's shared tail: given an initial
+// message list (system prompt, any replayed history, and the new user
+// prompt all already appended), drive the bounded tool-calling loop to
+// completion.
+func (a *ToolCallingAgent) runLoop(ctx context.Context, messages []loopMessage, merchant string) (LoopResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, loopTimeout)
+	defer cancel()
 
 	var result LoopResult
 

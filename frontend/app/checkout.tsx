@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import { API_BASE } from "../lib/api";
 // Skeleton (item 22, PLAN-04-UI-UX-AND-LATENCY.md §A3): the dashboard's
@@ -19,6 +19,8 @@ import type {
   Run,
   ApprovalRequestDetail,
   CheckoutPlan,
+  LoopResult,
+  LoopStep,
   AlternativeProduct,
   ReviewEntry,
   SuggestResponse,
@@ -193,8 +195,36 @@ export default function CheckoutFlow({
   	const [agentPlan, setAgentPlan] = useState<CheckoutPlan | null>(null);
   	const [agentError, setAgentError] = useState("");
   	const [agentHistory, setAgentHistory] = useState<AgentChatMessage[]>([]);
+  	// agentSteps is the bounded tool-calling loop's (item 18,
+  	// PLAN-01-AGENTIC-CORE.md §2) turn-by-turn trace for the most recent
+  	// askAgent() call -- search/inspect/recommend tool calls, not just
+  	// the final proposal -- so AgentChatPanel can surface real planning
+  	// and tool use, not only its outcome. Only ever set when /agent/loop
+  	// actually answered (usedLoop in askAgent); reset to [] whenever the
+  	// /agent/checkout fallback path answers instead, so a stale trace
+  	// from an earlier /agent/loop turn never gets attributed to a later
+  	// single-shot reply.
+  	const [agentSteps, setAgentSteps] = useState<LoopStep[]>([]);
   	const [suggestion, setSuggestion] = useState<SuggestResponse | null>(null);
   	const [suggestionLoading, setSuggestionLoading] = useState(false);
+  	// pendingAgentCrossSellRef marks the next fetchSuggestion() result
+  	// (triggered by the cart-mutation effect below) as the direct
+  	// consequence of an agent-accepted add-to-cart (acceptAgentPlan/
+  	// chooseAlternative), rather than a manual catalog add or a cart-panel
+  	// action -- PLAN-03-PROACTIVE-GROWTH-AGENT.md §2 wants the cross-sell
+  	// to show up inline in the chat transcript right after the agent adds
+  	// something, not only in the separate SuggestionCard the cart screen
+  	// already renders. A ref (not state) because it's read/cleared
+  	// synchronously inside that effect's fetchSuggestion().then(...), and
+  	// its value must never itself trigger a re-render. Set true just
+  	// before addToCart is called (not after -- see acceptAgentPlan's
+  	// comment on why), so it's already true by the time the resulting
+  	// cart update runs the effect; reset to false the moment it's
+  	// consumed, so a later, unrelated cart mutation never gets
+  	// misattributed as agent-triggered. This never causes a second
+  	// /growth/suggest call -- it only labels the one call the existing
+  	// effect already makes on every cart mutation.
+  	const pendingAgentCrossSellRef = useRef(false);
   	const [dismissedProductId, setDismissedProductId] = useState<string | null>(null);
   	const [orders, setOrders] = useState<Order[]>([]);
   	const [ordersLoading, setOrdersLoading] = useState(false);
@@ -412,11 +442,21 @@ export default function CheckoutFlow({
     }
   }
 
-  // Conversational entry point: POST /agent/checkout. The agent only ever
-  // returns a proposal (a selected product_id plus its reasoning) -- it
-  // never creates a cart or moves money itself. Accepting the proposal
-  // below just calls the same addToCart the manual catalog uses, so the
-  // normal cart/policy/payment pipeline still runs unchanged.
+  // Conversational entry point. Tries POST /agent/loop first -- the
+  // bounded, genuinely multi-step tool-calling agent (item 18,
+  // PLAN-01-AGENTIC-CORE.md §2) that can search/inspect/recommend
+  // across several turns before proposing, instead of BuyerAgent's fixed
+  // single-shot extract -> search -> propose pipeline. /agent/loop
+  // responds 503 whenever OPENROUTER_API_KEY isn't configured (no
+  // deterministic fallback exists for it, unlike /agent/checkout's
+  // DeterministicExtractor) -- that specific status is the one and only
+  // trigger to fall back to the original /agent/checkout path below, so
+  // this demo keeps working identically with zero LLM key configured,
+  // exactly as it always has. Either path only ever returns a proposal
+  // (a selected product_id plus its reasoning) -- neither creates a cart
+  // or moves money itself; accepting the proposal below just calls the
+  // same addToCart the manual catalog uses, so the normal cart/policy/
+  // payment pipeline still runs unchanged either way.
   async function askAgent() {
     if (!agentPrompt.trim()) return;
     markDemoMilestone("askedAgent");
@@ -426,16 +466,31 @@ export default function CheckoutFlow({
     setAgentLoading(true);
     setAgentError("");
     setAgentPlan(null);
+    setAgentSteps([]);
     try {
       // cart_id doubles as the conversation_id (backend/agents/conversation.go)
-      // -- sending it is what lets a follow-up like "no, for my brother
-      // instead" build on what was already said in this cart, instead of
-      // being extracted from scratch and rejected for missing budget/category.
-      const res = await fetch(`${API_BASE}/agent/checkout`, {
+      // on both endpoints -- sending it is what lets a follow-up like "no,
+      // for my brother instead" build on what was already said in this
+      // cart, instead of being extracted from scratch and rejected for
+      // missing budget/category. On /agent/loop it instead replays the
+      // raw prior chat turns (RunInConversation) rather than merging a
+      // structured Intent snapshot, but the buyer-facing effect -- a
+      // follow-up understood in context -- is the same.
+      let res = await fetch(`${API_BASE}/agent/loop`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, merchant: MERCHANT_ID, cart_id: cartId }),
       });
+
+      const usedLoop = res.status !== 503;
+      if (!usedLoop) {
+        res = await fetch(`${API_BASE}/agent/checkout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, merchant: MERCHANT_ID, cart_id: cartId }),
+        });
+      }
+
       if (!res.ok) {
         const text = await res.text();
         let errorMessage: string;
@@ -450,9 +505,28 @@ export default function CheckoutFlow({
         setAgentHistory((h) => [...h, { role: "assistant", content: errorMessage }]);
         return;
       }
-      const plan = (await res.json()) as CheckoutPlan;
-      setAgentPlan(plan);
-      setAgentHistory((h) => [...h, { role: "assistant", content: plan.reasoning }]);
+
+      if (usedLoop) {
+        // LoopResult carries exactly one of plan/clarify, plus a
+        // step-by-step trace (search/inspect/recommend tool calls) the
+        // single-shot /agent/checkout path never produces -- judges
+        // looking for visible planning/tool use see it in agentSteps.
+        const result = (await res.json()) as LoopResult;
+        setAgentSteps(result.steps ?? []);
+        if (result.plan) {
+          setAgentPlan(result.plan);
+          setAgentHistory((h) => [...h, { role: "assistant", content: result.plan!.reasoning }]);
+        } else {
+          const clarify = result.clarify || "Say a bit more -- what are you shopping for, and what is the budget?";
+          setAgentHistory((h) => [...h, { role: "assistant", content: clarify }]);
+        }
+      } else {
+        // agentSteps was already reset to [] above -- the single-shot
+        // /agent/checkout path has no trace of its own to show.
+        const plan = (await res.json()) as CheckoutPlan;
+        setAgentPlan(plan);
+        setAgentHistory((h) => [...h, { role: "assistant", content: plan.reasoning }]);
+      }
     } catch {
       const errorMessage = "The assistant is temporarily unavailable -- you can browse the catalog manually below.";
       setAgentError(errorMessage);
@@ -473,7 +547,15 @@ export default function CheckoutFlow({
     markDemoMilestone("acceptedProposal");
     setAgentPlan(null);
     setAgentPrompt("");
-    await addToCart(matched);
+    // Set BEFORE addToCart, not after: addToCart's own setCart call is
+    // what the cart-mutation effect below reacts to, and that effect can
+    // run as soon as this function yields control back past this await --
+    // the ref has to already be true by then. Cleared again below only if
+    // the add actually failed, so a later unrelated cart mutation is
+    // never misattributed to this one (see the ref's own doc comment).
+    pendingAgentCrossSellRef.current = true;
+    const added = await addToCart(matched);
+    if (!added) pendingAgentCrossSellRef.current = false;
   }
 
   // Adds one of the agent's next-best alternatives instead of its top
@@ -494,13 +576,27 @@ export default function CheckoutFlow({
     markDemoMilestone("acceptedProposal");
     setAgentPlan(null);
     setAgentPrompt("");
-    await addToCart(matched);
+    // See acceptAgentPlan's comment on why this is set before, not after,
+    // the await.
+    pendingAgentCrossSellRef.current = true;
+    const added = await addToCart(matched);
+    if (!added) pendingAgentCrossSellRef.current = false;
   }
 
   // Cross-sell surfaced in the cart: POST /growth/suggest. The backend
   // picks the candidate and scores it (see backend/growth/suggest.go) --
   // this only renders whatever it returns, it never invents a product.
-  async function fetchSuggestion() {
+  //
+  // Returns the fetched SuggestResponse (or null, on any non-showable
+  // outcome) so the one cart-mutation effect below that already calls
+  // this on every cart change can also use its result to label the
+  // in-chat cross-sell message when it was the agent that triggered the
+  // mutation -- calling this a second time just to get a value back
+  // would double-record a real, dashboard-visible growth.RecordImpression
+  // metric (see backend/growth/suggest.go's evaluate), so nothing here
+  // or downstream ever issues a second /growth/suggest request for the
+  // same cart mutation.
+  async function fetchSuggestion(): Promise<SuggestResponse | null> {
     setSuggestionLoading(true);
     try {
       const res = await fetch(`${API_BASE}/growth/suggest`, {
@@ -510,16 +606,19 @@ export default function CheckoutFlow({
       });
       if (!res.ok) {
         setSuggestion(null);
-        return;
+        return null;
       }
       const data = (await res.json()) as SuggestResponse;
       if (data.available && data.product && data.product.product_id !== dismissedProductId) {
         setSuggestion(data);
+        return data;
       } else {
         setSuggestion(null);
+        return null;
       }
     } catch {
       setSuggestion(null);
+      return null;
     } finally {
       setSuggestionLoading(false);
     }
@@ -867,7 +966,28 @@ export default function CheckoutFlow({
       // dependency change is exactly what useEffect is for; the
       // setState calls happen inside fetchSuggestion, not here.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      fetchSuggestion();
+      fetchSuggestion().then((data) => {
+        // Only ever true right after acceptAgentPlan/chooseAlternative
+        // set it, just before this same mutation's addToCart call --
+        // any other cart change (manual "Add to cart", cart-panel
+        // quantity edits, the suggestion's own accept) leaves it false,
+        // so this never fires for those. Consuming (clearing) it here
+        // unconditionally, whether or not there was anything to show,
+        // is what stops it from leaking onto a later, unrelated
+        // mutation -- see the ref's own doc comment.
+        if (!pendingAgentCrossSellRef.current) return;
+        pendingAgentCrossSellRef.current = false;
+        if (data?.product) {
+          setAgentHistory((h) => [
+            ...h,
+            {
+              role: "assistant",
+              content: `Added to your cart. You might also like ${data.product!.title} -- want me to add that too?`,
+              crossSellProductId: data.product!.product_id,
+            },
+          ]);
+        }
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart?.cart_id, cart?.items.length]);
@@ -1402,10 +1522,15 @@ export default function CheckoutFlow({
               agentLoading={agentLoading}
               agentError={agentError}
               agentPlan={agentPlan}
+              agentSteps={agentSteps}
               loading={loading}
               onAcceptPlan={acceptAgentPlan}
               onDismissPlan={() => setAgentPlan(null)}
               onChooseAlternative={chooseAlternative}
+              suggestion={suggestion}
+              suggestionLoading={suggestionLoading}
+              onAcceptSuggestion={acceptSuggestion}
+              onDismissSuggestion={dismissSuggestion}
             />
 
             <SuggestionCard
