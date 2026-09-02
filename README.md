@@ -131,6 +131,7 @@ directory's own README before running it.
 | `GET /dashboard/overview` · `/analytics` · `/experiment` | Dashboard |
 | `GET /adapter/calls` | Razorpay call counter (audit proof) |
 | `GET /trust/summary` · `POST /trust/run-suite` | Public audit-chain status, call counter, and one-click 14-attack suite (no auth) |
+| `GET /x402/priority-support` | Test-mode-only x402 HTTP 402 challenge/response demo (item 39) -- see `backend/commerce/payment/x402/README.md` |
 
 ## Docs
 

@@ -19,6 +19,7 @@ import (
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 	"github.com/garinesaiajay/commerceos/commerce/order"
 	"github.com/garinesaiajay/commerceos/commerce/payment"
+	"github.com/garinesaiajay/commerceos/commerce/payment/x402"
 	"github.com/garinesaiajay/commerceos/commerce/review"
 	"github.com/garinesaiajay/commerceos/events"
 	"github.com/garinesaiajay/commerceos/growth"
@@ -1143,6 +1144,34 @@ func main() {
 		"/.well-known/agent-commerce.json",
 		mcp.ManifestHandler(mcpServer, func() policy.PolicyConfig { return policyEngine.Config() }),
 	)
+
+	// item 39 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §1): a minimal,
+	// test-mode-only x402 payment-rail stub -- "one code path, one
+	// demo scenario, not a general x402 client." See
+	// commerce/payment/x402's own package doc comment for the full
+	// scope and honesty notes on wire-format fidelity. Deliberately
+	// standalone from the real checkout/policy/audit pipeline every
+	// other route above goes through -- paying this demo resource
+	// creates no order, consumes no mandate, and writes nothing to the
+	// audit chain.
+	//
+	// x402DemoSecret is not a real credential -- see
+	// x402.TestModeFacilitator's own doc comment for why treating it
+	// as sensitive would misrepresent what a test-mode-only stub is
+	// for. Overridable so a deployed judging URL doesn't ship with the
+	// same well-known default every clone of this repo has.
+	x402DemoSecret := os.Getenv("X402_DEMO_SECRET")
+	if x402DemoSecret == "" {
+		x402DemoSecret = "x402-test-mode-demo-secret"
+	}
+
+	x402Handler := x402.NewHandler(
+		x402.NewTestModeFacilitator(x402DemoSecret),
+		x402.DemoRequirements(),
+		x402.DemoResource,
+	)
+
+	commerceMux.Handle("/x402/priority-support", x402Handler)
 
 	// -------------------------
 	// Agent API Service
