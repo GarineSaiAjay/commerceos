@@ -9,6 +9,8 @@
 - A demo mandate exists with `maximum_amount` ≥ ₹30,000 and `requires_confirmation_above` set (see `POST /policy/mandates`) — this is what makes the Authorization beat below actually gate on real numbers instead of vacuously passing.
 - For the Campaign Orchestrator beat: `campaign.DefaultConfig().MinRejectedDemandCount` is 3, so `POST /campaigns/propose` produces nothing until some product has ≥3 real REJECT cross-sell recommendations already recorded. Before the demo, add an expensive item to a low-budget cart a few times (any combination that makes the Growth Agent reject the cross-sell on budget) so there's real rejected demand for the beat to propose a campaign from — don't discover this live.
 
+**If there's no live presenter** (item 38, `files/PLAN-06-ADDITIONAL-OPPORTUNITIES.md` §4): the checkout page's "Guided demo" toggle packages beats 1:00–4:30 above (ask the agent, accept its proposal, see the cross-sell, go over budget, watch the graceful rejection, read the audit trail) as an on-screen checklist a judge can drive themselves, with a one-line hint for whichever step comes next. It's a UI presentation of the same real flow this whole script walks through live — not a scripted mock of it — so anything true of this script is true of what the checklist tracks. It doesn't cover the payment/webhook or Campaign Orchestrator beats (2:30–5:00), which need a live Razorpay Test Mode checkout and pre-seeded rejected demand respectively.
+
 ---
 
 ## The script

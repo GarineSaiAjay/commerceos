@@ -27,6 +27,7 @@ import type {
   RejectionRecoverySuggestion,
   Step,
   SortOption,
+  DemoMilestones,
 } from "./checkout/types";
 import {
   MERCHANT_ID,
@@ -40,6 +41,7 @@ import { SuggestionCard } from "./checkout/SuggestionCard";
 import { AgentChatPanel } from "./checkout/AgentChatPanel";
 import { ProductList } from "./checkout/ProductList";
 import { CartPanel } from "./checkout/CartPanel";
+import { DemoGuide } from "./checkout/DemoGuide";
 
 // item 30 (P2, PLAN-04-UI-UX-AND-LATENCY.md §B4): "Once checkout.tsx is
 // split into components (A2), lazy-load rarely-used panels
@@ -229,6 +231,28 @@ export default function CheckoutFlow({
   const [postCheckoutSuggestion, setPostCheckoutSuggestion] = useState<SuggestResponse | null>(null);
   const [postCheckoutSuggestionLoading, setPostCheckoutSuggestionLoading] = useState(false);
 
+  // Guided demo walkthrough (item 38, P3,
+  // PLAN-06-ADDITIONAL-OPPORTUNITIES.md §4) -- see the DemoMilestones
+  // comment in checkout/types.ts for why these latch instead of being
+  // derived live from state, and DemoGuide.tsx for the read-only panel
+  // that renders them. `demoModeOn` just decides whether that panel is
+  // mounted; the milestones themselves are tracked whether or not the
+  // panel is visible, so turning the walkthrough on mid-session shows
+  // real accumulated progress, not a reset counter.
+  const emptyDemoMilestones: DemoMilestones = {
+    askedAgent: false,
+    acceptedProposal: false,
+    sawCrossSell: false,
+    attemptedOverBudget: false,
+    sawGracefulRejection: false,
+    openedAuditTrail: false,
+  };
+  const [demoModeOn, setDemoModeOn] = useState(false);
+  const [demoMilestones, setDemoMilestones] = useState<DemoMilestones>(emptyDemoMilestones);
+  function markDemoMilestone(key: keyof DemoMilestones) {
+    setDemoMilestones((m) => (m[key] ? m : { ...m, [key]: true }));
+  }
+
   // Persist the active cart ID so a hard reload doesn't lose the cart
   // (P0.2: previously a fresh ID was minted on every mount).
   useEffect(() => {
@@ -395,6 +419,7 @@ export default function CheckoutFlow({
   // normal cart/policy/payment pipeline still runs unchanged.
   async function askAgent() {
     if (!agentPrompt.trim()) return;
+    markDemoMilestone("askedAgent");
     const prompt = agentPrompt;
     setAgentHistory((h) => [...h, { role: "user", content: prompt }]);
     setAgentPrompt("");
@@ -445,6 +470,7 @@ export default function CheckoutFlow({
       setAgentPlan(null);
       return;
     }
+    markDemoMilestone("acceptedProposal");
     setAgentPlan(null);
     setAgentPrompt("");
     await addToCart(matched);
@@ -465,6 +491,7 @@ export default function CheckoutFlow({
       price: { amount: alt.price, currency: alt.currency },
       availability: 1,
     };
+    markDemoMilestone("acceptedProposal");
     setAgentPlan(null);
     setAgentPrompt("");
     await addToCart(matched);
@@ -1219,13 +1246,54 @@ export default function CheckoutFlow({
     }
   }
 
+  // policy_rejected added here alongside complete/failed (item 38, P3,
+  // PLAN-06-ADDITIONAL-OPPORTUNITIES.md §4): a rejected action still
+  // gets an audit run row (the policy-evaluated step just records a
+  // REJECT decision instead of an authorization), and the guided demo
+  // walkthrough's final step -- "read the audit trail" -- is meant to
+  // be reachable right from the rejection screen a buyer who went
+  // over budget just landed on, not only from a successful order.
   useEffect(() => {
-    if ((step === "complete" || step === "failed") && runId && !run) {
+    if ((step === "complete" || step === "failed" || step === "policy_rejected") && runId && !run) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       fetchRun();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, runId]);
+
+  // Guided demo milestones (item 38): sawCrossSell/attemptedOverBudget/
+  // sawGracefulRejection/openedAuditTrail all latch off signals the
+  // checkout flow already produces for its own reasons (a non-null
+  // growth suggestion, the policy_rejected step, a loaded audit run)
+  // rather than new tracking sprinkled through every place those
+  // signals are set. See the DemoMilestones comment in
+  // checkout/types.ts for why the budget/rejection pair latches
+  // together instead of independently.
+  useEffect(() => {
+    if (suggestion) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      markDemoMilestone("sawCrossSell");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestion]);
+
+  useEffect(() => {
+    if (step === "policy_rejected") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      markDemoMilestone("attemptedOverBudget");
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      markDemoMilestone("sawGracefulRejection");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  useEffect(() => {
+    if (run) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      markDemoMilestone("openedAuditTrail");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run]);
 
   // Fetch the post-checkout "complete the set" suggestion once, the
   // moment the order-complete screen has a real order to score against
@@ -1287,14 +1355,28 @@ export default function CheckoutFlow({
               {step === "complete" ? "Order Complete" : step === "orders" ? "Order History" : "Checkout"}
             </h1>
           </div>
-          {(step === "catalog" || step === "cart" || step === "orders") && (
+          <div className="flex flex-col items-end gap-2">
+            {/* item 38 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §4):
+                available on every step, not just catalog/cart/orders,
+                so a judge can turn the walkthrough on mid-flow -- e.g.
+                right after landing on a rejection screen they reached
+                on their own -- and still see it track whatever they do
+                next. */}
             <button
-              onClick={() => (step === "orders" ? setStep("catalog") : viewOrderHistory())}
-              className="mt-1 text-sm font-medium text-slate-600 underline underline-offset-4 hover:text-slate-900"
+              onClick={() => setDemoModeOn((v) => !v)}
+              className="text-sm font-medium text-slate-600 underline underline-offset-4 hover:text-slate-900"
             >
-              {step === "orders" ? "Back to shopping" : "Order history"}
+              {demoModeOn ? "Exit guided demo" : "Guided demo"}
             </button>
-          )}
+            {(step === "catalog" || step === "cart" || step === "orders") && (
+              <button
+                onClick={() => (step === "orders" ? setStep("catalog") : viewOrderHistory())}
+                className="text-sm font-medium text-slate-600 underline underline-offset-4 hover:text-slate-900"
+              >
+                {step === "orders" ? "Back to shopping" : "Order history"}
+              </button>
+            )}
+          </div>
         </header>
 
         {/* item 28 (P2, PLAN-04-UI-UX-AND-LATENCY.md §A5) extension:
@@ -1675,6 +1757,14 @@ export default function CheckoutFlow({
 				</p>
 			</div>
 
+			{/* item 38 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §4): the
+			    rejection screen previously never showed this, even though a
+			    rejected action gets a real audit run row just like a
+			    successful one -- see the fetchRun effect above. Added so the
+			    guided demo walkthrough's last step is reachable from here,
+			    not only from the complete/failed screens. */}
+			<AuditTrailPanel runId={runId} run={run} runLoading={runLoading} />
+
 			{substituteSuggestionLoading && (
 				<div className="mt-6 rounded-xl border border-slate-200 p-5">
 					<p className="text-sm text-slate-500">Checking for an in-budget substitute...</p>
@@ -1896,6 +1986,14 @@ export default function CheckoutFlow({
           Razorpay Test Mode
         </p>
       </div>
+
+      {demoModeOn && (
+        <DemoGuide
+          milestones={demoMilestones}
+          onExit={() => setDemoModeOn(false)}
+          onReset={() => setDemoMilestones(emptyDemoMilestones)}
+        />
+      )}
     </main>
   );
 }
