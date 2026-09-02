@@ -108,6 +108,14 @@ cd frontend && npm run lint && npm run build
 > The DB-backed integration tests (`audit`, `analytics`, `order`, `cart`,
 > `catalog`, `payment` repo tests) require the Postgres container on `:5433`.
 
+**Load/chaos readiness (item 41, `files/PLAN-06-ADDITIONAL-OPPORTUNITIES.md`
+§5):** `scripts/loadtest/` has a k6 script hitting `/products`,
+`/agent/checkout`, and `/growth/suggest` concurrently to find the
+actual breaking point before a judge does, plus a written-up finding
+on connection pool sizing (already explicit, not a gap) and how the
+item-34 rate limiter is expected to interact with it -- see that
+directory's own README before running it.
+
 ## Key endpoints (Commerce Service `:8081`)
 
 | Endpoint | Purpose |
