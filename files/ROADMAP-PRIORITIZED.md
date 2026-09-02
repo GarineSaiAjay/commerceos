@@ -121,4 +121,4 @@ things you flagged as weakest.
 - Whether backend Go changes should go through the same branch-per-PR
   workflow documented in `files/GIT-WORKFLOW.md` (recommended — it's
   what's kept this repo's audit trail clean so far) or whether, given
-  time pressure, some of the smaller P0 items should land more directly.
+  time pressure, some of the smaller P0 items should land more directly.....
