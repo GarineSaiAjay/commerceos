@@ -578,7 +578,7 @@ func main() {
 	outboxWorker := events.NewOutboxWorker(
 		outboxRepo,
 		eventBus,
-		"commerceos.events",
+		events.DefaultStream,
 	)
 
 	go func() {
@@ -592,7 +592,7 @@ func main() {
 	// Placeholder stream consumer proving the event bus is wired.
 	streamConsumer := events.NewStreamConsumer(
 		redisClient,
-		"commerceos.events",
+		events.DefaultStream,
 		"commerceos-group",
 	)
 
@@ -601,6 +601,36 @@ func main() {
 
 		if err := streamConsumer.Run(ctx); err != nil {
 			fmt.Printf("Stream Consumer stopped: %v\n", err)
+		}
+	}()
+
+	// item 42 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §4 /
+	// PLAN-03-PROACTIVE-GROWTH-AGENT.md §7): cartHandler now actually
+	// publishes "cart.item_added" (it compiled and worked fine without
+	// this -- WithEventPublisher is an optional capability, same WithX
+	// convention as WithCallCounter/WithAuditWriter elsewhere in this
+	// codebase); the consumer below is a second, real consumer group on
+	// the same stream (see growth.CartEventConsumer's own doc comment
+	// for why this is separate from, not a replacement for, the
+	// placeholder logger above) that precomputes cross-sell suggestions
+	// off that event instead of only on demand.
+	cartHandler = cartHandler.WithEventPublisher(eventBus, events.DefaultStream)
+
+	growthCartEventConsumer := growth.NewCartEventConsumer(
+		redisClient,
+		events.DefaultStream,
+		"growth-suggestions-group",
+		catalogRepo,
+		cartService,
+		growthAgent,
+		growthStore,
+	)
+
+	go func() {
+		fmt.Println("Growth Cart-Event Consumer started")
+
+		if err := growthCartEventConsumer.Run(ctx); err != nil {
+			fmt.Printf("Growth Cart-Event Consumer stopped: %v\n", err)
 		}
 	}()
 

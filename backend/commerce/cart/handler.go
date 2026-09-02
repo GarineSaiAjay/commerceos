@@ -1,18 +1,79 @@
 package cart
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/garinesaiajay/commerceos/events"
 )
 
 type Handler struct {
-	service *Service
+	service   *Service
+	publisher events.EventBus
+	stream    string
 }
 
 func NewHandler(service *Service) *Handler {
 	return &Handler{
 		service: service,
+	}
+}
+
+// WithEventPublisher wires in best-effort "cart.item_added" event
+// publishing (item 42, P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §4 /
+// PLAN-03-PROACTIVE-GROWTH-AGENT.md §7). Matches this codebase's WithX
+// convention for an optional capability (payment.Handler.
+// WithCallCounter, order.PostgresRepository.WithAuditWriter) -- every
+// existing caller of NewHandler keeps compiling unchanged; main.go is
+// the only one that needs to also call this to turn publishing on.
+//
+// Deliberately publishes straight to the event bus rather than going
+// through the durable outbox the way payment.captured/payment.failed
+// do (webhook_applier.go): the outbox's own contract requires Insert
+// to run inside the same DB transaction as the state change it
+// describes, and cart.Service has no transaction boundary today (its
+// repo calls are plain, un-wrapped Postgres writes) -- introducing one
+// just for this stretch item would risk a well-tested, currently
+// transaction-free service for a notification whose loss has zero
+// correctness impact. Unlike a lost payment event, a lost
+// cart.item_added event just means one cart's cross-sell suggestion
+// doesn't get precomputed early; POST /growth/suggest still computes
+// it correctly on demand regardless (growth/suggest.go), so this is
+// an honest best-effort, at-most-once notification, not a downgrade
+// of anything that needs stronger guarantees.
+func (h *Handler) WithEventPublisher(publisher events.EventBus, stream string) *Handler {
+	h.publisher = publisher
+	h.stream = stream
+	return h
+}
+
+type cartItemAddedEvent struct {
+	CartID string `json:"cart_id"`
+}
+
+// publishCartItemAdded is called after AddItem succeeds. Never fails
+// the request and is never retried -- see WithEventPublisher's doc
+// comment for why that's the right trade-off here.
+func (h *Handler) publishCartItemAdded(ctx context.Context, cartID string) {
+	if h.publisher == nil {
+		return
+	}
+
+	payload, err := json.Marshal(cartItemAddedEvent{CartID: cartID})
+	if err != nil {
+		return
+	}
+
+	if err := h.publisher.Publish(ctx, h.stream, events.OutboxEvent{
+		EventType: "cart.item_added",
+		Payload:   payload,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		log.Printf("cart: publish cart.item_added for %s: %v", cartID, err)
 	}
 }
 
@@ -135,6 +196,8 @@ func (h *Handler) AddItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	h.publishCartItemAdded(r.Context(), cartID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
