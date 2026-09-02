@@ -25,6 +25,7 @@ import (
 	db "github.com/garinesaiajay/commerceos/infra/db"
 	"github.com/garinesaiajay/commerceos/mcp"
 	"github.com/garinesaiajay/commerceos/policy"
+	"github.com/garinesaiajay/commerceos/ratelimit"
 	"github.com/garinesaiajay/commerceos/safety"
 	"github.com/garinesaiajay/commerceos/tools"
 	"github.com/garinesaiajay/commerceos/trust"
@@ -246,6 +247,33 @@ func main() {
 	buyerAgent := agents.NewBuyerAgent(agentExtractor, agentSearcher).
 		WithConversationStore(agentConversationStore)
 	agentHandler := agents.NewHandler(buyerAgent)
+
+	// item 34 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §5): both
+	// LLM-backed endpoints (POST /agent/checkout below, and POST
+	// /agent/loop -- item 18's bounded tool-calling loop) are
+	// guest-accessible with an otherwise-unmetered path to a paid LLM
+	// API -- "currently no rate limiting exists anywhere in the
+	// codebase," per the plan's own audit. burst=10, refilling at 1
+	// request/6s per caller IP thereafter: generous enough that a real
+	// buyer clicking "Ask the shopping agent" a few times, or a judge
+	// poking at either endpoint directly, never notices it, while a
+	// script loop hammering either endpoint gets capped fast. See
+	// ratelimit.Limiter's own doc comments for why this is
+	// in-memory/per-process and per-IP rather than something more
+	// sophisticated -- the plan's own framing for this item is "doesn't
+	// need to be sophisticated."
+	llmLimiter := ratelimit.NewLimiter(10, 1.0/6.0)
+	go func() {
+		// Sweep bounds llmLimiter's memory growth from the many distinct
+		// caller IPs a public judging URL sees over hours/days -- Allow
+		// itself never does this work inline. Ten minutes between sweeps,
+		// evicting anything idle for 30+ minutes: cheap relative to how
+		// small each bucket is, and nowhere near tight enough to evict a
+		// bucket still actively being rate-limited.
+		for range time.Tick(10 * time.Minute) {
+			llmLimiter.Sweep(30 * time.Minute)
+		}
+	}()
 
 	// -------------------------
 	// Phase 5: Growth Agent
@@ -907,19 +935,21 @@ func main() {
 	commerceMux.HandleFunc("/runs", authService.RequireOperator(policyHandler.HandleListRuns))
 	commerceMux.HandleFunc("/runs/", policyHandler.HandleGetRun)
 
-	// Phase 4: agent contract (produces proposals only)
-	commerceMux.HandleFunc(
+	// Phase 4: agent contract (produces proposals only). Both routes
+	// below go through llmLimiter (item 34, constructed above) -- see
+	// its own comment for why.
+	commerceMux.Handle(
 		"/agent/checkout",
-		agentHandler.PlanCheckout,
+		llmLimiter.Middleware(ratelimit.ClientIP, http.HandlerFunc(agentHandler.PlanCheckout)),
 	)
 
 	// Item 18: bounded tool-calling agent loop -- a second, genuinely
 	// multi-step agentic path alongside the fixed single-shot one above.
 	// See tool_loop.go's doc comment for why it can never reach a
 	// money-moving tool.
-	commerceMux.HandleFunc(
+	commerceMux.Handle(
 		"/agent/loop",
-		agentHandler.PlanCheckoutLoop,
+		llmLimiter.Middleware(ratelimit.ClientIP, http.HandlerFunc(agentHandler.PlanCheckoutLoop)),
 	)
 
 	// Phase 5: growth agent
