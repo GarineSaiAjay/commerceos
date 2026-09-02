@@ -226,6 +226,36 @@ export interface CheckoutPlan {
 export interface AgentChatMessage {
   role: "user" | "assistant";
   content: string;
+  // crossSellProductId marks this assistant turn as the one that
+  // triggered the cart's current cross-sell suggestion (PLAN-03-GROWTH-
+  // AND-DEMAND-INTELLIGENCE.md §2, item 43 audit follow-up) -- set only
+  // on the reply immediately after an agent-accepted add-to-cart, and
+  // only ever the shared `suggestion` state's own product_id, never a
+  // second independently-fetched suggestion. checkout.tsx renders the
+  // shared SuggestionCard inline under this one message, live-matched
+  // against the current `suggestion` state rather than a frozen copy,
+  // so it always reflects accept/dismiss/expiry immediately and can
+  // never duplicate the `/growth/suggest` impression the existing
+  // cart-mutation effect already records.
+  crossSellProductId?: string;
+}
+
+// LoopStep/LoopResult mirror backend/agents/tool_loop.go's LoopStep/
+// LoopResult JSON shapes exactly -- the bounded tool-calling agent's
+// (PLAN-01-AGENTIC-CORE.md §2, item 18) response from POST /agent/loop,
+// distinct from CheckoutPlan alone: Steps is the turn-by-turn trace
+// (tool_called/tool_result/clarify/proposed) the plain /agent/checkout
+// single-shot path never produces, and Plan/Clarify are each optional
+// (never both set) rather than CheckoutPlan being returned unconditionally.
+export interface LoopStep {
+  type: "tool_called" | "tool_result" | "clarify" | "proposed";
+  detail: string;
+}
+
+export interface LoopResult {
+  plan?: CheckoutPlan;
+  clarify?: string;
+  steps: LoopStep[];
 }
 
 export interface SuggestedProduct {
