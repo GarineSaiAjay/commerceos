@@ -126,6 +126,7 @@ directory's own README before running it.
 | `POST /orders/{id}/payment` | Authorized payment (needs `Authorization-Id`) |
 | `POST /orders/{id}/payment/verify` | Client-side signature verification |
 | `POST /webhooks/razorpay` | Razorpay webhook (signature + dedup) |
+| `POST /auth/login` · `/auth/invites` · `/auth/invites/accept` · `/auth/operators` | Operator auth + multi-operator invites (item 40) -- see `files/AUTH.md` |
 | `POST /mcp` | MCP server (JSON-RPC) |
 | `GET /.well-known/agent-commerce.json` | Agent-readable manifest: MCP tools, REST endpoints, mandate/policy model, example flows |
 | `GET /dashboard/overview` · `/analytics` · `/experiment` | Dashboard |
