@@ -28,7 +28,7 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
 | Policy Engine | Deterministic permission checks |
 | Authorization / Mandate | Consent, bound to a cart |
 | Payment Adapter | The only path to Razorpay (call counter exposed) |
-| Webhook / Event pipeline | Dedup + signature verification + outbox |
+| Webhook / Event pipeline | Dedup + signature verification + outbox; Redis Streams also drive an async cross-sell precompute off `cart.item_added` (item 42) |
 | Audit Ledger | Hash-chained accountability |
 
 ## Repository layout

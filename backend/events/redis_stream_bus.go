@@ -12,6 +12,15 @@ type EventBus interface {
 	Publish(ctx context.Context, stream string, event OutboxEvent) error
 }
 
+// DefaultStream is the one Redis Stream this project publishes every
+// domain event onto today (payment.captured/payment.failed via the
+// outbox worker, cart.item_added published directly by
+// commerce/cart.Handler -- see its WithEventPublisher). Named here,
+// instead of the "commerceos.events" string literal main.go previously
+// repeated at each of its three wiring sites, so a future second
+// stream is a real fork, not a typo in one of three copies.
+const DefaultStream = "commerceos.events"
+
 // RedisStreamBus publishes each event as a Redis Stream entry.
 type RedisStreamBus struct {
 	client *redis.Client
