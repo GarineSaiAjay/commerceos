@@ -126,3 +126,8 @@ cd frontend && npm run lint && npm run build
 - `files/trust-boundary.md` — the untrusted → trusted data flow and what re-validates each input.
 - `files/pitch-one-pager.md` — the one-page pitch.
 - `files/demo-script.md` — the five-minute live demo script.
+
+Historical, for design-history reference only (item 37, `files/PLAN-06-ADDITIONAL-OPPORTUNITIES.md` §6) -- both predate implementation and describe some capabilities that were deliberately scoped down or not built; each has an "as-built vs. as-designed" note explaining exactly where:
+
+- `files/ORIGINAL-VISION-AUTONOMOUS-REVENUE-AGENT.md` — the original vision/planning doc.
+- `files/ORIGINAL-VISION-BUILD-GUIDE.md` — the original phase-by-phase build plan.
