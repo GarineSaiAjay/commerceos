@@ -273,3 +273,28 @@ export interface RejectionRecoverySuggestion {
 export type Step = "catalog" | "cart" | "checkout" | "approval" | "gate" | "pay" | "complete" | "failed" | "policy_rejected" | "orders";
 
 export type SortOption = "default" | "price_asc" | "price_desc" | "rating" | "availability";
+
+// Guided demo walkthrough milestones (item 38, P3,
+// PLAN-06-ADDITIONAL-OPPORTUNITIES.md §4): each flag latches true the
+// first time CheckoutFlow observes the corresponding real event happen
+// -- see the markDemoMilestone call sites and the useEffects that
+// watch `suggestion`/`step`/`run` in checkout.tsx -- and is never
+// cleared on its own (only an explicit "restart walkthrough" resets
+// the whole object back to all-false). DemoGuide.tsx only ever reads
+// this, it never derives its own notion of progress.
+//
+// attemptedOverBudget and sawGracefulRejection latch together (both
+// flip true the instant `step` becomes "policy_rejected") rather than
+// independently: in this UI a buyer only ever discovers they've gone
+// over budget BY seeing the rejection screen -- there's no separate
+// "you're about to exceed it" warning today, so treating these as two
+// independently-observable moments would claim a UI signal that
+// doesn't exist.
+export interface DemoMilestones {
+  askedAgent: boolean;
+  acceptedProposal: boolean;
+  sawCrossSell: boolean;
+  attemptedOverBudget: boolean;
+  sawGracefulRejection: boolean;
+  openedAuditTrail: boolean;
+}

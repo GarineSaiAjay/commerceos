@@ -63,7 +63,13 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
      at `http://localhost:3000/dashboard` -- `files/AUTH.md` has the
      demo login credentials; a public, no-login `http://localhost:3000/trust`
      page shows the same audit-chain/safety-suite evidence for a judge
-     who doesn't have those credentials).
+     who doesn't have those credentials). The checkout page's "Guided
+     demo" toggle (item 38, `files/PLAN-06-ADDITIONAL-OPPORTUNITIES.md`
+     §4) turns on a persistent checklist that tracks the same six beats
+     as `files/demo-script.md` -- ask the agent, accept its proposal,
+     see the cross-sell, go over budget, watch the graceful rejection,
+     read the audit trail -- so a judge can self-drive the whole story
+     without a live presenter narrating it.
    - A one-off `migrate` service applies goose migrations and then both
      seed files automatically before `backend` starts (every seed
      `INSERT` uses `ON CONFLICT ... DO NOTHING`, so this is safe to run
