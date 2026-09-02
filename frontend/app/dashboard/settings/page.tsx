@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { authFetch } from "../../../lib/auth";
+import TeamSettings from "./team";
 
 // Item 25 (ROADMAP-PRIORITIZED.md P2, PLAN-05-SELLER-DASHBOARD.md §4):
 // a window into the policy engine's live configuration -- ceiling,
@@ -222,6 +223,8 @@ export default function SettingsPage() {
           {saving ? "Saving…" : "Save changes"}
         </button>
       </section>
+
+      <TeamSettings />
 
       <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-slate-900">Not editable here</h2>

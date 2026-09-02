@@ -74,6 +74,45 @@ export async function login(email: string, password: string): Promise<void> {
   setSession(data.token, data.expires_in_seconds, data.email);
 }
 
+// acceptInvite redeems an item-40 invite token (see
+// backend/auth/invite.go) by choosing a password for the new operator
+// account. On success the backend behaves like login() and hands back
+// an already-active session, which this function stores exactly the
+// way login() does -- accepting an invite should feel like signing in,
+// not require a second round trip. The one documented exception:
+// AcceptInvite's own doc comment notes that if session issuance itself
+// fails after the account was already created, the response comes back
+// without a token -- signedIn is false in that case, and the caller
+// still has a real account, just not yet a session (they can sign in
+// normally with the password they just set).
+type AcceptInviteResponse = {
+  token?: string;
+  operator_id: string;
+  merchant_id: string;
+  email: string;
+  expires_in_seconds?: number;
+};
+
+export async function acceptInvite(
+  token: string,
+  password: string,
+): Promise<{ signedIn: boolean; email: string }> {
+  const res = await fetch(`${API_BASE}/auth/invites/accept`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, password }),
+  });
+  if (!res.ok) {
+    throw new Error((await res.text()) || "Could not accept this invite.");
+  }
+  const data = (await res.json()) as AcceptInviteResponse;
+  if (data.token) {
+    setSession(data.token, data.expires_in_seconds ?? 0, data.email);
+    return { signedIn: true, email: data.email };
+  }
+  return { signedIn: false, email: data.email };
+}
+
 export async function logout(): Promise<void> {
   const token = getToken();
   clearSession();

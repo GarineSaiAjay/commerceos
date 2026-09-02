@@ -100,6 +100,56 @@ Go+network environment is available), swapping `HashPassword`/
 `VerifyPassword` to bcrypt or argon2id is a two-function change; nothing
 else in `backend/auth/` depends on the specific algorithm.
 
+## Multi-operator invites (item 40)
+
+Until item 40, exactly one hardcoded operator existed per merchant
+(`db/seeds/002_operator.sql`). A logged-in operator can now invite a
+teammate to get their own account and login on the same merchant --
+`backend/auth/invite.go`, migration
+`db/migrations/20260902100000_create_operator_invites.sql`.
+
+```
+POST   /auth/invites         RequireOperator   create an invite (body: {"email": "..."})
+GET    /auth/invites         RequireOperator   list this merchant's invites (pending/accepted/expired)
+DELETE /auth/invites/{id}    RequireOperator   revoke a still-pending invite
+POST   /auth/invites/accept  public            redeem a token + set a password -> new operator + session
+GET    /auth/operators       RequireOperator   list this merchant's operators
+DELETE /auth/operators/{id}  RequireOperator   remove a teammate
+```
+
+**No outbound email.** This project has no mail integration, and adding
+one was treated as out of scope for this item (it would be its own
+separate, judgeable piece of work). `POST /auth/invites` hands the raw
+invite token back to the *inviting* operator once, in the response body
+-- exactly like a session token, only its SHA-256 hash is ever
+persisted (`operator_invites.token_hash`). The dashboard's Settings ->
+Team panel (`frontend/app/dashboard/settings/team.tsx`) shows it as a
+copyable `https://.../accept-invite?token=...` link for the operator to
+send the teammate directly. `frontend/app/accept-invite/page.tsx` is the
+public page that redeems it: the invitee sets a password (minimum 12
+characters -- the one place in this package a brand-new credential is
+actually chosen, unlike `Login`, which only ever verifies an
+already-hashed one) and, on success, is signed in immediately, exactly
+like a normal login.
+
+**Invite lifetime and reuse.** An invite is valid for 7 days
+(`auth.InviteTTL`) and can be redeemed exactly once -- `AcceptInvite`
+checks both `expires_at` and `accepted_at` before creating the account,
+and stamps `accepted_at` once it does. Revoking a pending invite
+(`DELETE /auth/invites/{id}`) and creating a new one for the same email
+is how a merchant reissues a stale link.
+
+**Guardrails against a merchant losing dashboard access.**
+`RemoveOperator` refuses to remove the caller's own account
+(`ErrCannotRemoveSelf`) and refuses to remove a merchant's last
+remaining operator at all (`ErrCannotRemoveLastOperator`) -- neither
+guard existed before this item because there was never more than one
+operator to remove. Every invite/operator endpoint is scoped to the
+caller's own `merchant_id` (never client-supplied, always the operator
+attached to the request context by `RequireOperator`), so one merchant's
+operator can never invite into, list, or remove from a different
+merchant's team by guessing an ID.
+
 ## Session model
 
 Login (`POST /auth/login`) returns a 32-byte random token, hex-encoded,
