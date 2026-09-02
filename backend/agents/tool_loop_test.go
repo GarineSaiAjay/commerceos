@@ -2,7 +2,9 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -248,5 +250,273 @@ func TestNewToolCallingAgentFromEnvWithKey(t *testing.T) {
 	}
 	if got.baseURL != "https://openrouter.ai/api/v1" || got.model != "openai/gpt-4o-mini" {
 		t.Fatalf("unexpected defaults: baseURL=%s model=%s", got.baseURL, got.model)
+	}
+}
+
+// loopFakeConversationStore is a minimal in-memory ConversationStore for
+// RunInConversation tests. No fake ConversationStore exists elsewhere in
+// this package's tests (BuyerAgent's own PlanCheckoutInConversation has
+// none either) -- written fresh here rather than reused, since
+// BuyerAgent's Intent-merge tests (if any) would need LastKnownIntent
+// behavior this type never exercises.
+type loopFakeConversationStore struct {
+	turns map[string][]ConversationTurn
+
+	// appendErr, when set, makes every AppendTurn fail -- proves
+	// RunInConversation's best-effort posture: a memory-write failure
+	// must never fail the buyer-facing request it's layered on top of.
+	appendErr error
+
+	// historyErr, when set, makes every History call fail -- proves
+	// RunInConversation degrades to plain Run, rather than failing the
+	// whole request, when memory itself is unavailable.
+	historyErr error
+}
+
+func newLoopFakeConversationStore() *loopFakeConversationStore {
+	return &loopFakeConversationStore{turns: map[string][]ConversationTurn{}}
+}
+
+func (s *loopFakeConversationStore) AppendTurn(ctx context.Context, cartID, role, content string, intent *Intent) error {
+	if s.appendErr != nil {
+		return s.appendErr
+	}
+	s.turns[cartID] = append(s.turns[cartID], ConversationTurn{Role: role, Content: content})
+	return nil
+}
+
+func (s *loopFakeConversationStore) History(ctx context.Context, cartID string) ([]ConversationTurn, error) {
+	if s.historyErr != nil {
+		return nil, s.historyErr
+	}
+	return s.turns[cartID], nil
+}
+
+func (s *loopFakeConversationStore) LastKnownIntent(ctx context.Context, cartID string) (Intent, bool, error) {
+	// Never called by RunInConversation (it replays raw messages, not an
+	// Intent snapshot -- see tool_loop.go's RunInConversation doc
+	// comment) -- present only to satisfy the ConversationStore
+	// interface.
+	return Intent{}, false, nil
+}
+
+// loopChatCapture records each raw JSON request body a serveLoopChatCapture
+// server receives, so a test can assert what messages -- in particular,
+// any replayed conversation history -- RunInConversation actually sent
+// to the model. serveLoopChat itself only cares what it returns, never
+// what it received, so this is a separate helper rather than a change
+// to it.
+type loopChatCapture struct {
+	requests []loopChatRequest
+}
+
+func serveLoopChatCapture(t *testing.T, capture *loopChatCapture, messages ...string) *httptest.Server {
+	t.Helper()
+	calls := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read captured request body: %v", err)
+		}
+		var req loopChatRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatalf("decode captured request body: %v", err)
+		}
+		capture.requests = append(capture.requests, req)
+
+		if calls >= len(messages) {
+			t.Fatalf("unexpected extra chat call %d (only %d responses configured)", calls+1, len(messages))
+		}
+		msg := messages[calls]
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"choices":[{"message":%s}]}`, msg)
+	}))
+}
+
+// TestToolCallingAgentRunInConversationReplaysHistory proves
+// RunInConversation's core contract: prior turns already stored for a
+// cart_id are replayed as real chat history ahead of the new prompt
+// (system prompt, then history, then the new user turn), and both the
+// new user prompt and the resulting assistant reply are appended back
+// -- exactly the raw-message-replay approach RunInConversation's doc
+// comment describes, distinct from BuyerAgent's Intent-merge memory.
+func TestToolCallingAgentRunInConversationReplaysHistory(t *testing.T) {
+	store := newLoopFakeConversationStore()
+	store.turns["cart_1"] = []ConversationTurn{
+		{Role: "user", Content: "wireless earbuds under 25000"},
+		{Role: "assistant", Content: "Best ANC match under budget."},
+	}
+
+	capture := &loopChatCapture{}
+	srv := serveLoopChatCapture(t, capture,
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"propose_checkout","arguments":"{\"product_id\":\"airpods-pro-2\",\"reasoning\":\"Confirmed pick.\"}"}}]}`,
+	)
+	defer srv.Close()
+
+	agent := NewToolCallingAgent("test-key", srv.URL, "test-model", loopTestDeps()).
+		WithConversationStore(store)
+	result, err := agent.RunInConversation(context.Background(), "cart_1", "yes, that one", "merchant_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Plan == nil || result.Plan.SelectedID != "airpods-pro-2" {
+		t.Fatalf("expected airpods-pro-2 plan, got %+v (clarify=%q)", result.Plan, result.Clarify)
+	}
+
+	if len(capture.requests) != 1 {
+		t.Fatalf("expected exactly one chat call, got %d", len(capture.requests))
+	}
+	sent := capture.requests[0].Messages
+	// system, replayed user, replayed assistant, new user = 4.
+	if len(sent) != 4 {
+		t.Fatalf("expected 4 messages (system + 2 replayed + new prompt), got %d: %+v", len(sent), sent)
+	}
+	if sent[0].Role != "system" {
+		t.Fatalf("expected first message to be the system prompt, got role=%s", sent[0].Role)
+	}
+	if sent[1].Role != "user" || sent[1].Content == nil || *sent[1].Content != "wireless earbuds under 25000" {
+		t.Fatalf("expected replayed user turn first, got %+v", sent[1])
+	}
+	if sent[2].Role != "assistant" || sent[2].Content == nil || *sent[2].Content != "Best ANC match under budget." {
+		t.Fatalf("expected replayed assistant turn second, got %+v", sent[2])
+	}
+	if sent[3].Role != "user" || sent[3].Content == nil || *sent[3].Content != "yes, that one" {
+		t.Fatalf("expected the new prompt last, got %+v", sent[3])
+	}
+
+	// Both the new user turn and the resulting assistant reply must be
+	// appended back -- 2 pre-seeded + 2 new = 4.
+	if got := len(store.turns["cart_1"]); got != 4 {
+		t.Fatalf("expected 4 stored turns after the call, got %d: %+v", got, store.turns["cart_1"])
+	}
+	last := store.turns["cart_1"][3]
+	if last.Role != "assistant" || last.Content != "Confirmed pick." {
+		t.Fatalf("expected the plan's reasoning appended as the final assistant turn, got %+v", last)
+	}
+}
+
+// TestToolCallingAgentRunInConversationCapsHistory proves the
+// loopHistoryTurns cap: only the most recent 6 stored turns are
+// replayed, older ones are simply dropped rather than sent to the
+// model unbounded.
+func TestToolCallingAgentRunInConversationCapsHistory(t *testing.T) {
+	store := newLoopFakeConversationStore()
+	for i := 0; i < 10; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		store.turns["cart_2"] = append(store.turns["cart_2"], ConversationTurn{
+			Role: role, Content: fmt.Sprintf("turn-%d", i),
+		})
+	}
+
+	capture := &loopChatCapture{}
+	srv := serveLoopChatCapture(t, capture, `{"role":"assistant","content":"What is your budget?"}`)
+	defer srv.Close()
+
+	agent := NewToolCallingAgent("test-key", srv.URL, "test-model", loopTestDeps()).
+		WithConversationStore(store)
+	if _, err := agent.RunInConversation(context.Background(), "cart_2", "still deciding", "merchant_001"); err != nil {
+		t.Fatal(err)
+	}
+
+	sent := capture.requests[0].Messages
+	// system + 6 capped history turns + new prompt = 8.
+	if len(sent) != 8 {
+		t.Fatalf("expected 8 messages (system + capped 6 + new prompt), got %d", len(sent))
+	}
+	// The oldest 4 of the 10 stored turns (turn-0..turn-3) must have been
+	// dropped -- the replayed window should start at turn-4.
+	if sent[1].Content == nil || *sent[1].Content != "turn-4" {
+		t.Fatalf("expected the oldest replayed turn to be turn-4, got %+v", sent[1])
+	}
+}
+
+// TestToolCallingAgentRunInConversationFallsBackWithoutStoreOrCartID
+// proves memory is strictly additive: no ConversationStore configured,
+// or an empty cart_id, both degrade to plain Run with identical
+// behavior -- no history lookup, no append attempt.
+func TestToolCallingAgentRunInConversationFallsBackWithoutStoreOrCartID(t *testing.T) {
+	srv := serveLoopChat(t, `{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"propose_checkout","arguments":"{\"product_id\":\"airpods-pro-2\",\"reasoning\":\"Best ANC match under budget.\"}"}}]}`)
+	defer srv.Close()
+
+	agent := NewToolCallingAgent("test-key", srv.URL, "test-model", loopTestDeps())
+	result, err := agent.RunInConversation(context.Background(), "cart_3", "wireless earbuds under 25000", "merchant_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Plan == nil || result.Plan.SelectedID != "airpods-pro-2" {
+		t.Fatalf("expected the same result plain Run would give, got %+v", result)
+	}
+
+	srv2 := serveLoopChat(t, `{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"propose_checkout","arguments":"{\"product_id\":\"airpods-pro-2\",\"reasoning\":\"Best ANC match under budget.\"}"}}]}`)
+	defer srv2.Close()
+	store := newLoopFakeConversationStore()
+	agent2 := NewToolCallingAgent("test-key", srv2.URL, "test-model", loopTestDeps()).
+		WithConversationStore(store)
+	result2, err := agent2.RunInConversation(context.Background(), "", "wireless earbuds under 25000", "merchant_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result2.Plan == nil || result2.Plan.SelectedID != "airpods-pro-2" {
+		t.Fatalf("expected the same result plain Run would give with an empty cart_id, got %+v", result2)
+	}
+	if len(store.turns) != 0 {
+		t.Fatalf("expected no store interaction with an empty cart_id, got %+v", store.turns)
+	}
+}
+
+// TestToolCallingAgentRunInConversationDegradesOnHistoryError proves a
+// ConversationStore.History failure never fails the buyer-facing
+// request -- RunInConversation falls back to plain Run for that call,
+// same "memory is an enhancement, never a dependency" posture as
+// BuyerAgent.PlanCheckoutInConversation.
+func TestToolCallingAgentRunInConversationDegradesOnHistoryError(t *testing.T) {
+	store := newLoopFakeConversationStore()
+	store.historyErr = fmt.Errorf("db unavailable")
+
+	srv := serveLoopChat(t, `{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"propose_checkout","arguments":"{\"product_id\":\"airpods-pro-2\",\"reasoning\":\"Best ANC match under budget.\"}"}}]}`)
+	defer srv.Close()
+
+	agent := NewToolCallingAgent("test-key", srv.URL, "test-model", loopTestDeps()).
+		WithConversationStore(store)
+	result, err := agent.RunInConversation(context.Background(), "cart_4", "wireless earbuds under 25000", "merchant_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Plan == nil || result.Plan.SelectedID != "airpods-pro-2" {
+		t.Fatalf("expected a successful degrade-to-Run result, got %+v (clarify=%q)", result.Plan, result.Clarify)
+	}
+}
+
+// TestToolCallingAgentRunInConversationSurvivesAppendFailure proves an
+// AppendTurn failure is logged and swallowed, never surfaced to the
+// caller -- the buyer already has their plan by the time memory is
+// persisted, and a persistence hiccup must not turn that into a failed
+// request.
+func TestToolCallingAgentRunInConversationSurvivesAppendFailure(t *testing.T) {
+	store := newLoopFakeConversationStore()
+	store.appendErr = fmt.Errorf("write failed")
+
+	srv := serveLoopChat(t, `{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"propose_checkout","arguments":"{\"product_id\":\"airpods-pro-2\",\"reasoning\":\"Best ANC match under budget.\"}"}}]}`)
+	defer srv.Close()
+
+	agent := NewToolCallingAgent("test-key", srv.URL, "test-model", loopTestDeps()).
+		WithConversationStore(store)
+	result, err := agent.RunInConversation(context.Background(), "cart_5", "wireless earbuds under 25000", "merchant_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Plan == nil || result.Plan.SelectedID != "airpods-pro-2" {
+		t.Fatalf("expected a successful result despite the append failure, got %+v", result)
+	}
+	if len(store.turns["cart_5"]) != 0 {
+		t.Fatalf("expected no turns actually stored given appendErr, got %+v", store.turns["cart_5"])
 	}
 }

@@ -320,12 +320,17 @@ func main() {
 	// NewToolCallingAgentFromEnv returns nil without OPENROUTER_API_KEY,
 	// same convention as llmExtractor above; WithLoopAgent(nil) makes
 	// /agent/loop respond 503 rather than panic, leaving /agent/checkout
-	// fully unaffected.
+	// fully unaffected. WithConversationStore chains the exact same
+	// agentConversationStore instance buyerAgent already uses above,
+	// giving RunInConversation (PLAN-01-AGENTIC-CORE.md §3) the same
+	// cart-scoped memory buyerAgent's PlanCheckoutInConversation gets --
+	// nil-receiver-safe, so this is a no-op when
+	// NewToolCallingAgentFromEnv itself returned nil.
 	toolLoopAgent := agents.NewToolCallingAgentFromEnv(tools.Dependencies{
 		Catalog: catalogService,
 		Cart:    cartService,
 		Growth:  growthAgent,
-	})
+	}).WithConversationStore(agentConversationStore)
 	agentHandler.WithLoopAgent(toolLoopAgent)
 
 	// -------------------------

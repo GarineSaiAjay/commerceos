@@ -124,6 +124,11 @@ func (h *Handler) PlanCheckout(w http.ResponseWriter, r *http.Request) {
 type loopRequest struct {
 	Prompt   string `json:"prompt"`
 	Merchant string `json:"merchant"`
+	// CartID doubles as the conversation_id for agent memory, same
+	// convention and same backward-compatible default as
+	// planRequest.CartID -- an empty/omitted CartID falls back to the
+	// original memoryless Run, unchanged.
+	CartID string `json:"cart_id"`
 }
 
 // PlanCheckoutLoop handles POST /agent/loop -- the bounded tool-calling
@@ -152,7 +157,15 @@ func (h *Handler) PlanCheckoutLoop(w http.ResponseWriter, r *http.Request) {
 		req.Merchant = "merchant_001"
 	}
 
-	result, err := h.loopAgent.Run(r.Context(), req.Prompt, req.Merchant)
+	var (
+		result LoopResult
+		err    error
+	)
+	if req.CartID != "" {
+		result, err = h.loopAgent.RunInConversation(r.Context(), req.CartID, req.Prompt, req.Merchant)
+	} else {
+		result, err = h.loopAgent.Run(r.Context(), req.Prompt, req.Merchant)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
