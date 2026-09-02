@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type Handler struct {
@@ -79,6 +80,283 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.service.Logout(r.Context(), bearerToken(r)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- item 40: multi-operator invites ---
+//
+// Routing (wired in backend/cmd/server/main.go, following the same
+// exact-route-before-prefix-route convention as e.g. "/campaigns" vs.
+// "/campaigns/"):
+//   POST   /auth/invites         RequireOperator  -> Invites (create)
+//   GET    /auth/invites         RequireOperator  -> Invites (list)
+//   DELETE /auth/invites/{id}    RequireOperator  -> InviteByID (revoke)
+//   POST   /auth/invites/accept  public           -> AcceptInvite
+//   GET    /auth/operators       RequireOperator  -> Operators (list)
+//   DELETE /auth/operators/{id}  RequireOperator  -> OperatorByID (remove)
+
+type inviteRequest struct {
+	Email string `json:"email"`
+}
+
+type inviteResponse struct {
+	InviteID  string `json:"invite_id"`
+	Email     string `json:"email"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+type inviteListItem struct {
+	ID         string  `json:"id"`
+	Email      string  `json:"email"`
+	InvitedBy  string  `json:"invited_by"`
+	ExpiresAt  string  `json:"expires_at"`
+	AcceptedAt *string `json:"accepted_at"`
+	Status     string  `json:"status"` // "pending" | "accepted" | "expired"
+}
+
+// Invites serves both POST (create an invite) and GET (list this
+// merchant's invites) at /auth/invites -- both require an operator
+// session, and the operator field consulted below is always the
+// caller's own (never client-supplied), so there's no cross-merchant
+// leakage.
+func (h *Handler) Invites(w http.ResponseWriter, r *http.Request) {
+	operator, ok := OperatorFromContext(r.Context())
+	if !ok {
+		// Unreachable in practice -- main.go always wraps this in
+		// RequireOperator -- but fail closed rather than trust that.
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		h.createInvite(w, r, operator)
+	case http.MethodGet:
+		h.listInvites(w, r, operator)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) createInvite(w http.ResponseWriter, r *http.Request, operator Operator) {
+	var req inviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	token, invite, err := h.service.InviteOperator(r.Context(), operator, req.Email)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidEmail):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, ErrEmailAlreadyRegistered):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, inviteResponse{
+		InviteID:  invite.ID,
+		Email:     invite.Email,
+		Token:     token,
+		ExpiresAt: invite.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+func (h *Handler) listInvites(w http.ResponseWriter, r *http.Request, operator Operator) {
+	invites, err := h.service.ListInvites(r.Context(), operator.MerchantID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	now := time.Now()
+	items := make([]inviteListItem, 0, len(invites))
+	for _, inv := range invites {
+		item := inviteListItem{
+			ID:        inv.ID,
+			Email:     inv.Email,
+			InvitedBy: inv.InvitedBy,
+			ExpiresAt: inv.ExpiresAt.Format(time.RFC3339),
+			Status:    "pending",
+		}
+		if inv.AcceptedAt != nil {
+			accepted := inv.AcceptedAt.Format(time.RFC3339)
+			item.AcceptedAt = &accepted
+			item.Status = "accepted"
+		} else if now.After(inv.ExpiresAt) {
+			item.Status = "expired"
+		}
+		items = append(items, item)
+	}
+
+	writeJSON(w, http.StatusOK, items)
+}
+
+// InviteByID serves DELETE /auth/invites/{id} -- revoking a still-
+// pending invite. Registered on the "/auth/invites/" prefix; the exact
+// path "/auth/invites" (Invites, above) and "/auth/invites/accept"
+// (AcceptInvite, below) are both more specific and win over this one.
+func (h *Handler) InviteByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	operator, ok := OperatorFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/auth/invites/")
+	if id == "" {
+		http.Error(w, "invite id required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.service.RevokeInvite(r.Context(), operator, id); err != nil {
+		if errors.Is(err, ErrInviteNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type acceptInviteRequest struct {
+	Token    string `json:"token"`
+	Password string `json:"password"`
+}
+
+// AcceptInvite serves POST /auth/invites/accept. Deliberately public
+// (no bearer token possible or required -- the invitee doesn't have an
+// account yet): the invite token itself, a 256-bit random value only
+// its SHA-256 hash of which is ever stored, is what authorizes this
+// call, exactly as a session token authorizes a request to a gated
+// route. On success it behaves like Login: it returns an
+// already-active session for the brand-new operator account.
+func (h *Handler) AcceptInvite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req acceptInviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	token, operator, err := h.service.AcceptInvite(r.Context(), req.Token, req.Password)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrPasswordTooShort):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, ErrInviteNotFound), errors.Is(err, ErrInviteExpired), errors.Is(err, ErrInviteAlreadyAccepted):
+			http.Error(w, err.Error(), http.StatusGone)
+		case errors.Is(err, ErrEmailAlreadyRegistered):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if token == "" {
+		// The account was created but the follow-up session issuance
+		// failed (see AcceptInvite's own doc comment) -- still success
+		// from the invitee's side of the API contract, they just need to
+		// log in once instead of landing signed-in immediately.
+		writeJSON(w, http.StatusCreated, loginResponse{
+			OperatorID: operator.ID,
+			MerchantID: operator.MerchantID,
+			Email:      operator.Email,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, loginResponse{
+		Token:      token,
+		OperatorID: operator.ID,
+		MerchantID: operator.MerchantID,
+		Email:      operator.Email,
+		ExpiresIn:  int(SessionTTL.Seconds()),
+	})
+}
+
+type operatorListItem struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
+// Operators serves GET /auth/operators -- the merchant's own team list.
+func (h *Handler) Operators(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	operator, ok := OperatorFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	records, err := h.service.ListOperators(r.Context(), operator.MerchantID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]operatorListItem, 0, len(records))
+	for _, rec := range records {
+		items = append(items, operatorListItem{ID: rec.ID, Email: rec.Email})
+	}
+
+	writeJSON(w, http.StatusOK, items)
+}
+
+// OperatorByID serves DELETE /auth/operators/{id} -- removing a
+// teammate. See Service.RemoveOperator for the self-removal and
+// last-operator guards.
+func (h *Handler) OperatorByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	operator, ok := OperatorFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/auth/operators/")
+	if id == "" {
+		http.Error(w, "operator id required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.service.RemoveOperator(r.Context(), operator, id); err != nil {
+		switch {
+		case errors.Is(err, ErrCannotRemoveSelf), errors.Is(err, ErrCannotRemoveLastOperator):
+			http.Error(w, err.Error(), http.StatusConflict)
+		case errors.Is(err, ErrOperatorNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 

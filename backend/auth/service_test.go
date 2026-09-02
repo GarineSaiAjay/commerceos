@@ -17,6 +17,8 @@ import (
 type fakeRepository struct {
 	operators map[string]OperatorRecord // keyed by (already-normalized) email
 	sessions  map[string]sessionRecord  // keyed by token hash
+	invites   map[string]Invite         // keyed by invite ID
+	tokens    map[string]string         // invite token hash -> invite ID
 }
 
 type sessionRecord struct {
@@ -28,6 +30,8 @@ func newFakeRepository() *fakeRepository {
 	return &fakeRepository{
 		operators: map[string]OperatorRecord{},
 		sessions:  map[string]sessionRecord{},
+		invites:   map[string]Invite{},
+		tokens:    map[string]string{},
 	}
 }
 

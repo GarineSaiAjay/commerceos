@@ -846,6 +846,20 @@ func main() {
 	commerceMux.HandleFunc("/auth/login", authHandler.Login)
 	commerceMux.HandleFunc("/auth/logout", authHandler.Logout)
 
+	// item 40 (P3, PLAN-05-SELLER-DASHBOARD.md §7): multi-operator
+	// invites -- a second (or third, ...) operator per merchant, each
+	// with their own login, on top of the single hardcoded operator
+	// above. "/auth/invites/accept" is registered as its own exact route
+	// (public -- the invitee has no account or token yet) so it is never
+	// shadowed by, and never falls through to, the RequireOperator-gated
+	// "/auth/invites/" prefix route below it -- same pattern as
+	// "/campaigns/export" vs. "/campaigns/" elsewhere in this file.
+	commerceMux.HandleFunc("/auth/invites/accept", authHandler.AcceptInvite)
+	commerceMux.HandleFunc("/auth/invites", authService.RequireOperator(authHandler.Invites))
+	commerceMux.HandleFunc("/auth/invites/", authService.RequireOperator(authHandler.InviteByID))
+	commerceMux.HandleFunc("/auth/operators", authService.RequireOperator(authHandler.Operators))
+	commerceMux.HandleFunc("/auth/operators/", authService.RequireOperator(authHandler.OperatorByID))
+
 	// Phase 3: policy routes
 	commerceMux.HandleFunc(
 		"/policy/mandates",
