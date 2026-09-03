@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/garinesaiajay/commerceos/growth"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,6 +24,13 @@ type ExperimentReport struct {
 	CILower        float64 `json:"ci_lower"` // fractional lift
 	CIUpper        float64 `json:"ci_upper"`
 	Source         string  `json:"source"` // "simulated"
+	// UpdatedAt is when this experiment name was last actually run --
+	// distinct from the row's created_at (see List's doc comment):
+	// created_at is deliberately left untouched by the upsert so
+	// re-running doesn't reorder the history list, while UpdatedAt DOES
+	// change on every run, purely for display ("last run ...") on the
+	// Analytics dashboard (PLAN-05-SELLER-DASHBOARD.md §4).
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ExperimentService runs simulated A/B experiments over the Merchant
@@ -74,11 +82,14 @@ func (s *ExperimentService) catalogProducts(ctx context.Context) ([]growth.Produ
 // "history" here means one row per distinct experiment *name*, not one
 // row per run. created_at is not touched by the upsert, so a re-run
 // keeps its original position in this ordering rather than jumping to
-// the top.
+// the top; UpdatedAt DOES change on every run (it's a plain SET, not
+// part of ORDER BY), so the dashboard can still show "last run ..."
+// per experiment without the list itself reordering underneath it.
 func (s *ExperimentService) List(ctx context.Context) ([]ExperimentReport, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, name, metric, population, control_size, treatment_size,
-			control_value, treatment_value, lift, ci_lower, ci_upper, source
+			control_value, treatment_value, lift, ci_lower, ci_upper, source,
+			updated_at
 		FROM experiments
 		ORDER BY created_at DESC
 	`)
@@ -93,6 +104,7 @@ func (s *ExperimentService) List(ctx context.Context) ([]ExperimentReport, error
 		if err := rows.Scan(
 			&r.ID, &r.Name, &r.Metric, &r.Population, &r.ControlSize, &r.TreatmentSize,
 			&r.ControlValue, &r.TreatmentValue, &r.Lift, &r.CILower, &r.CIUpper, &r.Source,
+			&r.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan experiment: %w", err)
 		}
@@ -167,26 +179,43 @@ func (s *ExperimentService) Run(
 		CILower:        ciLower,
 		CIUpper:        ciUpper,
 		Source:         "simulated",
+		UpdatedAt:      time.Now().UTC(),
 	}
 
-	// Persist (upsert).
+	// Persist (upsert). The ON CONFLICT SET list now covers every
+	// column the INSERT does (previously only the value/lift/CI
+	// columns were kept in sync, leaving population/control_size/
+	// treatment_size/metric/source to silently keep whatever the FIRST
+	// run wrote -- harmless today only because MerchantSimulator.
+	// Generate's population is a hardcoded 50,000-session constant, not
+	// something that can actually drift between runs, but fragile to
+	// rely on that staying true). updated_at is set explicitly to the
+	// same Go-side timestamp as report.UpdatedAt above, so the returned
+	// report and the persisted row can never disagree.
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO experiments (
 			id, name, metric, population, control_size, treatment_size,
-			control_value, treatment_value, lift, ci_lower, ci_upper, source
+			control_value, treatment_value, lift, ci_lower, ci_upper, source,
+			updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (id) DO UPDATE SET
+			metric = EXCLUDED.metric,
+			population = EXCLUDED.population,
+			control_size = EXCLUDED.control_size,
+			treatment_size = EXCLUDED.treatment_size,
 			control_value = EXCLUDED.control_value,
 			treatment_value = EXCLUDED.treatment_value,
 			lift = EXCLUDED.lift,
 			ci_lower = EXCLUDED.ci_lower,
-			ci_upper = EXCLUDED.ci_upper
+			ci_upper = EXCLUDED.ci_upper,
+			source = EXCLUDED.source,
+			updated_at = EXCLUDED.updated_at
 	`,
 		report.ID, name, report.Metric, report.Population,
 		report.ControlSize, report.TreatmentSize,
 		report.ControlValue, report.TreatmentValue, report.Lift,
-		report.CILower, report.CIUpper, report.Source,
+		report.CILower, report.CIUpper, report.Source, report.UpdatedAt,
 	)
 	if err != nil {
 		return ExperimentReport{}, fmt.Errorf("save experiment: %w", err)

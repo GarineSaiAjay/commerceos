@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { authFetch } from "../../../lib/auth";
+import { formatTime } from "../../../lib/format";
 
 type ExperimentReport = {
   experiment_id: string;
@@ -15,6 +16,10 @@ type ExperimentReport = {
   ci_lower: number;
   ci_upper: number;
   source: string;
+  // When this experiment name was last run -- distinct from the row's
+  // creation time, which stays fixed so re-running doesn't reorder the
+  // history list (backend/analytics/experiment.go's List doc comment).
+  updated_at: string;
 };
 
 function fmt(n: number) {
@@ -139,6 +144,7 @@ export default function AnalyticsPage() {
                   <span className="text-slate-600">{h.population.toLocaleString()} sessions</span>
                   <span className="text-slate-600">lift {fmt(h.lift * 100)}%</span>
                   <span className="text-slate-500">CI {fmt(h.ci_lower * 100)}% to {fmt(h.ci_upper * 100)}%</span>
+                  <span className="text-xs text-slate-400">last run {formatTime(h.updated_at)}</span>
                 </div>
               </li>
             ))}
