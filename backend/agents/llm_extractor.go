@@ -21,6 +21,11 @@ type LLMExtractor struct {
 	baseURL string
 	model   string
 	client  *http.Client
+
+	// costGuard is optional (nil until WithCostGuard is called) --
+	// see CostGuard's own doc comment for why one shared instance
+	// guards this AND ToolCallingAgent.chat.
+	costGuard *CostGuard
 }
 
 // llmRequestTimeout bounds how long Extract waits on the whole chat
@@ -51,6 +56,19 @@ func NewLLMExtractor(apiKey, baseURL, model string) *LLMExtractor {
 		model:   model,
 		client:  &http.Client{Timeout: llmRequestTimeout},
 	}
+}
+
+// WithCostGuard wires the shared daily cost guard (PLAN-01-AGENTIC-
+// CORE.md §2's "max-cost/day guard"), same fluent-setter, nil-
+// receiver-safe convention as ToolCallingAgent.WithConversationStore.
+// Leaving this unset is fully supported: Extract works identically,
+// just without the daily budget enforced.
+func (e *LLMExtractor) WithCostGuard(g *CostGuard) *LLMExtractor {
+	if e == nil {
+		return nil
+	}
+	e.costGuard = g
+	return e
 }
 
 // NewLLMExtractorFromEnv reads the standard env vars. Returns nil if no
@@ -139,12 +157,16 @@ type chatChoice struct {
 // chatResponse is the API response envelope.
 type chatResponse struct {
 	Choices []chatChoice `json:"choices"`
+	Usage   llmUsage     `json:"usage"`
 }
 
 // Extract calls the LLM and validates the structured output.
 func (e *LLMExtractor) Extract(ctx context.Context, prompt string) (Intent, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return Intent{}, ErrAmbiguousIntent
+	}
+	if err := e.costGuard.Check(ctx); err != nil {
+		return Intent{}, err
 	}
 
 	body, err := json.Marshal(chatRequest{
@@ -186,6 +208,10 @@ func (e *LLMExtractor) Extract(ctx context.Context, prompt string) (Intent, erro
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return Intent{}, fmt.Errorf("decode llm response: %w", err)
 	}
+	// Recorded regardless of what's decoded below -- OpenRouter bills
+	// for tokens actually returned, not for whether this extractor goes
+	// on to make sense of them.
+	e.costGuard.Record(parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens)
 	if len(parsed.Choices) == 0 {
 		return Intent{}, fmt.Errorf("llm returned no choices")
 	}

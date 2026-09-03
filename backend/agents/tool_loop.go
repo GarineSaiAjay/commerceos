@@ -66,6 +66,11 @@ type ToolCallingAgent struct {
 	// Unset by default -- Run and RunInConversation both work
 	// identically without it.
 	conversations ConversationStore
+
+	// costGuard is optional (nil until WithCostGuard is called) --
+	// see CostGuard's own doc comment for why one shared instance
+	// guards this AND LLMExtractor.Extract.
+	costGuard *CostGuard
 }
 
 // NewToolCallingAgent builds a loop agent. baseURL defaults to
@@ -116,6 +121,19 @@ func (a *ToolCallingAgent) WithConversationStore(store ConversationStore) *ToolC
 		return nil
 	}
 	a.conversations = store
+	return a
+}
+
+// WithCostGuard wires the shared daily cost guard (PLAN-01-AGENTIC-
+// CORE.md §2's "max-cost/day guard"), same fluent-setter, nil-
+// receiver-safe convention as WithConversationStore above. Leaving
+// this unset is fully supported: Run/RunInConversation work
+// identically, just without the daily budget enforced.
+func (a *ToolCallingAgent) WithCostGuard(g *CostGuard) *ToolCallingAgent {
+	if a == nil {
+		return nil
+	}
+	a.costGuard = g
 	return a
 }
 
@@ -189,6 +207,7 @@ type loopChatChoice struct {
 
 type loopChatResponse struct {
 	Choices []loopChatChoice `json:"choices"`
+	Usage   llmUsage         `json:"usage"`
 }
 
 func loopSchema(properties map[string]any, required ...string) map[string]any {
@@ -688,6 +707,10 @@ func (a *ToolCallingAgent) dispatch(ctx context.Context, name, argsJSON string) 
 // attached. Reuses the same OpenAI-compatible wire format
 // llm_extractor.go speaks, extended with tools/tool_choice.
 func (a *ToolCallingAgent) chat(ctx context.Context, messages []loopMessage) (loopMessage, error) {
+	if err := a.costGuard.Check(ctx); err != nil {
+		return loopMessage{}, err
+	}
+
 	body, err := json.Marshal(loopChatRequest{
 		Model:       a.model,
 		Messages:    messages,
@@ -724,6 +747,9 @@ func (a *ToolCallingAgent) chat(ctx context.Context, messages []loopMessage) (lo
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return loopMessage{}, fmt.Errorf("decode llm response: %w", err)
 	}
+	// Recorded regardless of what's decoded below -- see
+	// LLMExtractor.Extract's identical comment on its own Record call.
+	a.costGuard.Record(parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens)
 	if len(parsed.Choices) == 0 {
 		return loopMessage{}, fmt.Errorf("llm returned no choices")
 	}

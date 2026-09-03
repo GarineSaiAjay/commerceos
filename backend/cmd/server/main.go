@@ -229,7 +229,20 @@ func main() {
 	// the interface value then has a non-nil type descriptor even though
 	// its data pointer is nil). Comparing the concrete pointer directly,
 	// while it is still a concrete pointer, avoids that entirely.
-	llmExtractor := agents.NewLLMExtractorFromEnv()
+	//
+	// costGuard is the "max-cost/day guard if the OpenRouter key is
+	// metered" PLAN-01-AGENTIC-CORE.md §2 calls for -- one shared
+	// instance wired onto BOTH llmExtractor below and toolLoopAgent
+	// further down, since they share the same OPENROUTER_API_KEY. See
+	// CostGuard's own doc comment for why a single guard is correct
+	// here rather than one per call site. WithAuditWriter is chained on
+	// later, once auditWriter exists (same "doesn't exist yet at this
+	// point in the function" reason policyService.WithAuditWriter is
+	// deferred below) -- the budget is still enforced immediately
+	// either way, it just has nowhere durable to log a trip until then.
+	costGuard := agents.NewCostGuardFromEnv()
+
+	llmExtractor := agents.NewLLMExtractorFromEnv().WithCostGuard(costGuard)
 	deterministicExtractor := agents.NewDeterministicExtractor()
 
 	var agentExtractor agents.IntentExtractor = deterministicExtractor
@@ -330,7 +343,7 @@ func main() {
 		Catalog: catalogService,
 		Cart:    cartService,
 		Growth:  growthAgent,
-	}).WithConversationStore(agentConversationStore)
+	}).WithConversationStore(agentConversationStore).WithCostGuard(costGuard)
 	agentHandler.WithLoopAgent(toolLoopAgent)
 
 	// -------------------------
@@ -558,6 +571,14 @@ func main() {
 	// policyService's own construction above, because auditWriter
 	// doesn't exist yet at that point in this function.
 	policyService = policyService.WithAuditWriter(auditWriter)
+
+	// costGuard was constructed (and already enforcing its budget)
+	// before auditWriter existed -- see its construction above. Wiring
+	// the audit writer in now just gives a trip somewhere durable to
+	// log; nil-receiver-safe like every other WithX here, so this is a
+	// no-op if OPENROUTER_API_KEY was never set and costGuard ended up
+	// unused by anything.
+	costGuard = costGuard.WithAuditWriter(auditWriter)
 
 	outboxRepo := events.NewPostgresOutboxRepository(dbPool)
 
