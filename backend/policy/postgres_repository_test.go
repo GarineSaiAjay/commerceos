@@ -155,3 +155,117 @@ func TestListRunsMergesAgentPlans(t *testing.T) {
 		t.Errorf("ListRuns row should have no Steps, got %d", len(found.Steps))
 	}
 }
+
+// TestGetRunFollowsLinkedPlanToAction proves item 16's plan<->action
+// linking (db/migrations/*_link_agent_plans_to_actions.sql): once
+// SetActionPlanID has tagged an agent_actions row with the agent_plans
+// row that led to it, looking a Run up by EITHER the old plan_ ID or
+// the resulting action_ ID must return the exact same merged timeline
+// -- the plan's own reasoning steps prefixed onto the action's
+// risk/policy/authorization timeline, never two separate partial Runs.
+func TestGetRunFollowsLinkedPlanToAction(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(
+		ctx,
+		"postgres://commerceos:commerceos_dev_password@localhost:5433/commerceos?sslmode=disable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	planID := "plan_test_link_to_action"
+	actionID := "action_test_link_to_plan"
+	cartID := "cart_test_link_to_plan"
+	_, _ = pool.Exec(ctx, `DELETE FROM agent_actions WHERE id = $1`, actionID)
+	_, _ = pool.Exec(ctx, `DELETE FROM agent_plans WHERE id = $1`, planID)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM agent_actions WHERE id = $1`, actionID)
+		_, _ = pool.Exec(ctx, `DELETE FROM agent_plans WHERE id = $1`, planID)
+	})
+
+	repo := NewPostgresRepository(pool)
+
+	planProposal := ProposedAction{
+		Action: "CREATE_ORDER", Amount: 89900, Currency: "INR", Merchant: "merchant_001",
+		Items: []string{"product_test_link"},
+	}
+	if err := repo.SaveAgentPlan(ctx, AgentPlan{
+		ID:        planID,
+		Proposal:  planProposal,
+		Steps:     []RunStep{{Stage: "intent_extracted", Detail: "reasoning step", Timestamp: time.Now()}},
+		CreatedAt: time.Now(),
+		CartID:    cartID,
+	}); err != nil {
+		t.Fatalf("SaveAgentPlan: %v", err)
+	}
+
+	if err := repo.SaveAction(ctx, planProposal, actionID); err != nil {
+		t.Fatalf("SaveAction: %v", err)
+	}
+
+	// Simulates Service.Propose's own best-effort correlation lookup.
+	foundPlanID, found, err := repo.LatestPlanIDForCart(ctx, cartID, time.Now())
+	if err != nil {
+		t.Fatalf("LatestPlanIDForCart: %v", err)
+	}
+	if !found || foundPlanID != planID {
+		t.Fatalf("LatestPlanIDForCart = (%q, %v), want (%q, true)", foundPlanID, found, planID)
+	}
+	if err := repo.SetActionPlanID(ctx, actionID, foundPlanID); err != nil {
+		t.Fatalf("SetActionPlanID: %v", err)
+	}
+
+	runByAction, err := repo.GetRun(ctx, actionID)
+	if err != nil {
+		t.Fatalf("GetRun(actionID): %v", err)
+	}
+	if runByAction.ID != actionID {
+		t.Errorf("runByAction.ID = %q, want %q", runByAction.ID, actionID)
+	}
+	if len(runByAction.Steps) == 0 || runByAction.Steps[0].Stage != "intent_extracted" {
+		t.Fatalf("runByAction.Steps does not start with the linked plan's own steps: %+v", runByAction.Steps)
+	}
+
+	runByPlan, err := repo.GetRun(ctx, planID)
+	if err != nil {
+		t.Fatalf("GetRun(planID): %v", err)
+	}
+	// A lookup by the old plan_ ID must delegate wholesale to the
+	// linked action's Run -- same ID, same merged Steps -- not a
+	// second, bare, unlinked plan-only Run.
+	if runByPlan.ID != actionID {
+		t.Errorf("runByPlan.ID = %q, want %q (GetRun(planID) should delegate to the linked action)", runByPlan.ID, actionID)
+	}
+	if len(runByPlan.Steps) != len(runByAction.Steps) {
+		t.Errorf("runByPlan.Steps has %d steps, runByAction.Steps has %d -- should match", len(runByPlan.Steps), len(runByAction.Steps))
+	}
+
+	// Once linked, ListRuns must show this as one event (the action),
+	// not two (the action AND the now-superseded bare plan entry).
+	runs, err := repo.ListRuns(ctx, 500)
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	var seenAction, seenPlan bool
+	for _, run := range runs {
+		if run.ID == actionID {
+			seenAction = true
+		}
+		if run.ID == planID {
+			seenPlan = true
+		}
+	}
+	if !seenAction {
+		t.Error("ListRuns did not include the linked action")
+	}
+	if seenPlan {
+		t.Error("ListRuns still included the plan separately after it was linked to an action")
+	}
+}
+

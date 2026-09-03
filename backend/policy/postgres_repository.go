@@ -667,9 +667,16 @@ func (r *PostgresRepository) ListRuns(ctx context.Context, limit int) ([]Run, er
 	// GetRun as the only place a timeline gets built, and that contract
 	// stays uniform across both agent_actions and agent_plans even
 	// though the agent_plans query has no N+1 reason to hold back.
+	//
+	// Excludes any plan already linked to an agent_actions row (see
+	// db/migrations/*_link_agent_plans_to_actions.sql and getAgentPlanRun)
+	// -- once a plan led to a checkout, its reasoning trail is folded
+	// into that action's own Run (getActionRun prepends p.Steps), so
+	// listing both here would show the same real-world event twice.
 	planRows, err := r.db.Query(ctx, `
 		SELECT id, action, amount, currency, merchant, items, created_at
 		FROM agent_plans
+		WHERE id NOT IN (SELECT plan_id FROM agent_actions WHERE plan_id IS NOT NULL)
 		ORDER BY created_at DESC
 		LIMIT $1
 	`, limit)
@@ -714,30 +721,63 @@ func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (Run, err
 	if strings.HasPrefix(runID, "plan_") {
 		return r.getAgentPlanRun(ctx, runID)
 	}
+	return r.getActionRun(ctx, runID)
+}
 
+// getActionRun is GetRun's actual agent_actions-path implementation,
+// pulled out so getAgentPlanRun can reuse it verbatim once it discovers
+// its own plan led to a real action (see getAgentPlanRun below) --
+// callers reaching the SAME underlying run via either its plan_id or
+// its action_id then see byte-identical merged results, not two
+// different views of the same event.
+//
+// A fresh audit against PLAN-01-AGENTIC-CORE.md found the agent's own
+// reasoning trail (an agent_plans row) and the policy/authorization
+// trail (this method's own agent_actions rows) were two disconnected
+// Run objects -- "a judge clicking into Runs sees either the reasoning
+// or the financial outcome, never one continuous arc." The LEFT JOIN
+// against agent_plans below (via agent_actions.plan_id, set best-effort
+// by Service.Propose -- see db/migrations/*_link_agent_plans_to_actions.sql)
+// is the fix: when a linked plan exists, its own reasoning Steps
+// (intent_extracted, tool_called, ..., proposed) become the STARTING
+// slice run.Steps is built from, so every step appended below
+// (proposed/risk_assessed/policy_evaluated/authorized) continues that
+// same timeline instead of starting a second, disconnected one.
+func (r *PostgresRepository) getActionRun(ctx context.Context, runID string) (Run, error) {
 	var run Run
 	var items []byte
 	var policyVersion string
 	var evaluatedAt *time.Time
+	var planID *string
+	var planSteps []byte
 	err := r.db.QueryRow(ctx, `
 		SELECT aa.id, aa.action, aa.amount, aa.currency, aa.merchant, aa.items,
 			COALESCE(pe.decision, ''), COALESCE(pe.reason, ''),
 			COALESCE(pe.policy_version, ''), pe.created_at,
-			COALESCE(a.id, ''), COALESCE(a.status, ''), aa.created_at
+			COALESCE(a.id, ''), COALESCE(a.status, ''), aa.created_at,
+			ap.id, ap.steps
 		FROM agent_actions aa
 		LEFT JOIN policy_evaluations pe ON pe.action_id = aa.id
 		LEFT JOIN authorizations a ON a.id = pe.authorization_id
+		LEFT JOIN agent_plans ap ON ap.id = aa.plan_id
 		WHERE aa.id = $1
 	`, runID).Scan(
 		&run.ID, &run.Action, &run.Amount, &run.Currency, &run.Merchant, &items,
 		&run.Decision, &run.Reason, &policyVersion, &evaluatedAt,
 		&run.Authorization, &run.AuthStatus, &run.CreatedAt,
+		&planID, &planSteps,
 	)
 	if err != nil {
 		return Run{}, fmt.Errorf("get run: %w", err)
 	}
 	if err := json.Unmarshal(items, &run.Items); err != nil {
 		return Run{}, fmt.Errorf("unmarshal run items: %w", err)
+	}
+
+	if planID != nil && len(planSteps) > 0 {
+		if err := json.Unmarshal(planSteps, &run.Steps); err != nil {
+			return Run{}, fmt.Errorf("unmarshal linked agent plan steps: %w", err)
+		}
 	}
 
 	run.Steps = append(run.Steps, RunStep{
@@ -802,10 +842,32 @@ func (r *PostgresRepository) GetRun(ctx context.Context, runID string) (Run, err
 // persisted, so this is a single lookup and unmarshal, not a
 // multi-query timeline build.
 func (r *PostgresRepository) getAgentPlanRun(ctx context.Context, runID string) (Run, error) {
+	// If a checkout was ever proposed for the cart this plan was made
+	// for, agent_actions.plan_id links back to this plan's ID (see
+	// Service.Propose and db/migrations/*_link_agent_plans_to_actions.sql).
+	// In that case the action's own Run already carries this plan's
+	// Steps as its prefix (getActionRun does the merge), so delegate
+	// wholesale instead of returning a second, unlinked, partial Run --
+	// a lookup by the old plan_ ID and a lookup by the resulting
+	// action_ ID must present the exact same merged timeline.
+	var linkedActionID string
+	err := r.db.QueryRow(ctx, `
+		SELECT id FROM agent_actions WHERE plan_id = $1 ORDER BY created_at ASC LIMIT 1
+	`, runID).Scan(&linkedActionID)
+	switch {
+	case err == nil:
+		return r.getActionRun(ctx, linkedActionID)
+	case errors.Is(err, pgx.ErrNoRows):
+		// No checkout followed this plan (yet, or ever) -- fall through
+		// and return the plan's own reasoning trail as-is.
+	default:
+		return Run{}, fmt.Errorf("lookup linked action for plan: %w", err)
+	}
+
 	var p AgentPlan
 	var items, steps []byte
 
-	err := r.db.QueryRow(ctx, `
+	err = r.db.QueryRow(ctx, `
 		SELECT id, action, amount, currency, merchant, items, steps, created_at
 		FROM agent_plans
 		WHERE id = $1
@@ -843,14 +905,56 @@ func (r *PostgresRepository) SaveAgentPlan(ctx context.Context, p AgentPlan) err
 	}
 
 	_, err = r.db.Exec(ctx, `
-		INSERT INTO agent_plans (id, action, amount, currency, merchant, items, steps)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		INSERT INTO agent_plans (id, action, amount, currency, merchant, items, steps, cart_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 	`,
-		p.ID, p.Proposal.Action, p.Proposal.Amount, p.Proposal.Currency, p.Proposal.Merchant, items, steps,
+		p.ID, p.Proposal.Action, p.Proposal.Amount, p.Proposal.Currency, p.Proposal.Merchant, items, steps, nilIfEmpty(p.CartID),
 	)
 	if err != nil {
 		return fmt.Errorf("save agent plan: %w", err)
 	}
 
+	return nil
+}
+
+// LatestPlanIDForCart is the correlation query Service.Propose uses to
+// connect a checkout's resulting agent_actions row back to the plan
+// (if any) that led there -- see Repository.LatestPlanIDForCart's doc
+// comment and db/migrations/*_link_agent_plans_to_actions.sql. "< before"
+// (strictly, not "<="), not just "most recent for this cart," so a plan
+// saved from a LATER, unrelated agent call that merely raced this
+// Propose call in time can never be linked to it.
+func (r *PostgresRepository) LatestPlanIDForCart(ctx context.Context, cartID string, before time.Time) (string, bool, error) {
+	if cartID == "" {
+		return "", false, nil
+	}
+	var planID string
+	err := r.db.QueryRow(ctx, `
+		SELECT id FROM agent_plans
+		WHERE cart_id = $1 AND created_at < $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, cartID, before).Scan(&planID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("latest plan for cart: %w", err)
+	}
+	return planID, true, nil
+}
+
+// SetActionPlanID tags an already-persisted agent_actions row with the
+// agent_plans row that led to it. Best-effort from Service.Propose's
+// side (see its own call site) -- a missing link here means GetRun
+// simply shows the action's own trail without the plan's reasoning
+// prepended, never a broken run.
+func (r *PostgresRepository) SetActionPlanID(ctx context.Context, actionID, planID string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE agent_actions SET plan_id = $1 WHERE id = $2
+	`, planID, actionID)
+	if err != nil {
+		return fmt.Errorf("set action plan id: %w", err)
+	}
 	return nil
 }

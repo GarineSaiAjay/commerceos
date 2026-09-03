@@ -134,6 +134,21 @@ func (r *fakeRepo) SaveAgentPlan(ctx context.Context, p AgentPlan) error {
 	return nil
 }
 
+// LatestPlanIDForCart/SetActionPlanID are no-ops here for the same
+// reason SaveAgentPlan is: this file's tests exercise
+// policy.Service/Engine directly, never through a real agent_plans row,
+// so "found=false, no error" (never finding a plan to link) is the
+// correct fake behavior -- Service.Propose's own best-effort handling
+// of "no plan found" is exercised by policy/postgres_repository_test.go
+// instead, against the real DB.
+func (r *fakeRepo) LatestPlanIDForCart(ctx context.Context, cartID string, before time.Time) (string, bool, error) {
+	return "", false, nil
+}
+
+func (r *fakeRepo) SetActionPlanID(ctx context.Context, actionID, planID string) error {
+	return nil
+}
+
 func (r *fakeRepo) UpdateApprovalRequestStatus(ctx context.Context, id, status, authorizationID, reason string) error {
 	return nil
 }

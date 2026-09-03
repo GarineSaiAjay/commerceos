@@ -26,6 +26,16 @@ type AgentPlan struct {
 	// agent_plans instead of agent_actions without an extra query.
 	ID string
 
+	// CartID is the cart this reasoning was produced for, when the
+	// caller had one (agents.Handler.recordPlan passes through
+	// planRequest/loopRequest's own CartID -- empty for a memoryless
+	// /agent/checkout or /agent/loop call with no cart_id at all).
+	// This is the correlation key Service.Propose uses, later, to find
+	// "the plan (if any) that led to this checkout" -- see
+	// db/migrations/*_link_agent_plans_to_actions.sql for why that
+	// link can only be discovered at Propose time, not fabricated here.
+	CartID string
+
 	// Proposal is the same policy.ProposedAction the agent produced --
 	// never independently evaluated or authorized, just recorded as
 	// what the agent proposed at this stage.
