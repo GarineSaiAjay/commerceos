@@ -64,7 +64,6 @@ import { usePaymentFlow } from "./checkout/usePaymentFlow";
 // OWN ordersLoading state (three h-24 skeleton rows) -- the chunk-load
 // wait and the data-load wait render identically, so a buyer never
 // sees two different loading treatments back to back.
-const AuditTrailPanel = dynamic(() => import("./checkout/AuditTrailPanel").then((mod) => mod.AuditTrailPanel));
 const OrderHistoryPanel = dynamic(
   () => import("./checkout/OrderHistoryPanel").then((mod) => mod.OrderHistoryPanel),
   {
@@ -77,6 +76,24 @@ const OrderHistoryPanel = dynamic(
     ),
   },
 );
+
+// item 21 follow-up (PLAN-04-UI-UX-AND-LATENCY.md §A2): the six
+// per-step screens (approval/gate/pay/failed/policy_rejected/complete)
+// were the ~500 lines of inline JSX a fresh audit found still bloating
+// this file after the original split -- extracted to their own files
+// below, same "lazy-load rarely-used panels" treatment item 30 (§B4)
+// already gave OrderHistoryPanel/AuditTrailPanel above, for the same
+// reason: none of these six is ever reached on the initial catalog
+// view every buyer lands on. AuditTrailPanel's own dynamic() call
+// moved into FailedStep/PolicyRejectedStep/CompleteStep (the only
+// three that render it) instead of staying here, since checkout.tsx
+// itself no longer references it directly.
+const ApprovalStep = dynamic(() => import("./checkout/ApprovalStep").then((mod) => mod.ApprovalStep));
+const GateStep = dynamic(() => import("./checkout/GateStep").then((mod) => mod.GateStep));
+const PayStep = dynamic(() => import("./checkout/PayStep").then((mod) => mod.PayStep));
+const FailedStep = dynamic(() => import("./checkout/FailedStep").then((mod) => mod.FailedStep));
+const PolicyRejectedStep = dynamic(() => import("./checkout/PolicyRejectedStep").then((mod) => mod.PolicyRejectedStep));
+const CompleteStep = dynamic(() => import("./checkout/CompleteStep").then((mod) => mod.CompleteStep));
 
 export default function CheckoutFlow({
   initialProducts,
@@ -994,6 +1011,71 @@ export default function CheckoutFlow({
     setPolicyRejectionReason,
   });
 
+  // The following four are composite, multi-setState reset/relaunch
+  // actions that used to live inline as onClick={() => {...}} arrow
+  // functions directly in the step === "pay"/"failed"/"complete" JSX
+  // (see ApprovalStep/GateStep/PayStep/FailedStep/PolicyRejectedStep/
+  // CompleteStep.tsx's own doc comments) -- named here and passed down
+  // as single onCancel/onChangePaymentMethod/onStartNewOrder callback
+  // props instead, now that JSX lives in separate files and can no
+  // longer close over this component's state setters directly.
+
+  // "Cancel payment" on the pay screen: abandon the in-flight Razorpay
+  // checkout and start a brand new cart, same as every other
+  // "cancelled, cart wasn't charged" reset in this file.
+  function cancelPayment() {
+    setStep("catalog");
+    setCartId(freshCartId());
+    setCart(null);
+    setOrder(null);
+    setPayment(null);
+    setRunId("");
+    setRun(null);
+    setMessage("Payment cancelled. Your cart was not charged.");
+  }
+
+  // "Cancel" on the failed-payment screen -- same as cancelPayment
+  // above, plus clearing the recovery snapshot that only the failed
+  // screen ever populates.
+  function cancelFailedOrder() {
+    setStep("catalog");
+    setCartId(freshCartId());
+    setCart(null);
+    setOrder(null);
+    setPayment(null);
+    setRecovery(null);
+    setRunId("");
+    setRun(null);
+    setMessage("Payment cancelled. Your cart was not charged.");
+  }
+
+  // "Change payment method" on the failed-payment screen: reopens the
+  // Razorpay method selector against THIS SAME order (Standard Checkout
+  // always shows all payment methods when it opens, so relaunching for
+  // the existing, idempotent payment is what actually changes the
+  // method) -- must not discard the cart, that would silently become a
+  // full restart instead.
+  function changePaymentMethod() {
+    setMessage("Reopening payment method selection for this order...");
+    startPayment();
+  }
+
+  // "Start a new order" on the complete screen: same shape as
+  // cancelPayment, plus clearing the review/post-checkout-suggestion
+  // state that only the complete screen ever populates.
+  function startNewOrder() {
+    setStep("catalog");
+    setCartId(freshCartId());
+    setCart(null);
+    setOrder(null);
+    setPayment(null);
+    setRunId("");
+    setRun(null);
+    setMessage("");
+    setReviews({});
+    setPostCheckoutSuggestion(null);
+  }
+
   // Guided demo milestones (item 38): sawCrossSell/attemptedOverBudget/
   // sawGracefulRejection/openedAuditTrail all latch off signals the
   // checkout flow already produces for its own reasons (a non-null
@@ -1195,480 +1277,86 @@ export default function CheckoutFlow({
         )}
 
         {step === "approval" && (
-          <section>
-            <h2 className="mb-4 text-lg font-semibold text-slate-900">
-              Purchase Requires Approval
-            </h2>
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
-                Level {approvalLevel} confirmation
-              </p>
-              <p className="mt-1 text-sm text-amber-900">
-                This order is above the auto-approval threshold. An operator
-                must approve it before payment can be initiated. {approvalReason}
-              </p>
-              {order && (
-                <dl className="mt-4 grid gap-2 text-sm text-amber-900 sm:grid-cols-2">
-                  <div><dt className="font-medium">Order</dt><dd>{order.order_id}</dd></div>
-                  <div><dt className="font-medium">Total</dt><dd>{formatINR(order.subtotal)}</dd></div>
-                  <div><dt className="font-medium">Approval request</dt><dd className="font-mono">{approvalRequestId}</dd></div>
-                </dl>
-              )}
-            </div>
-            <div className="mt-6 space-y-3">
-              <button
-                onClick={approveAndPay}
-                disabled={loading}
-                className="w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
-              >
-                {loading ? "Approving..." : `Approve & Pay ${order ? formatINR(order.subtotal) : ""}`}
-              </button>
-              <button
-                onClick={rejectApproval}
-                disabled={loading}
-                className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
-              >
-                Reject
-              </button>
-            </div>
-          </section>
+          <ApprovalStep
+            order={order}
+            approvalLevel={approvalLevel}
+            approvalReason={approvalReason}
+            approvalRequestId={approvalRequestId}
+            loading={loading}
+            onApprove={approveAndPay}
+            onReject={rejectApproval}
+          />
         )}
 
         {step === "gate" && (
-          <section>
-            <div className="mb-6 rounded-xl border-2 border-red-600 bg-red-50 p-5">
-              <p className="text-xs font-bold uppercase tracking-wide text-red-700">
-                Level {approvalLevel} &middot; Hard Gate
-              </p>
-              <h2 className="mt-1 text-xl font-bold text-red-900">
-                This purchase cannot proceed without your explicit, deliberate approval
-              </h2>
-              <p className="mt-2 text-sm text-red-800">
-                {approvalReason} This screen cannot be dismissed or skipped &mdash;
-                there is no background action, keyboard shortcut, or cached
-                authorization that bypasses it, and the request below is
-                re-verified against the server the instant you approve it.
-              </p>
-            </div>
-
-            {approvalSnapshot && (
-              <dl className="grid gap-2 rounded-xl border border-slate-200 p-5 text-sm text-slate-900 sm:grid-cols-2">
-                <div><dt className="font-medium text-slate-500">Merchant</dt><dd>{approvalSnapshot.merchant}</dd></div>
-                <div><dt className="font-medium text-slate-500">Amount</dt><dd>{formatINR(approvalSnapshot.amount)}</dd></div>
-                <div className="sm:col-span-2"><dt className="font-medium text-slate-500">Items</dt><dd>{approvalSnapshot.items.join(", ")}</dd></div>
-                <div><dt className="font-medium text-slate-500">Policy version</dt><dd className="font-mono">{approvalSnapshot.policy_version}</dd></div>
-                <div><dt className="font-medium text-slate-500">Risk score</dt><dd>{approvalSnapshot.risk_score.toFixed(2)}</dd></div>
-                <div className="sm:col-span-2"><dt className="font-medium text-slate-500">Approval request</dt><dd className="font-mono">{approvalRequestId}</dd></div>
-              </dl>
-            )}
-
-            {gateError && (
-              <div className="mt-4 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800">
-                {gateError}
-              </div>
-            )}
-
-            <label className="mt-6 flex items-start gap-3 rounded-xl border border-slate-300 p-4 text-sm text-slate-800">
-              <input
-                type="checkbox"
-                checked={gateConfirmed}
-                onChange={(e) => setGateConfirmed(e.target.checked)}
-                disabled={loading}
-                className="mt-0.5 h-4 w-4"
-              />
-              I have reviewed the merchant, amount, and items above and I
-              deliberately approve this exact purchase.
-            </label>
-
-            <div className="mt-4 space-y-3">
-              <button
-                onClick={approveGateAndPay}
-                disabled={loading || !gateConfirmed}
-                className="w-full rounded-xl bg-red-700 px-5 py-3.5 font-medium text-white transition hover:bg-red-800 disabled:opacity-50"
-              >
-                {loading ? "Re-verifying..." : `Approve this exact purchase \u2014 ${approvalSnapshot ? formatINR(approvalSnapshot.amount) : ""}`}
-              </button>
-              <button
-                onClick={rejectApproval}
-                disabled={loading}
-                className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
-              >
-                Reject
-              </button>
-              {gateError && (
-                <button
-                  onClick={backToOrderFromGate}
-                  disabled={loading}
-                  className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
-                >
-                  Back to order
-                </button>
-              )}
-            </div>
-          </section>
+          <GateStep
+            approvalLevel={approvalLevel}
+            approvalReason={approvalReason}
+            approvalSnapshot={approvalSnapshot}
+            gateError={gateError}
+            gateConfirmed={gateConfirmed}
+            setGateConfirmed={setGateConfirmed}
+            loading={loading}
+            approvalRequestId={approvalRequestId}
+            onApprove={approveGateAndPay}
+            onReject={rejectApproval}
+            onBackToOrder={backToOrderFromGate}
+          />
         )}
 
         {step === "pay" && payment && (
-          <section>
-            <h2 className="mb-4 text-lg font-semibold text-slate-900">
-              Complete Payment
-            </h2>
-            <p className="text-sm text-slate-500">
-              The Razorpay checkout window should have opened. Complete the
-              payment there to finish your order.
-            </p>
-            <div className="mt-4 rounded-xl border border-slate-200 p-5">
-              <p className="text-sm text-slate-500">Amount due</p>
-              <p className="text-2xl font-bold text-slate-900">
-                {formatINR(payment.amount)}
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setStep("catalog");
-                setCartId(freshCartId());
-                setCart(null);
-                setOrder(null);
-                setPayment(null);
-                setRunId("");
-                setRun(null);
-                setMessage("Payment cancelled. Your cart was not charged.");
-              }}
-              className="mt-4 w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
-            >
-              Cancel payment
-            </button>
-          </section>
+          <PayStep payment={payment} onCancel={cancelPayment} />
         )}
 
 	{step === "failed" && (
-		<section>
-			<h2 className="mb-4 text-lg font-semibold text-slate-900">
-				Payment wasn&apos;t completed
-			</h2>
-			<div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
-				<p className="text-sm text-amber-900">
-					{recovery ? recovery.safe_message : "Razorpay reported that the payment failed. Your order has not been charged twice. The cart remains reserved for 9 minutes."}
-				</p>
-			</div>
-
-			<AuditTrailPanel runId={runId} run={run} runLoading={runLoading} />
-
-			{(payment || (recovery && recovery.cart.subtotal > 0)) && (
-				<div className="mt-6 rounded-xl border border-slate-200 p-5">
-					<p className="text-sm text-slate-500">Amount due</p>
-					<p className="text-2xl font-bold text-slate-900">
-						{formatINR((payment ? payment.amount : recovery!.cart.subtotal) || 0)}
-					</p>
-				</div>
-			)}
-
-			{recovery && recovery.removable_items.length > 0 && (
-				<div className="mt-6 rounded-xl border border-slate-200 p-5">
-					<p className="text-sm font-semibold text-slate-900">Remove an item to reduce the total</p>
-					<p className="mt-1 text-xs text-slate-500">
-						Removing an item recomputes your total from the catalog and
-						re-runs policy on the smaller order before payment.
-					</p>
-					<ul className="mt-3 divide-y divide-slate-200">
-						{recovery.cart.items
-							.filter((item) => recovery.removable_items.includes(item.variant_id))
-							.map((item) => (
-								<li key={item.variant_id} className="flex items-center justify-between py-3">
-									<div>
-										<p className="text-sm font-medium text-slate-900">{item.title}</p>
-										<p className="text-xs text-slate-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
-									</div>
-									<button
-										onClick={() => removeAccessoryAndRetry(item.variant_id)}
-										disabled={loading}
-										className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-									>
-										Remove
-									</button>
-								</li>
-							))}
-					</ul>
-				</div>
-			)}
-
-			<div className="mt-6 space-y-3">
-				<button
-					onClick={startPayment}
-					disabled={loading || (recovery ? !recovery.retry_allowed : false)}
-					className="w-full rounded-xl bg-black px-5 py-3 font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
-				>
-					{recovery && !recovery.retry_allowed ? "Reservation expired — start a new cart" : "Retry payment"}
-				</button>
-				<button
-					onClick={() => {
-						// Reopen the Razorpay method selector against THIS SAME
-						// order -- Standard Checkout always shows all payment
-						// methods when it opens, so re-proposing/relaunching for
-						// the existing (idempotent) payment is what actually
-						// changes the payment method. It must not discard the
-						// cart: that would silently become a full restart.
-						setMessage("Reopening payment method selection for this order...");
-						startPayment();
-					}}
-					disabled={loading || (recovery ? !recovery.retry_allowed : false)}
-					className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
-				>
-					Change payment method
-				</button>
-				<button
-					onClick={() => {
-						setStep("catalog");
-						setCartId(freshCartId());
-						setCart(null);
-						setOrder(null);
-						setPayment(null);
-						setRecovery(null);
-						setRunId("");
-						setRun(null);
-						setMessage("Payment cancelled. Your cart was not charged.");
-					}}
-					className="w-full rounded-xl border border-slate-300 px-5 py-3 font-medium text-slate-700 hover:bg-slate-100"
-				>
-					Cancel
-				</button>
-			</div>
-		</section>
+		<FailedStep
+			recovery={recovery}
+			payment={payment}
+			runId={runId}
+			run={run}
+			runLoading={runLoading}
+			loading={loading}
+			onRemoveAccessory={removeAccessoryAndRetry}
+			onRetryPayment={startPayment}
+			onChangePaymentMethod={changePaymentMethod}
+			onCancel={cancelFailedOrder}
+		/>
 	)}
 
 	{step === "policy_rejected" && order && (
-		<section>
-			<h2 className="mb-4 text-lg font-semibold text-slate-900">
-				Payment wasn&apos;t authorized
-			</h2>
-			<div className="rounded-xl border border-rose-200 bg-rose-50 p-5">
-				{/* item 28 (P2, PLAN-04-UI-UX-AND-LATENCY.md §A5) extension:
-				    the single most consequential message on this screen --
-				    role="alert" (implicit aria-live="assertive" + atomic)
-				    so a screen reader announces it immediately rather than
-				    only if the user happens to navigate onto it. */}
-				<p role="alert" className="text-sm text-rose-900">
-					{policyRejectionReason}
-				</p>
-				<p className="mt-2 text-xs text-rose-700">
-					No payment was attempted -- the policy engine rejected this
-					purchase before any Razorpay call was made. Your cart is
-					unaffected.
-				</p>
-			</div>
-
-			{/* item 38 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §4): the
-			    rejection screen previously never showed this, even though a
-			    rejected action gets a real audit run row just like a
-			    successful one -- see the fetchRun effect above. Added so the
-			    guided demo walkthrough's last step is reachable from here,
-			    not only from the complete/failed screens. */}
-			<AuditTrailPanel runId={runId} run={run} runLoading={runLoading} />
-
-			{substituteSuggestionLoading && (
-				<div className="mt-6 rounded-xl border border-slate-200 p-5">
-					<p className="text-sm text-slate-500">Checking for an in-budget substitute...</p>
-				</div>
-			)}
-
-			{!substituteSuggestionLoading && substituteSuggestion?.available && substituteSuggestion.replaced_item && substituteSuggestion.substitute && (
-				<div className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 p-5">
-					<p className="text-sm font-semibold text-emerald-900">We found an in-budget substitute</p>
-					{substituteSuggestion.reasoning && (
-						<p className="mt-1 text-xs text-emerald-700">{substituteSuggestion.reasoning}</p>
-					)}
-					<div className="mt-3 flex items-center justify-between rounded-lg bg-white/60 p-3">
-						<div>
-							<p className="text-xs text-slate-500 line-through">{substituteSuggestion.replaced_item.title}</p>
-							<p className="text-sm font-medium text-slate-900">{substituteSuggestion.substitute.title}</p>
-						</div>
-						<div className="text-right">
-							<p className="text-xs text-slate-500 line-through">{formatINR(substituteSuggestion.replaced_item.price)}</p>
-							<p className="text-sm font-semibold text-emerald-900">{formatINR(substituteSuggestion.substitute.price)}</p>
-						</div>
-					</div>
-					{typeof substituteSuggestion.new_subtotal === "number" && (
-						<p className="mt-2 text-xs text-emerald-700">
-							New order total: {formatINR(substituteSuggestion.new_subtotal)}
-						</p>
-					)}
-					<button
-						onClick={acceptSubstitute}
-						disabled={loading}
-						className="mt-3 w-full rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-800 disabled:opacity-50"
-					>
-						Swap &amp; continue
-					</button>
-				</div>
-			)}
-
-			{order.items.length > 1 && (
-				<div className="mt-6 rounded-xl border border-slate-200 p-5">
-					<p className="text-sm font-semibold text-slate-900">Remove an item and try again</p>
-					<p className="mt-1 text-xs text-slate-500">
-						Removing an item recomputes your total from the catalog and
-						re-runs policy on the smaller order before payment.
-					</p>
-					<ul className="mt-3 divide-y divide-slate-200">
-						{order.items.map((item) => (
-							<li
-								key={item.variant_id}
-								className={`flex items-center justify-between py-3 transition-opacity duration-150 ${
-									removingVariantId === item.variant_id ? "opacity-30" : ""
-								}`}
-							>
-								<div>
-									<p className="text-sm font-medium text-slate-900">{item.title}</p>
-									<p className="text-xs text-slate-500">Qty {item.quantity} &middot; {formatINR(item.total)}</p>
-								</div>
-								<button
-									onClick={() => removeAccessoryAndRetry(item.variant_id)}
-									disabled={loading}
-									className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-								>
-									Remove
-								</button>
-							</li>
-						))}
-					</ul>
-				</div>
-			)}
-
-			<div className="mt-6 space-y-3">
-				<button
-					onClick={() => resetToCatalog("Purchase not authorized. Your cart was not charged.")}
-					className="w-full rounded-xl bg-black px-5 py-3 font-medium text-white transition hover:bg-slate-800"
-				>
-					Return to catalog
-				</button>
-			</div>
-		</section>
+		<PolicyRejectedStep
+			order={order}
+			policyRejectionReason={policyRejectionReason}
+			runId={runId}
+			run={run}
+			runLoading={runLoading}
+			substituteSuggestionLoading={substituteSuggestionLoading}
+			substituteSuggestion={substituteSuggestion}
+			onAcceptSubstitute={acceptSubstitute}
+			loading={loading}
+			removingVariantId={removingVariantId}
+			onRemoveAccessory={removeAccessoryAndRetry}
+			onReturnToCatalog={resetToCatalog}
+		/>
 	)}
 
         {step === "complete" && payment && (
-          <section>
-            <div className="rounded-xl border border-slate-200 p-6">
-              <p className="text-sm text-slate-500">Payment status</p>
-              <p className="mt-1 text-xl font-bold text-slate-900">
-                {payment.status}
-              </p>
-              <p className="mt-4 text-sm text-slate-500">
-                Payment ID: {payment.payment_id}
-              </p>
-              <p className="text-sm text-slate-500">
-                Order ID: {payment.order_id}
-              </p>
-            </div>
-            <AuditTrailPanel runId={runId} run={run} runLoading={runLoading} />
-            {order && order.items.length > 0 && (
-              <div className="mt-6 rounded-xl border border-slate-200 p-6">
-                <p className="text-sm font-semibold text-slate-900">Rate your order</p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Optional -- helps other buyers, and the seller sees it too.
-                </p>
-                <ul className="mt-4 divide-y divide-slate-100">
-                  {order.items.map((item) => {
-                    const entry: ReviewEntry = reviews[item.product_id] ?? {
-                      rating: 0,
-                      comment: "",
-                      submitting: false,
-                      submitted: false,
-                      error: "",
-                    };
-                    return (
-                      <li key={item.product_id} className="py-4 first:pt-0 last:pb-0">
-                        <p className="text-sm font-medium text-slate-900">{item.title}</p>
-                        {entry.submitted ? (
-                          <p className="mt-2 text-sm text-emerald-700">Thanks for your review!</p>
-                        ) : (
-                          <>
-                            <div className="mt-2 flex gap-1">
-                              {[1, 2, 3, 4, 5].map((n) => (
-                                <button
-                                  key={n}
-                                  type="button"
-                                  onClick={() => rateProduct(item.product_id, n)}
-                                  aria-label={`Rate ${item.title} ${n} star${n > 1 ? "s" : ""}`}
-                                  className={`text-lg leading-none ${
-                                    n <= entry.rating ? "text-amber-500" : "text-slate-300"
-                                  }`}
-                                >
-                                  ★
-                                </button>
-                              ))}
-                            </div>
-                            <textarea
-                              value={entry.comment}
-                              onChange={(e) => commentOnProduct(item.product_id, e.target.value)}
-                              placeholder="Optional comment"
-                              rows={2}
-                              className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none"
-                            />
-                            {entry.error && (
-                              <p className="mt-1 text-xs text-rose-600">{entry.error}</p>
-                            )}
-                            <button
-                              onClick={() => submitReview(order.order_id, item.product_id)}
-                              disabled={entry.rating < 1 || entry.submitting}
-                              className="mt-2 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800 disabled:opacity-40"
-                            >
-                              {entry.submitting ? "Submitting..." : "Submit review"}
-                            </button>
-                          </>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-
-            {postCheckoutSuggestionLoading && (
-              <div className="mt-6 rounded-xl border border-indigo-200 bg-indigo-50 p-6">
-                <Skeleton className="h-3 w-28" />
-                <Skeleton className="mt-2 h-4 w-2/3" />
-                <Skeleton className="mt-3 h-9 w-40" />
-              </div>
-            )}
-            {!postCheckoutSuggestionLoading && postCheckoutSuggestion?.product && (
-              <div className="mt-6 rounded-xl border border-indigo-200 bg-indigo-50 p-6">
-                <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
-                  Complete the set
-                </p>
-                <p className="mt-1 font-semibold text-slate-900">
-                  Add {postCheckoutSuggestion.product.title} -- {formatINR(postCheckoutSuggestion.product.price)}
-                </p>
-                {postCheckoutSuggestion.recommendation && (
-                  <p className="mt-1 text-sm text-indigo-800">{postCheckoutSuggestion.recommendation.reason}</p>
-                )}
-                <button
-                  onClick={acceptPostCheckoutSuggestion}
-                  disabled={loading}
-                  className="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  Add -- starts a new order
-                </button>
-              </div>
-            )}
-
-            <button
-              onClick={() => {
-                setStep("catalog");
-                setCartId(freshCartId());
-                setCart(null);
-                setOrder(null);
-                setPayment(null);
-                setRunId("");
-                setRun(null);
-                setMessage("");
-                setReviews({});
-                setPostCheckoutSuggestion(null);
-              }}
-              className="mt-6 w-full rounded-xl bg-black px-5 py-3.5 font-medium text-white transition hover:bg-slate-800"
-            >
-              Start a new order
-            </button>
-          </section>
+          <CompleteStep
+            payment={payment}
+            runId={runId}
+            run={run}
+            runLoading={runLoading}
+            order={order}
+            reviews={reviews}
+            onRate={rateProduct}
+            onComment={commentOnProduct}
+            onSubmitReview={submitReview}
+            postCheckoutSuggestionLoading={postCheckoutSuggestionLoading}
+            postCheckoutSuggestion={postCheckoutSuggestion}
+            onAcceptPostCheckoutSuggestion={acceptPostCheckoutSuggestion}
+            loading={loading}
+            onStartNewOrder={startNewOrder}
+          />
         )}
 
         {step === "orders" && (
