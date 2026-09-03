@@ -207,6 +207,7 @@ func (s *Service) Propose(
 			Level:         decision.Level,
 			ExpiresAt:     s.now().Add(10 * time.Minute).Format("2006-01-02T15:04:05Z"),
 			Status:        "ACTIVE",
+			ActionID:      actionID,
 		}
 		if err := s.repo.SaveAuthorization(ctx, auth); err != nil {
 			return Decision{}, err
@@ -291,6 +292,11 @@ func (s *Service) requireApproval(
 		RiskScore:     riskScore,
 		Level:         decision.Level,
 		Status:        "PENDING",
+		// ActionID: decision.ActionID was already set by Propose just
+		// before this call -- carried forward so Approve can restore it
+		// onto the Authorization it eventually issues (see
+		// Authorization.ActionID's doc comment).
+		ActionID: decision.ActionID,
 	}
 	if err := s.repo.SaveApprovalRequest(ctx, req); err != nil {
 		return Decision{}, err
@@ -413,7 +419,10 @@ func (s *Service) Approve(ctx context.Context, approvalRequestID, cartID, operat
 		return Decision{}, fmt.Errorf("approval level changed (%d -> %d); re-propose required", req.Level, decision.Level)
 	}
 
-	// Issue the one-time authorization.
+	// Issue the one-time authorization. ActionID comes back from req
+	// (see ApprovalRequest.ActionID's doc comment) -- Approve
+	// re-evaluates against CURRENT policy state above and never calls
+	// Propose again, so there is no fresh actionID in scope here.
 	auth := Authorization{
 		ID:            fmt.Sprintf("auth_%d", s.now().UnixNano()),
 		MandateID:     req.MandateID,
@@ -428,6 +437,7 @@ func (s *Service) Approve(ctx context.Context, approvalRequestID, cartID, operat
 		Level:         req.Level,
 		ExpiresAt:     s.now().Add(10 * time.Minute).Format("2006-01-02T15:04:05Z"),
 		Status:        "ACTIVE",
+		ActionID:      req.ActionID,
 	}
 	if err := s.repo.SaveAuthorization(ctx, auth); err != nil {
 		return Decision{}, err

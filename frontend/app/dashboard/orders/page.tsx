@@ -30,6 +30,11 @@ type Order = {
   items: OrderItem[];
   created_at: string;
   payment_status?: string;
+  // Populated once the order's payment was authorized and created
+  // (payment.Service.CreatePaymentOrder tags it there) -- empty for a
+  // draft order that never reached a successful payment. PLAN-05-
+  // SELLER-DASHBOARD.md §2's "Orders -> Runs audit-trail link".
+  run_id?: string;
 };
 
 // Mirrors backend/commerce/payment/model.go's Payment JSON shape,
@@ -290,14 +295,35 @@ export default function OrdersPage() {
                 )}
               </div>
 
-              <p className="border-t border-slate-100 pt-4 text-xs leading-5 text-slate-400">
-                Full policy audit-trail linkage for a specific order isn&apos;t available yet --
-                orders aren&apos;t tagged with the agent run that authorized them today. Browse{" "}
-                <a href="/dashboard/runs" className="underline hover:text-slate-600">
-                  Agent Runs
-                </a>{" "}
-                to review the audit trail generally.
-              </p>
+              {selected.run_id ? (
+                <div className="border-t border-slate-100 pt-4">
+                  <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Policy audit trail
+                  </h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    This order&apos;s payment was authorized by{" "}
+                    <a
+                      href={`/dashboard/runs?run_id=${selected.run_id}`}
+                      className="font-mono text-xs underline hover:text-slate-900"
+                    >
+                      {selected.run_id}
+                    </a>
+                    . Open it in Agent Runs to replay the full proposed → risk-assessed →
+                    policy-evaluated → authorized sequence.
+                  </p>
+                </div>
+              ) : (
+                <p className="border-t border-slate-100 pt-4 text-xs leading-5 text-slate-400">
+                  {selected.payment_status
+                    ? "This order predates run-linked payments, so its specific authorizing run can't be looked up."
+                    : "This order has no payment yet, so it isn't tied to an authorizing run."}{" "}
+                  Browse{" "}
+                  <a href="/dashboard/runs" className="underline hover:text-slate-600">
+                    Agent Runs
+                  </a>{" "}
+                  to review the audit trail generally.
+                </p>
+              )}
             </div>
           )}
         </section>

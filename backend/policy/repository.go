@@ -139,6 +139,13 @@ type ApprovalRequest struct {
 	Status          string   `json:"status"` // PENDING | APPROVED | REJECTED | EXPIRED | REVOKED
 	AuthorizationID string   `json:"authorization_id"`
 	Reason          string   `json:"reason"`
+	// ActionID carries the original Propose call's agent_actions.id
+	// through the human-approval detour -- a Level 2/3 proposal has no
+	// Authorization yet (see Authorization.ActionID's doc comment) at
+	// the moment this request is created, so the run identity has to
+	// be captured here instead and copied onto the Authorization once
+	// Service.Approve issues it.
+	ActionID string `json:"action_id,omitempty"`
 }
 type AgentDecision struct {
 	ID       string
@@ -162,6 +169,15 @@ type Authorization struct {
 	Level         int
 	ExpiresAt     string
 	Status        string
+	// ActionID is the agent_actions.id (the run_id GET /runs/{id}
+	// takes) whose proposal ultimately produced this authorization --
+	// set once at Propose/Approve time, never changed afterward. Added
+	// so payment.Service can tag an order with the run that authorized
+	// it (PLAN-05-SELLER-DASHBOARD.md §2's "Orders -> Runs audit-trail
+	// link") the moment the authorization is verified and consumed,
+	// without payment needing any policy-internal knowledge beyond
+	// this one field.
+	ActionID string
 }
 
 // Evaluation is a persisted policy decision.
