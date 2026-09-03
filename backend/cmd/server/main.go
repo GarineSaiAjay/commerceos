@@ -710,6 +710,20 @@ func main() {
 				strings.HasSuffix(r.URL.Path, "/reviews"):
 				reviewHandler.ListByProduct(w, r)
 
+			// GET/POST /products/{id}/variants (PLAN-02-CATALOG-AND-
+			// COMMERCE.md §5.2 / PLAN-05-SELLER-DASHBOARD.md §1's variant
+			// sub-editor) -- same "checked first, suffix-matched" pattern
+			// as /reviews above, and for the same reason: strings.HasSuffix
+			// on a path that also matches the plain GET/PATCH/DELETE
+			// {id} cases below would otherwise be shadowed by them.
+			case r.Method == http.MethodGet &&
+				strings.HasSuffix(r.URL.Path, "/variants"):
+				catalogHandler.ListVariants(w, r)
+
+			case r.Method == http.MethodPost &&
+				strings.HasSuffix(r.URL.Path, "/variants"):
+				authService.RequireOperator(catalogHandler.CreateVariant)(w, r)
+
 			case r.Method == http.MethodGet:
 				catalogHandler.GetProduct(w, r)
 
@@ -725,9 +739,27 @@ func main() {
 		},
 	)
 
+	// /variants/{id}: GET stays open (same buyer/agent-readable
+	// convention as GET /products), PATCH/DELETE are operator-gated
+	// (PLAN-02-CATALOG-AND-COMMERCE.md §5.2 / PLAN-05-SELLER-
+	// DASHBOARD.md §1) -- mirrors the /products/ switch above exactly.
 	commerceMux.HandleFunc(
 		"/variants/",
-		catalogHandler.GetVariant,
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				catalogHandler.GetVariant(w, r)
+
+			case http.MethodPatch:
+				authService.RequireOperator(catalogHandler.UpdateVariant)(w, r)
+
+			case http.MethodDelete:
+				authService.RequireOperator(catalogHandler.DeleteVariant)(w, r)
+
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		},
 	)
 
 	// Cart

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatINR } from "../../../lib/format";
 import { authFetch } from "../../../lib/auth";
+import { VariantEditor, type ProductVariant } from "./VariantEditor";
 
 // Product mirrors backend/commerce/catalog/product.go's wire shape.
 // average_rating/review_count (PLAN-02-CATALOG-AND-COMMERCE.md §2, item
@@ -21,6 +22,10 @@ type Product = {
   shipping: { estimated_days: number };
   average_rating: number;
   review_count: number;
+  // Present on every GET /products response (catalog.Product.Variants,
+  // json:"variants,omitempty") -- optional here only because a stale
+  // cached entry (see cachedProducts below) predates this field.
+  variants?: ProductVariant[];
 };
 
 // Item 23 (PLAN-04-UI-UX-AND-LATENCY.md §B2, "client-side" layer): a
@@ -97,10 +102,10 @@ function productToForm(p: Product): FormState {
 // and have been operator-gated since the P0 auth fix
 // (fix/authenticate-product-mutation-routes) -- this page is the
 // legitimate front door to that now-gated write path, not a new one.
-// Deliberately no variant sub-editor here: PLAN-05 scopes that as a
-// separate 1.5-day P1 line once PLAN-02 §1's real variants exist
-// (ROADMAP item 10, not yet shipped), so it stays out of this page's
-// 2-day cut.
+// Each product row can expand into its own VariantEditor (PLAN-05 §1's
+// previously-deferred "variant sub-editor" line, plus PLAN-02 §5.2 --
+// item 10 shipped real variants with no dashboard editor for them
+// until this) for inline SKU/price/availability add-edit-delete.
 export default function CatalogPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,6 +121,11 @@ export default function CatalogPage() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<Record<string, string>>({});
+
+  // expandedId tracks which single product's VariantEditor is open --
+  // one at a time, same "one thing expanded" convention confirmingId
+  // already uses for delete confirmation.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // skipCache forces a fresh, uncached fetch -- always passed true
   // after this page's own save()/remove() below, so an operator's own
@@ -431,6 +441,12 @@ export default function CatalogPage() {
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <button
+                      onClick={() => setExpandedId(expandedId === p.product_id ? null : p.product_id)}
+                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                    >
+                      Variants ({p.variants?.length ?? 0})
+                    </button>
+                    <button
                       onClick={() => startEdit(p)}
                       className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
                     >
@@ -462,6 +478,13 @@ export default function CatalogPage() {
                     )}
                   </div>
                 </div>
+                {expandedId === p.product_id && (
+                  <VariantEditor
+                    productId={p.product_id}
+                    variants={p.variants ?? []}
+                    onChanged={() => load(true)}
+                  />
+                )}
               </li>
             ))}
           </ul>

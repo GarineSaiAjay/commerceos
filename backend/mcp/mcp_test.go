@@ -48,6 +48,19 @@ func (f fakeCatalogRepo) UpdateProduct(ctx context.Context, p catalog.Product) e
 
 func (f fakeCatalogRepo) DeleteProduct(ctx context.Context, id string) error { return nil }
 
+// CreateVariant, UpdateVariant and DeleteVariant are no-ops here, same
+// as the rest of this fake's mutating methods -- no MCP tool in this
+// package's tests exercises variant CRUD directly.
+func (f fakeCatalogRepo) CreateVariant(ctx context.Context, v catalog.ProductVariant) error {
+	return nil
+}
+
+func (f fakeCatalogRepo) UpdateVariant(ctx context.Context, v catalog.ProductVariant) error {
+	return nil
+}
+
+func (f fakeCatalogRepo) DeleteVariant(ctx context.Context, id string) error { return nil }
+
 // fakeCartRepo is an in-memory cart.Repository for tests -- no
 // Postgres needed to exercise the MCP add_item tool.
 type fakeCartRepo struct {

@@ -49,6 +49,20 @@ func (loopFakeCatalogRepo) UpdateProduct(ctx context.Context, p catalog.Product)
 
 func (loopFakeCatalogRepo) DeleteProduct(ctx context.Context, id string) error { return nil }
 
+// CreateVariant, UpdateVariant and DeleteVariant are no-ops here, same
+// as the rest of this fake's mutating methods -- no tool_loop.go test
+// in this file exercises variant CRUD directly (that's covered by
+// catalog/service_test.go's stateful fakeRepository instead).
+func (loopFakeCatalogRepo) CreateVariant(ctx context.Context, v catalog.ProductVariant) error {
+	return nil
+}
+
+func (loopFakeCatalogRepo) UpdateVariant(ctx context.Context, v catalog.ProductVariant) error {
+	return nil
+}
+
+func (loopFakeCatalogRepo) DeleteVariant(ctx context.Context, id string) error { return nil }
+
 func loopFakeCatalogProducts() []catalog.Product {
 	return []catalog.Product{
 		{

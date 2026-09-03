@@ -24,6 +24,18 @@ var ErrProductAlreadyExists = errors.New("product already exists")
 // never silently orphaned by a catalog edit.
 var ErrProductInUse = errors.New("product is referenced by an existing cart or order")
 
+// ErrVariantAlreadyExists mirrors ErrProductAlreadyExists -- returned
+// when creating a variant whose id or sku (product_variants.sku is its
+// own UNIQUE column) is already taken.
+var ErrVariantAlreadyExists = errors.New("variant already exists")
+
+// ErrVariantInUse mirrors ErrProductInUse exactly, one level down:
+// returned when deleting a variant that is still referenced by an
+// existing cart_items row -- cart_items.variant_id has no ON DELETE
+// CASCADE either (unlike product_variants itself, which does cascade-
+// delete when its PARENT PRODUCT is removed).
+var ErrVariantInUse = errors.New("variant is referenced by an existing cart or order")
+
 type Repository interface {
 	CreateProduct(ctx context.Context, product Product) error
 	GetProduct(ctx context.Context, id string) (Product, error)
@@ -36,6 +48,31 @@ type Repository interface {
 	// picker and GetProduct's own Variants field both rely on this
 	// order being stable across calls.
 	ListVariantsByProduct(ctx context.Context, productID string) ([]ProductVariant, error)
+
+	// CreateVariant adds a new variant row to an existing product
+	// (PLAN-02-CATALOG-AND-COMMERCE.md §5.2 / PLAN-05-SELLER-
+	// DASHBOARD.md §1's "variant sub-editor" -- item 10 shipped real
+	// variants with no way to add/edit/delete them from the dashboard
+	// until this). Returns ErrProductNotFound if variant.ProductID
+	// doesn't reference a real product (the table's own foreign key),
+	// or ErrVariantAlreadyExists if the id or sku is already taken.
+	CreateVariant(ctx context.Context, variant ProductVariant) error
+
+	// UpdateVariant replaces an existing variant's editable fields (sku,
+	// price, availability, attributes) -- the same full-replace-via-
+	// PATCH convention UpdateProduct already uses, not a partial patch.
+	// Returns ErrVariantNotFound if no such variant exists, or
+	// ErrVariantAlreadyExists if the new sku collides with another
+	// variant's.
+	UpdateVariant(ctx context.Context, variant ProductVariant) error
+
+	// DeleteVariant removes a variant. Returns ErrVariantInUse if it's
+	// still referenced by an existing cart_items row, or
+	// ErrVariantNotFound if it doesn't exist. Deliberately does NOT
+	// refuse deleting a product's last remaining variant -- see
+	// catalog/handler.go's DeleteVariant doc comment for why that's a
+	// documented trade-off, not an oversight.
+	DeleteVariant(ctx context.Context, id string) error
 
 	// UpdateProduct replaces the editable fields of an existing product
 	// (everything except id/merchant_id/created_at). Returns
@@ -561,4 +598,99 @@ func (r *PostgresRepository) ListVariantsByProduct(ctx context.Context, productI
 	}
 
 	return variants, nil
+}
+
+// CreateVariant adds a new variant row to an existing product. A
+// foreign-key violation here means variant.ProductID doesn't reference
+// a real product (ErrProductNotFound) -- distinct from DeleteProduct/
+// DeleteVariant's isForeignKeyViolation usage, which means the OPPOSITE
+// (a row still referencing this one), so the two call sites map the
+// same Postgres error code to different sentinel errors deliberately.
+func (r *PostgresRepository) CreateVariant(ctx context.Context, variant ProductVariant) error {
+	attributes, err := json.Marshal(variant.Attributes)
+	if err != nil {
+		return fmt.Errorf("marshal variant attributes: %w", err)
+	}
+
+	_, err = r.db.Exec(
+		ctx,
+		`
+		INSERT INTO product_variants (id, product_id, sku, price_amount, availability, attributes)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		`,
+		variant.ID,
+		variant.ProductID,
+		variant.SKU,
+		variant.Price.Amount,
+		variant.Availability,
+		attributes,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrVariantAlreadyExists
+		}
+		if isForeignKeyViolation(err) {
+			return ErrProductNotFound
+		}
+		return fmt.Errorf("create variant: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateVariant replaces sku/price/availability/attributes for an
+// existing variant -- product_id is deliberately not in the SET list,
+// a variant can never be moved to a different product through this.
+func (r *PostgresRepository) UpdateVariant(ctx context.Context, variant ProductVariant) error {
+	attributes, err := json.Marshal(variant.Attributes)
+	if err != nil {
+		return fmt.Errorf("marshal variant attributes: %w", err)
+	}
+
+	tag, err := r.db.Exec(
+		ctx,
+		`
+		UPDATE product_variants SET
+			sku = $2,
+			price_amount = $3,
+			availability = $4,
+			attributes = $5,
+			updated_at = NOW()
+		WHERE id = $1
+		`,
+		variant.ID,
+		variant.SKU,
+		variant.Price.Amount,
+		variant.Availability,
+		attributes,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrVariantAlreadyExists
+		}
+		return fmt.Errorf("update variant: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrVariantNotFound
+	}
+
+	return nil
+}
+
+// DeleteVariant removes a variant. A still-referencing cart_items row
+// (no ON DELETE CASCADE there) surfaces as ErrVariantInUse instead of a
+// raw constraint-violation error, mirroring DeleteProduct exactly.
+func (r *PostgresRepository) DeleteVariant(ctx context.Context, id string) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM product_variants WHERE id = $1`, id)
+	if err != nil {
+		if isForeignKeyViolation(err) {
+			return ErrVariantInUse
+		}
+		return fmt.Errorf("delete variant: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrVariantNotFound
+	}
+
+	return nil
 }
