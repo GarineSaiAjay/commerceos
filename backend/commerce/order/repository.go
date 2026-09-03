@@ -32,4 +32,16 @@ type Repository interface {
 		orderID string,
 		to string,
 	) (Order, error)
+
+	// SetRunID tags an order with the agent run (agent_actions.id) that
+	// authorized its payment (PLAN-05-SELLER-DASHBOARD.md §2) -- called
+	// once, from payment.Service.CreatePaymentOrder, right after the
+	// authorization backing that payment is verified. Returns
+	// ErrOrderNotFound if orderID doesn't exist; otherwise idempotent
+	// (setting the same run_id again is a no-op write).
+	SetRunID(
+		ctx context.Context,
+		orderID string,
+		runID string,
+	) error
 }

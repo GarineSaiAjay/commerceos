@@ -181,16 +181,18 @@ func (r *PostgresRepository) GetAuthorization(
 	var a Authorization
 	var items []byte
 	var expiresAt time.Time
+	var actionID *string
 
 	err := r.db.QueryRow(ctx, `
 		SELECT id, mandate_id, action, amount, currency, merchant, items,
-			policy_version, decision, risk_score, level, expires_at, status
+			policy_version, decision, risk_score, level, expires_at, status,
+			action_id
 		FROM authorizations
 		WHERE id = $1
 	`, id).Scan(
 		&a.ID, &a.MandateID, &a.Action, &a.Amount, &a.Currency, &a.Merchant,
 		&items, &a.PolicyVersion, &a.Decision, &a.RiskScore, &a.Level,
-		&expiresAt, &a.Status,
+		&expiresAt, &a.Status, &actionID,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -201,6 +203,9 @@ func (r *PostgresRepository) GetAuthorization(
 	}
 
 	a.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
+	if actionID != nil {
+		a.ActionID = *actionID
+	}
 
 	if err := json.Unmarshal(items, &a.Items); err != nil {
 		return Authorization{}, fmt.Errorf("unmarshal authorization items: %w", err)
@@ -223,13 +228,14 @@ func (r *PostgresRepository) SaveAuthorization(
 	_, err = r.db.Exec(ctx, `
 		INSERT INTO authorizations (
 			id, mandate_id, action, amount, currency, merchant, items,
-			policy_version, decision, risk_score, level, expires_at, status
+			policy_version, decision, risk_score, level, expires_at, status,
+			action_id
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 	`,
 		a.ID, a.MandateID, a.Action, a.Amount, a.Currency, a.Merchant,
 		items, a.PolicyVersion, a.Decision, a.RiskScore, a.Level,
-		expiresAt, a.Status,
+		expiresAt, a.Status, nilIfEmpty(a.ActionID),
 	)
 
 	if err != nil {
@@ -424,12 +430,14 @@ func (r *PostgresRepository) SaveApprovalRequest(
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO approval_requests (
 			id, mandate_id, action, amount, currency, merchant, items,
-			cart_id, policy_version, risk_score, level, status, reason
+			cart_id, policy_version, risk_score, level, status, reason,
+			action_id
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 	`,
 		a.ID, a.MandateID, a.Action, a.Amount, a.Currency, a.Merchant, items,
 		nilIfEmpty(a.CartID), a.PolicyVersion, a.RiskScore, a.Level, a.Status, a.Reason,
+		nilIfEmpty(a.ActionID),
 	)
 	if err != nil {
 		return fmt.Errorf("save approval request: %w", err)
@@ -447,15 +455,18 @@ func (r *PostgresRepository) GetApprovalRequest(
 	var items []byte
 	var cartID *string
 	var authID *string
+	var actionID *string
 
 	err := r.db.QueryRow(ctx, `
 		SELECT id, mandate_id, action, amount, currency, merchant, items,
-			cart_id, policy_version, risk_score, level, status, authorization_id, reason
+			cart_id, policy_version, risk_score, level, status, authorization_id, reason,
+			action_id
 		FROM approval_requests
 		WHERE id = $1
 	`, id).Scan(
 		&a.ID, &a.MandateID, &a.Action, &a.Amount, &a.Currency, &a.Merchant, &items,
 		&cartID, &a.PolicyVersion, &a.RiskScore, &a.Level, &a.Status, &authID, &a.Reason,
+		&actionID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApprovalRequest{}, ErrApprovalRequestNotFound
@@ -469,6 +480,9 @@ func (r *PostgresRepository) GetApprovalRequest(
 	}
 	if authID != nil {
 		a.AuthorizationID = *authID
+	}
+	if actionID != nil {
+		a.ActionID = *actionID
 	}
 	if err := json.Unmarshal(items, &a.Items); err != nil {
 		return ApprovalRequest{}, fmt.Errorf("unmarshal approval request items: %w", err)
@@ -487,10 +501,12 @@ func (r *PostgresRepository) GetPendingApprovalForAction(
 
 	req := ApprovalRequest{}
 	var rawItems []byte
+	var actionID *string
 
 	err := r.db.QueryRow(ctx, `
 		SELECT id, mandate_id, action, amount, currency, merchant, items,
-			cart_id, policy_version, risk_score, level, status, authorization_id, reason
+			cart_id, policy_version, risk_score, level, status, authorization_id, reason,
+			action_id
 		FROM approval_requests
 		WHERE status = 'PENDING'
 		  AND action = $1
@@ -503,6 +519,7 @@ func (r *PostgresRepository) GetPendingApprovalForAction(
 	`, a.Action, a.Amount, a.Currency, a.Merchant, items).Scan(
 		&req.ID, &req.MandateID, &req.Action, &req.Amount, &req.Currency, &req.Merchant, &rawItems,
 		&req.CartID, &req.PolicyVersion, &req.RiskScore, &req.Level, &req.Status, &req.AuthorizationID, &req.Reason,
+		&actionID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApprovalRequest{}, ErrApprovalRequestNotFound
@@ -511,6 +528,9 @@ func (r *PostgresRepository) GetPendingApprovalForAction(
 		return ApprovalRequest{}, fmt.Errorf("get pending approval: %w", err)
 	}
 
+	if actionID != nil {
+		req.ActionID = *actionID
+	}
 	if err := json.Unmarshal(rawItems, &req.Items); err != nil {
 		return ApprovalRequest{}, fmt.Errorf("unmarshal approval request items: %w", err)
 	}

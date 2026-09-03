@@ -35,13 +35,26 @@ type AuthorizationConsumer interface {
 }
 
 // OrderStatusTransitioner is the subset of the order repository the
-// payment service needs to mark orders paid on verified capture.
+// payment service needs to mark orders paid on verified capture, and
+// to tag an order with the agent run that authorized its payment
+// (PLAN-05-SELLER-DASHBOARD.md §2's "Orders -> Runs audit-trail
+// link") -- despite the name, this interface is really "the order
+// writes payment cares about", not status alone; SetRunID was added
+// here rather than as a second optional dependency because every
+// concrete caller (main.go) already wires the same *order.
+// PostgresRepository value in for both.
 type OrderStatusTransitioner interface {
 	TransitionStatus(
 		ctx context.Context,
 		orderID string,
 		to string,
 	) (order.Order, error)
+
+	SetRunID(
+		ctx context.Context,
+		orderID string,
+		runID string,
+	) error
 }
 
 func NewService(
@@ -146,10 +159,11 @@ func (s *Service) CreatePaymentOrder(
 		return Payment{}, fmt.Errorf("payment service requires an authorizer")
 	}
 
-	if _, err := s.authorizer.VerifyAuthorization(
+	auth, err := s.authorizer.VerifyAuthorization(
 		ctx,
 		authorizationID,
-	); err != nil {
+	)
+	if err != nil {
 		return Payment{}, fmt.Errorf("authorization required: %w", err)
 	}
 
@@ -209,6 +223,21 @@ func (s *Service) CreatePaymentOrder(
 	if consumer, ok := s.authorizer.(AuthorizationConsumer); ok {
 		if err := consumer.MarkAuthorizationUsed(ctx, authorizationID); err != nil {
 			return Payment{}, fmt.Errorf("mark authorization used: %w", err)
+		}
+	}
+
+	// Tag the order with the run that authorized it (PLAN-05-SELLER-
+	// DASHBOARD.md §2's "Orders -> Runs audit-trail link") -- best-
+	// effort, same as the audit-write convention elsewhere (e.g.
+	// policy/service.go's UpdatePolicyConfig): a failure here is a
+	// missing convenience link on the dashboard, never a reason to
+	// fail a payment that has already been authorized and created.
+	// auth.ActionID can be empty for an authorization issued before
+	// this field existed (a pre-migration row), which is silently
+	// skipped rather than writing an empty run_id.
+	if s.orders != nil && auth.ActionID != "" {
+		if err := s.orders.SetRunID(ctx, ord.ID, auth.ActionID); err != nil {
+			fmt.Printf("[payment] failed to tag order %s with run %s: %v\n", ord.ID, auth.ActionID, err)
 		}
 	}
 

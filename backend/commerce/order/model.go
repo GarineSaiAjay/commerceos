@@ -30,6 +30,16 @@ type Order struct {
 	// (checkout.tsx's own order history) simply get an extra field they
 	// don't render.
 	PaymentStatus string `json:"payment_status,omitempty"`
+	// RunID is the agent_actions.id (the run_id GET /runs/{id} takes)
+	// whose proposal was authorized and consumed to pay for this order
+	// -- empty until CreatePaymentOrder tags it (see
+	// payment.Service.CreatePaymentOrder's doc comment), and permanently
+	// empty for a draft order that never reached a successful payment.
+	// PLAN-05-SELLER-DASHBOARD.md §2's "Orders -> Runs audit-trail
+	// link": the dashboard Orders page uses this to deep-link to
+	// /dashboard/runs?run_id=... instead of the generic "browse Agent
+	// Runs" fallback it showed before.
+	RunID string `json:"run_id,omitempty"`
 }
 
 type OrderItem struct {

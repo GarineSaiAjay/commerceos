@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { formatINR, formatTime, actionLabel } from "../../../lib/format";
 import { authFetch } from "../../../lib/auth";
 
@@ -53,10 +54,24 @@ function decisionBadgeClass(decision: string): string {
   return "bg-rose-100 text-rose-800";
 }
 
+// RunsPage wraps the actual page in Suspense because useSearchParams
+// (read by RunsPageContent below, for the ?run_id= deep link the
+// dashboard Orders page now sends -- PLAN-05-SELLER-DASHBOARD.md §2)
+// requires one: Next.js opts a page that calls it outside Suspense
+// out of static rendering and fails the build.
 export default function RunsPage() {
+  return (
+    <Suspense fallback={null}>
+      <RunsPageContent />
+    </Suspense>
+  );
+}
+
+function RunsPageContent() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [selected, setSelected] = useState<Run | null>(null);
   const [error, setError] = useState("");
+  const searchParams = useSearchParams();
 
   // GET /runs (list) is merchant-only -- it exposes every buyer's runs.
   // GET /runs/{id} stays reachable without auth so checkout.tsx can show a
@@ -76,7 +91,7 @@ export default function RunsPage() {
     loadRuns();
   }, [loadRuns]);
 
-  async function selectRun(id: string) {
+  const selectRun = useCallback(async (id: string) => {
     setError("");
     try {
       const res = await authFetch(`/runs/${id}`, { cache: "no-store" });
@@ -85,7 +100,19 @@ export default function RunsPage() {
     } catch {
       setError("Could not load that run.");
     }
-  }
+  }, []);
+
+  // Deep link from the Orders page: /dashboard/runs?run_id=action_...
+  // fetches and selects that run directly, in addition to the normal
+  // list load above -- the run doesn't need to be in the first 50
+  // results loadRuns fetches for this to work.
+  useEffect(() => {
+    const runID = searchParams.get("run_id");
+    if (runID) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      selectRun(runID);
+    }
+  }, [searchParams, selectRun]);
 
   return (
     <main className="px-5 py-7 sm:px-8 lg:px-10">

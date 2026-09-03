@@ -404,6 +404,7 @@ func (r *PostgresRepository) GetOrder(
 ) (Order, error) {
 	var order Order
 	var campaignID *string
+	var runID *string
 
 	// LEFT JOIN payments -- 1:1 per order (payments.order_id is UNIQUE),
 	// so this can never duplicate the orders row; COALESCE keeps
@@ -421,7 +422,8 @@ func (r *PostgresRepository) GetOrder(
 			o.campaign_id,
 			o.status,
 			o.created_at,
-			COALESCE(p.status, '')
+			COALESCE(p.status, ''),
+			o.run_id
 		FROM orders o
 		LEFT JOIN payments p ON p.order_id = o.id
 		WHERE o.id = $1
@@ -436,6 +438,7 @@ func (r *PostgresRepository) GetOrder(
 		&order.Status,
 		&order.CreatedAt,
 		&order.PaymentStatus,
+		&runID,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -447,6 +450,9 @@ func (r *PostgresRepository) GetOrder(
 	}
 	if campaignID != nil {
 		order.CampaignID = *campaignID
+	}
+	if runID != nil {
+		order.RunID = *runID
 	}
 
 	rows, err := r.db.Query(ctx, `
@@ -509,7 +515,8 @@ func (r *PostgresRepository) ListOrders(
 			o.campaign_id,
 			o.status,
 			o.created_at,
-			COALESCE(p.status, '')
+			COALESCE(p.status, ''),
+			o.run_id
 		FROM orders o
 		LEFT JOIN payments p ON p.order_id = o.id
 		WHERE o.merchant_id = $1
@@ -526,6 +533,7 @@ func (r *PostgresRepository) ListOrders(
 	for rows.Next() {
 		var o Order
 		var campaignID *string
+		var runID *string
 
 		if err := rows.Scan(
 			&o.ID,
@@ -538,11 +546,15 @@ func (r *PostgresRepository) ListOrders(
 			&o.Status,
 			&o.CreatedAt,
 			&o.PaymentStatus,
+			&runID,
 		); err != nil {
 			return nil, fmt.Errorf("scan order: %w", err)
 		}
 		if campaignID != nil {
 			o.CampaignID = *campaignID
+		}
+		if runID != nil {
+			o.RunID = *runID
 		}
 
 		o.Items = []OrderItem{}
@@ -669,4 +681,32 @@ func (r *PostgresRepository) TransitionStatus(
 	}
 
 	return order, nil
+}
+
+// SetRunID tags an order with the agent run that authorized its
+// payment (PLAN-05-SELLER-DASHBOARD.md §2). Unlike TransitionStatus,
+// this deliberately does NOT go through the centralized order state
+// machine or check the order's current status -- run_id is pure audit
+// metadata, not a state the checkout saga (order/saga.go) transitions
+// through, so there is no illegal-edge concept for it to violate.
+func (r *PostgresRepository) SetRunID(
+	ctx context.Context,
+	orderID string,
+	runID string,
+) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE orders
+		SET run_id = $1,
+		    updated_at = NOW()
+		WHERE id = $2
+	`, runID, orderID)
+
+	if err != nil {
+		return fmt.Errorf("set order run id: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrOrderNotFound
+	}
+
+	return nil
 }
