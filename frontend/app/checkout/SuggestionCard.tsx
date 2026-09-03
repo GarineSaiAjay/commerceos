@@ -43,7 +43,7 @@ import { formatINR } from "./helpers";
 // The real, fully-interactive card above always replaces it the moment
 // the authoritative response arrives; see optimisticSuggest.ts's own
 // doc comment for why "the server always wins" here.
-const EXIT_DURATION_MS = 150;
+export const EXIT_DURATION_MS = 150;
 
 type Phase = "hidden" | "visible" | "leaving";
 

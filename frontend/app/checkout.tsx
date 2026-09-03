@@ -37,7 +37,7 @@ import {
   formatINR,
 } from "./checkout/helpers";
 import { bestCandidateClientSide } from "./checkout/optimisticSuggest";
-import { SuggestionCard } from "./checkout/SuggestionCard";
+import { SuggestionBadge } from "./checkout/SuggestionBadge";
 import { AgentChatPanel } from "./checkout/AgentChatPanel";
 import { ProductList } from "./checkout/ProductList";
 import { CartPanel } from "./checkout/CartPanel";
@@ -1109,7 +1109,7 @@ export default function CheckoutFlow({
               onDismissSuggestion={dismissSuggestion}
             />
 
-            <SuggestionCard
+            <SuggestionBadge
               suggestion={suggestion}
               suggestionLoading={suggestionLoading}
               loading={loading}
