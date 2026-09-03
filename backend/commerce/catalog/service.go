@@ -89,6 +89,40 @@ func (s *Service) ListVariantsByProduct(ctx context.Context, productID string) (
 	return s.repo.ListVariantsByProduct(ctx, productID)
 }
 
+// CreateVariant adds a new variant to an existing product, then
+// invalidates the products cache -- GetProduct's Variants field (which
+// the cached ListProducts response embeds per product) would otherwise
+// miss a newly-added variant until the cache's own short TTL naturally
+// expires, same correctness requirement CreateProduct/UpdateProduct/
+// DeleteProduct already enforce for their own edits.
+func (s *Service) CreateVariant(ctx context.Context, variant ProductVariant) error {
+	if err := s.repo.CreateVariant(ctx, variant); err != nil {
+		return err
+	}
+	s.invalidateCache(ctx)
+	return nil
+}
+
+// UpdateVariant replaces an existing variant's editable fields, then
+// invalidates the products cache for the same reason CreateVariant does.
+func (s *Service) UpdateVariant(ctx context.Context, variant ProductVariant) error {
+	if err := s.repo.UpdateVariant(ctx, variant); err != nil {
+		return err
+	}
+	s.invalidateCache(ctx)
+	return nil
+}
+
+// DeleteVariant removes a variant, then invalidates the products cache
+// for the same reason CreateVariant does.
+func (s *Service) DeleteVariant(ctx context.Context, id string) error {
+	if err := s.repo.DeleteVariant(ctx, id); err != nil {
+		return err
+	}
+	s.invalidateCache(ctx)
+	return nil
+}
+
 // UpdateProduct replaces the editable fields of an existing product.
 func (s *Service) UpdateProduct(ctx context.Context, product Product) error {
 	if err := s.repo.UpdateProduct(ctx, product); err != nil {
