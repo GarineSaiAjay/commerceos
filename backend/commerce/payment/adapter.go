@@ -3,14 +3,25 @@ package payment
 import "context"
 
 // PaymentAdapter is the protocol-adapter interface. Razorpay is the
-// current implementation; other rails (x402, future protocols) can be
-// added without touching the domain model. This is the extension point
-// the MCP/ACP/UCP/REST layers all sit on top of.
+// current implementation; another merchant-initiated rail (a mock, a
+// simulator, a future protocol shaped like Razorpay's own
+// CreatePayment -> buyer completes -> webhook/signature-confirms flow)
+// can be added without touching the domain model. This is the
+// extension point the MCP/ACP/UCP/REST layers all sit on top of.
 //
 // The adapter deliberately mirrors the Provider interface so the domain
 // model (payment.Service) depends only on the narrow Provider surface,
-// and swapping the real rail (Razorpay) for a synthetic one (mock,
-// simulator, future protocols) is a one-line change in main.go.
+// and swapping the real rail (Razorpay) for a synthetic one shaped like
+// it is a one-line change in main.go. x402 is NOT such a rail, despite
+// an earlier version of this comment naming it as an example: x402's
+// flow is resource-initiated (the server replies 402 with a priced
+// challenge; there's no order for a merchant to create first), so it
+// cannot be forced through CreatePayment/VerifyPaymentSignature without
+// inventing a fictional mapping between two structurally different
+// flows. See backend/commerce/payment/x402/README.md ("Why this isn't
+// payment.PaymentAdapter") for the honest scope of what was actually
+// built there instead: a standalone handler, not a PaymentAdapter
+// implementation.
 type PaymentAdapter interface {
 	// CreatePayment creates a payment order for the given amount.
 	CreatePayment(ctx context.Context, req CreatePaymentRequest) (Payment, error)

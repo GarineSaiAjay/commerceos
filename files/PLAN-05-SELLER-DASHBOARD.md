@@ -1,3 +1,5 @@
+> **Historical document.** This plan was written against the dashboard as it stood on 2026-08-30 (six nav pages, catalog/orders/growth/settings/team all unbuilt). A fresh audit against the real codebase (2026-09-04) found every item in "What's missing" below has since shipped -- Catalog, Orders, Growth, Settings, notification badges, CSV export, and even the "stretch, not required" multi-operator invite flow are all live, authenticated, and wired to real data. Kept in full below for design-history reference, with a **Shipped:** note added under each item pointing at the actual files, rather than deleted -- see `README.md` for what the dashboard nav looks like today.
+
 # Plan 05 — Seller/Merchant Dashboard: Reality Check + V2
 
 Depends on: `REALITY-CHECK-2026-08-30.md` §4.1–4.2.
@@ -9,6 +11,11 @@ Overview, Analytics, Approvals, Campaigns, Runs, Safety. All are gated
 by real operator auth (`AuthGate`, `RequireOperator` middleware) and all
 render real, live data — this dashboard has no fake screens, which is a
 genuinely good foundation to build on.
+
+> **Shipped (2026-09-04):** the nav now lists ten pages -- the six
+> above plus Catalog, Orders, Growth, and Settings, all built out per
+> the "What's missing" sections below. See
+> `frontend/app/dashboard/dashboard-nav.tsx` for the current list.
 
 What each page actually does today:
 
@@ -23,6 +30,9 @@ What each page actually does today:
   list), Analytics shows only the just-run result and loses it on
   refresh. This is a real inconsistency in an otherwise consistent
   dashboard.
+  **Shipped (2026-09-04):** `GET /dashboard/experiments` now backs a
+  persisted history list in `analytics/page.tsx`, matching the Safety
+  page's pattern -- this inconsistency is fixed.
 - **Approvals**: pending Level 2/3 proposals, approve/reject. Real,
   works.
 - **Campaigns**: propose + list + approve/reject discount campaigns
@@ -41,6 +51,18 @@ This is the concrete "unwired, not missing" case the user asked to have
 documented precisely:
 
 ### 1. Catalog management — backend exists, zero UI, currently unauthenticated
+
+> **Shipped:** `frontend/app/dashboard/catalog/page.tsx` +
+> `VariantEditor.tsx` is a full CRUD UI, matching the existing list-page
+> pattern. `POST/PATCH/DELETE /products` and the variant routes are
+> wrapped in `RequireOperator` in `backend/cmd/server/main.go` (the
+> auth fix shipped alongside the page, as this plan required). The
+> `ErrProductInUse`/`ErrVariantInUse` 409s surface verbatim in the UI.
+> One spec deviation: the "quick +/- availability control per variant,
+> distinct from a full edit" below was NOT built as a separate stepper
+> -- `VariantEditor.tsx` has a single inline edit form (SKU/price/
+> availability/Save) instead. Functionally equivalent (availability is
+> editable), just not the specific UX pattern this section asked for.
 
 `backend/commerce/catalog/handler.go` fully implements
 `CreateProduct`/`UpdateProduct`/`DeleteProduct`, wired into `main.go` at
@@ -72,6 +94,13 @@ Design for `/dashboard/catalog`:
 
 ### 2. Orders / fulfillment — merchant has no view of their own orders
 
+> **Shipped:** `frontend/app/dashboard/orders/page.tsx` -- list/detail
+> split, linked payment record, and a working deep link into Runs
+> (`/dashboard/runs?run_id=...`). No refund/cancel path exists yet,
+> exactly as this section anticipated ("note this explicitly as a
+> future capability") -- that part of the gap is still open, correctly
+> left unbuilt rather than faked.
+
 `GET /orders?merchant_id=` already exists and is used by the *buyer's*
 own order history in `checkout.tsx`. The merchant dashboard — the
 "merchant command center," per its own tagline — has **no orders page
@@ -87,6 +116,13 @@ at all.** Add `/dashboard/orders`:
   something to fabricate a button for today.)
 
 ### 3. Growth-agent performance — one aggregate number today, should be a real page
+
+> **Shipped:** `frontend/app/dashboard/growth/page.tsx` +
+> `backend/growth/dashboard.go` -- suggestion funnel (shown/accepted/
+> dismissed), top products by acceptance rate, and a rejected-demand
+> list linking into Campaigns, all backed by real SQL joins over
+> `suggestion_impressions`/`recommendations`/`suggestion_dismissals`,
+> not mocked.
 
 Overview shows a single lifetime `ai_revenue` figure. There is no visibility
 into: how many suggestions were shown, how many were accepted, which
@@ -109,6 +145,12 @@ or tune.
 
 ### 4. Mandate / policy settings — currently invisible and hardcoded
 
+> **Shipped:** `frontend/app/dashboard/settings/page.tsx` +
+> `backend/policy/handler.go`'s `GetSettings`/`UpdateSettings`, gated
+> at `/dashboard/settings/policy`. Config is persisted before being
+> applied live, then best-effort audit-written -- exactly the read-
+> first, gated-edit posture this section called for.
+
 The mandate a buyer checks out against
 (`mandate_demo`, ceiling ₹30,000, allowed categories `["electronics"]`)
 is a single seeded DB row with zero dashboard visibility. Add
@@ -119,6 +161,11 @@ deterministically server-side by `policy.Engine` exactly as today — this
 page is a window into existing config, not a new authority.
 
 ### 5. Notification / alerting surface
+
+> **Shipped:** all three sub-items are built -- an approvals badge and
+> a persistent chain-broken/budget-exhausted banner
+> (`dashboard-nav.tsx`, `dashboard-banners.tsx`) driven by a shared
+> poller in `alerts.tsx` rendered above every `/dashboard/*` page.
 
 Nothing in the current nav communicates "something needs your
 attention" without navigating into that specific page. Add:
@@ -135,12 +182,23 @@ attention" without navigating into that specific page. Add:
 
 ### 6. Reporting / export
 
+> **Shipped:** `backend/commerce/order/handler.go`'s
+> `ExportOrdersCSV` and `backend/campaign/handler.go`'s `ExportCSV`,
+> both `RequireOperator`-gated and wired to real export buttons in the
+> UI.
+
 CSV export of orders and campaigns — useful for both a real merchant
 and for a judge who wants to inspect data outside the UI. Backend-side
 this is a thin CSV-serialization endpoint over data the existing
 handlers already query; no new business logic.
 
 ### 7. Multi-operator (stretch, not required)
+
+> **Shipped anyway:** `backend/auth/invite.go` (invite/accept/list/
+> revoke, hashed tokens, TTL, can't-remove-self/can't-remove-last-
+> operator guards, enforced server-side) + `frontend/app/dashboard/
+> settings/team.tsx` + `frontend/app/accept-invite`. Built despite
+> being flagged here as stretch/not-required.
 
 Exactly one hardcoded operator account exists (`db/seeds/002_operator.sql`),
 with the PBKDF2 trade-off already documented in `files/AUTH.md`. A real
@@ -161,11 +219,16 @@ bar — flagged here for completeness, detailed further in `PLAN-06`.
 - Analytics' missing history list (noted above) should be fixed as part
   of this pass regardless of which new page ships first — it's the one
   existing inconsistency, cheap to fix (persist each run's report row,
-  list them the same way Safety lists evaluations).
+  list them the same way Safety lists evaluations). **Shipped** -- see
+  the Analytics bullet above.
 
 ---
 
 ## Phasing
+
+> **Status (2026-09-04): every phase below has shipped**, including
+> the P3 multi-operator stretch item. Kept as a record of the original
+> plan, not a live tracker.
 
 | Phase | Scope | Effort | Risk |
 |---|---|---|---|
