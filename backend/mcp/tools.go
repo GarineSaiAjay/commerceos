@@ -23,7 +23,12 @@ type Dependencies struct {
 	Payment *payment.Service
 	Policy  *policy.Service
 	Growth  *growth.GrowthAgent
-	Explain func(policy.ProposedAction, policy.Mandate, string) string
+	// Explain takes ctx so its production wiring (cmd/server/main.go)
+	// can thread a request-scoped context into an optional LLM
+	// rephrasing pass (agents.RejectionNarrator, item #4 of
+	// files/agent-ai-integration-ideas.md) without that call ever
+	// outliving the HTTP request that triggered it.
+	Explain func(ctx context.Context, action policy.ProposedAction, mandate policy.Mandate, failedCheck string) string
 }
 
 // toolDeps narrows Dependencies to the shared tools package's own
@@ -438,6 +443,6 @@ func explainDecision(ctx context.Context, deps Dependencies, p json.RawMessage) 
 	}
 	mandate := policy.Mandate{MaximumAmount: req.MaxAmount, Currency: req.Currency}
 	return map[string]any{
-		"explanation": deps.Explain(action, mandate, req.FailedCheck),
+		"explanation": deps.Explain(ctx, action, mandate, req.FailedCheck),
 	}, nil
 }
