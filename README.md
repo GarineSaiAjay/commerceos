@@ -78,6 +78,17 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
      `redis` to report healthy and for `migrate` to finish
      successfully before it starts, so a fresh `up` no longer races a
      not-yet-ready database.
+   - **Verify the OpenRouter key actually loaded** (it silently didn't,
+     for anyone running this exact command from the repo root, until
+     `infra/docker-compose.yml` gained an explicit `env_file: .env` on
+     the `backend` service -- see
+     `files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md`, Finding B):
+     ```bash
+     docker compose -f infra/docker-compose.yml exec backend printenv OPENROUTER_API_KEY
+     ```
+     This should print the key from `infra/.env`, not nothing. An empty
+     result means the agent is silently running on the deterministic
+     (non-LLM) fallback with no visual indicator that it's doing so.
    - That's it. Skip straight to [Testing](#testing) below.
 
 ### Running without Docker
