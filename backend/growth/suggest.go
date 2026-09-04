@@ -110,6 +110,32 @@ const (
 	heuristicConfidence      = 0.70
 )
 
+// compatibilityMatchWeight is how many scoring points a single
+// Compatibility tag match is worth in bestCandidate, versus 1 point for
+// a UseCases or Features match. Without this, every warranty/protection
+// SKU in this catalog (AppleCare, AppleCare+ for AirPods, AppleCare+ for
+// MacBook 1yr/2yr) shares the exact same features
+// (["extended_warranty", "technical_support"]) and largely the same
+// use_cases (["accessories", "protection", "support"], only "laptop" vs
+// nothing differs) regardless of which device each actually covers --
+// so any warranty item already in the cart scored every OTHER warranty
+// item ~5 points from those generic, device-agnostic tags alone, while
+// a genuinely relevant, device-specific accessory (e.g. an AirPods case
+// or ear tips, which only shares 1-2 generic use_cases tags plus its
+// real Compatibility match) scored only ~3 -- so the agent recommended
+// "AppleCare+ for MacBook" into a cart containing zero MacBook items,
+// a live-reported incident. Compatibility is the one tag namespace in
+// this schema meant to encode actual device fit (e.g.
+// ["airpods_pro_2", "airpods_3", "airpods_max"] vs ["macbook"] vs the
+// generic ["apple_devices"]), so it must dominate the generic,
+// broadly-shared use_cases/features tags rather than being drowned out
+// by them. 4 is large enough to flip that exact case (a genuine
+// single-tag Compatibility match now outscores the warranty family's
+// shared generic tags) without being so large that a single
+// Compatibility match alone can never be caught up by a product that's
+// overwhelmingly relevant by use_cases/features instead.
+const compatibilityMatchWeight = 4
+
 // heuristicRatingNeutral/-Step (PLAN-02-CATALOG-AND-COMMERCE.md §2) turn
 // a candidate's real average_rating into a small, deterministic nudge
 // on the tag-overlap probability estimate: a 4.8-rated accessory is a
@@ -249,12 +275,14 @@ func buildSignals(products ...catalog.Product) map[string]bool {
 
 // bestCandidate scores every catalog product against signals, skipping
 // anything in exclude, from a different merchant, or currently out of
-// stock, and returns the highest-scoring match. Ties break toward the
-// cheaper item -- a smaller, more plausible add-on beats an equally
-// relevant but expensive one. This is the one scoring function shared
-// by all three /growth/suggest* entry points (PLAN-03-PROACTIVE-GROWTH-
-// AGENT.md §3: "One scoring function, ... call sites -- no duplicated
-// logic").
+// stock, and returns the highest-scoring match. A Compatibility tag
+// match counts compatibilityMatchWeight points (see its own doc
+// comment for why); a UseCases or Features match counts 1. Ties break
+// toward the cheaper item -- a smaller, more plausible add-on beats an
+// equally relevant but expensive one. This is the one scoring function
+// shared by all three /growth/suggest* entry points (PLAN-03-PROACTIVE-
+// GROWTH-AGENT.md §3: "One scoring function, ... call sites -- no
+// duplicated logic").
 func bestCandidate(catalogProducts []catalog.Product, merchantID string, signals map[string]bool, exclude map[string]bool) (scoredCandidate, bool) {
 	var candidates []scoredCandidate
 
@@ -270,7 +298,7 @@ func bestCandidate(catalogProducts []catalog.Product, merchantID string, signals
 		}
 		for _, tag := range product.Compatibility {
 			if signals[tag] {
-				score++
+				score += compatibilityMatchWeight
 			}
 		}
 		for _, tag := range product.Features {

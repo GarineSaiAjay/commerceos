@@ -212,6 +212,64 @@ func TestBestCandidateNoOverlapReturnsFalse(t *testing.T) {
 	}
 }
 
+// TestBestCandidateWeighsCompatibilityOverGenericTags reproduces a live-
+// reported incident: a cart holding AppleCare (generic,
+// compatibility=["apple_devices"]) and AppleCare+ for AirPods
+// (compatibility=["airpods_pro_2","airpods_3","airpods_max"]) had "Add
+// AppleCare+ for MacBook" suggested to it -- a warranty plan for a
+// device category (MacBook) that wasn't in the cart at all -- while a
+// genuinely relevant AirPods case sat unsuggested. Root cause: every
+// warranty SKU in the real catalog shares identical
+// features=["extended_warranty","technical_support"] and near-identical
+// use_cases=["accessories","protection","support"] regardless of which
+// device it covers, so those generic tags alone gave the irrelevant
+// MacBook plan a higher score than an actually-compatible accessory
+// that only shares 1-2 generic use_cases tags plus its real
+// Compatibility match. This fixture mirrors that exact shape (minus the
+// catalog's real IDs) and asserts the device-compatible accessory wins.
+func TestBestCandidateWeighsCompatibilityOverGenericTags(t *testing.T) {
+	// Signal set built from the two cart items, same as buildSignals
+	// would produce for [applecare, applecare-airpods].
+	signals := map[string]bool{
+		"extended_warranty": true, "technical_support": true, // shared warranty features
+		"apple_devices": true, // generic AppleCare's own compatibility
+		"airpods_pro_2": true, "airpods_3": true, "airpods_max": true, // AppleCare+ for AirPods' compatibility
+		"accessories": true, "protection": true, "support": true, // shared warranty use_cases
+	}
+
+	irrelevantWarranty := catalog.Product{
+		ID:           "warranty-macbook",
+		Title:        "warranty-macbook",
+		Price:        catalog.Money{Amount: 990000, Currency: "INR"},
+		Availability: 40,
+		Features:     []string{"extended_warranty", "technical_support"},
+		Compatibility: []string{"macbook"}, // does NOT overlap the signal set at all
+		UseCases:      []string{"accessories", "laptop", "protection", "support"},
+		Merchant:      catalog.MerchantRef{ID: "m1"},
+	}
+	relevantAccessory := catalog.Product{
+		ID:            "case-airpods",
+		Title:         "case-airpods",
+		Price:         catalog.Money{Amount: 199900, Currency: "INR"},
+		Availability:  25,
+		Features:      []string{"protective", "wireless_charging"},
+		Compatibility: []string{"airpods_pro_2"}, // DOES overlap -- this is the actual device in the cart
+		UseCases:      []string{"accessories", "protection", "travel"},
+		Merchant:      catalog.MerchantRef{ID: "m1"},
+	}
+
+	best, ok := bestCandidate([]catalog.Product{irrelevantWarranty, relevantAccessory}, "m1", signals, map[string]bool{})
+	if !ok {
+		t.Fatal("expected a candidate")
+	}
+	if best.product.ID != relevantAccessory.ID {
+		t.Fatalf(
+			"expected the device-compatible accessory (%s) to outrank the device-incompatible warranty plan (%s), got %s (score %d)",
+			relevantAccessory.ID, irrelevantWarranty.ID, best.product.ID, best.score,
+		)
+	}
+}
+
 // --- SuggestForProduct (item 19, PLAN-03 §3) ---
 
 func newTestSuggestHandler(products map[string]catalog.Product, carts map[string]cart.Cart, orders map[string]order.Order, dismissed map[string][]string) *SuggestHandler {
