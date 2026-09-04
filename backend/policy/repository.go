@@ -197,6 +197,22 @@ type Authorization struct {
 	// without payment needing any policy-internal knowledge beyond
 	// this one field.
 	ActionID string
+	// CartID binds this authorization to the specific cart (and, via
+	// order.Order.CartID, the specific order) it was proposed for --
+	// copied from ProposedAction.CartID/ApprovalRequest.CartID at
+	// Propose/Approve time, never changed afterward. Added as a P0
+	// security fix (full-codebase re-audit 2026-09-04, see
+	// db/migrations/20260904090100_add_authorizations_cart_id.sql):
+	// without this, VerifyAuthorization only proved an authorization
+	// was ACTIVE and unexpired, never that it was actually issued for
+	// the order being paid, so a cheap Level-1 authorization could be
+	// spent against an arbitrarily expensive order. Empty for a
+	// cart-less ("generalized") proposal -- see
+	// Engine.checkMandateCartBound's doc comment -- which
+	// payment.Service.CreatePaymentOrder now refuses to accept for
+	// paying an order at all (an order always has a real cart_id, so
+	// an authorization with none can never legitimately match it).
+	CartID string
 }
 
 // Evaluation is a persisted policy decision.

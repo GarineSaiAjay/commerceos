@@ -10,9 +10,15 @@ import (
 )
 
 // consumingAuthorizer approves authorizations and records when they are
-// marked used.
+// marked used. CartID/Currency/Amount are echoed back on every
+// VerifyAuthorization response so they satisfy CreatePaymentOrder's
+// post-fix binding checks (P0 fix, full-codebase re-audit 2026-09-04) --
+// each test below sets these to match the order.Order it's exercising.
 type consumingAuthorizer struct {
-	used map[string]bool
+	used     map[string]bool
+	CartID   string
+	Currency string
+	Amount   int64
 }
 
 // Compile-time guard: the policy Service must satisfy the
@@ -28,6 +34,9 @@ func (a *consumingAuthorizer) VerifyAuthorization(
 		ID:        id,
 		Status:    "ACTIVE",
 		ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339),
+		CartID:    a.CartID,
+		Currency:  a.Currency,
+		Amount:    a.Amount,
 	}, nil
 }
 
@@ -42,11 +51,13 @@ func (a *consumingAuthorizer) MarkAuthorizationUsed(ctx context.Context, id stri
 func TestAuthorizationConsumedAfterNewPayment(t *testing.T) {
 	provider := &countingProvider{}
 	repo := newMemRepo()
-	auth := &consumingAuthorizer{used: map[string]bool{}}
+	auth := &consumingAuthorizer{
+		used: map[string]bool{}, CartID: "cart_auth_consume", Currency: "INR", Amount: 2_490_000,
+	}
 
 	service := NewServiceWithAuthorizer(provider, repo, nil, nil, auth)
 
-	ord := order.Order{ID: "order_auth_consume", Subtotal: 2_490_000, Currency: "INR"}
+	ord := order.Order{ID: "order_auth_consume", CartID: "cart_auth_consume", Subtotal: 2_490_000, Currency: "INR"}
 
 	if _, err := service.CreatePaymentOrder(
 		context.Background(), ord, "key_1", "auth_new",
@@ -75,11 +86,13 @@ func TestAuthorizationConsumedAfterNewPayment(t *testing.T) {
 func TestAuthorizationNotConsumedWhenIdempotentRepeat(t *testing.T) {
 	provider := &countingProvider{}
 	repo := newMemRepo()
-	auth := &consumingAuthorizer{used: map[string]bool{}}
+	auth := &consumingAuthorizer{
+		used: map[string]bool{}, CartID: "cart_idem_repeat", Currency: "INR", Amount: 1_000_00,
+	}
 
 	service := NewServiceWithAuthorizer(provider, repo, nil, nil, auth)
 
-	ord := order.Order{ID: "order_idem_repeat", Subtotal: 1_000_00, Currency: "INR"}
+	ord := order.Order{ID: "order_idem_repeat", CartID: "cart_idem_repeat", Subtotal: 1_000_00, Currency: "INR"}
 
 	if _, err := service.CreatePaymentOrder(
 		context.Background(), ord, "key_repeat", "auth_a",

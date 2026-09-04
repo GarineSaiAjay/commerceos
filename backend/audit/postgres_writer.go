@@ -31,6 +31,16 @@ func NewPostgresWriter(db *pgxpool.Pool) *PostgresWriter {
 	return &PostgresWriter{db: db}
 }
 
+// auditChainLockKey is an arbitrary, fixed Postgres advisory-lock key
+// used to serialize every Write call against every other one -- see the
+// pg_advisory_xact_lock call below for why. Picked with no significance
+// beyond "not zero and not likely to collide with an advisory lock some
+// future feature adds" -- there is exactly one hash chain
+// (audit_events) in this codebase today, so one fixed key is enough;
+// if a second independently-chained table is ever added, it needs its
+// own distinct key here.
+const auditChainLockKey = 0x415544495430 // "AUDIT0" in hex, arbitrary
+
 // Write inserts an audit row with event_hash = SHA256(content + prev_hash),
 // forming a tamper-evident chain. The hash is computed over the DB's
 // canonical JSONB text so the verifier reproduces it exactly.
@@ -52,6 +62,33 @@ func (w *PostgresWriter) Write(
 		return fmt.Errorf("begin audit tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Serialize the whole "read the previous link, compute this row's
+	// hash from it, write it" sequence below against every other
+	// concurrent Write call. Without this (P0 fix, full-codebase
+	// re-audit 2026-09-04), two Write calls overlapping -- trivially
+	// triggered by any two audit-worthy events happening close together,
+	// e.g. two orders paid at once -- could both read the same "last
+	// hashed row" before either committed, compute the same prev_hash,
+	// and both commit: two rows pointing at the same ancestor instead of
+	// a linear chain. Verifier.Verify walks strictly by id and expects
+	// each row's prev_hash to equal the row immediately before it, so
+	// the second of the forked pair would fail verification and the
+	// whole chain gets reported ChainBroken=true -- a FALSE tamper
+	// report, on the exact endpoint (GET /trust/summary) meant to prove
+	// the chain hasn't been tampered with. pg_advisory_xact_lock blocks
+	// every other transaction trying to acquire the same key until this
+	// one commits or rolls back (automatic release either way), which
+	// is exactly the "only one appender at a time" guarantee a
+	// singly-linked hash chain needs; a plain row lock on the previous
+	// row (e.g. SELECT ... FOR UPDATE on the query just below) would NOT
+	// be sufficient on its own, because the query that finds "the last
+	// hashed row" has to
+	// re-evaluate ORDER BY/LIMIT against the table's current state, not
+	// just re-check one already-identified row.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(auditChainLockKey)); err != nil {
+		return fmt.Errorf("acquire audit chain lock: %w", err)
+	}
 
 	// Insert the row without hashes first.
 	var id int64

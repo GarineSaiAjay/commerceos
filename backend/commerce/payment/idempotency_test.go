@@ -102,7 +102,16 @@ func (r *memRepo) TransitionStatus(
 }
 
 // okAuthorizer approves any authorization — used for idempotency tests.
-type okAuthorizer struct{}
+// CartID/Currency/Amount are echoed back on every VerifyAuthorization
+// response so they satisfy CreatePaymentOrder's post-fix binding checks
+// (P0 fix, full-codebase re-audit 2026-09-04) -- set these to match
+// whatever order.Order the test is exercising, same convention as
+// consumingAuthorizer in authorization_consume_test.go.
+type okAuthorizer struct {
+	CartID   string
+	Currency string
+	Amount   int64
+}
 
 func (a okAuthorizer) VerifyAuthorization(
 	ctx context.Context,
@@ -112,6 +121,9 @@ func (a okAuthorizer) VerifyAuthorization(
 		ID:        id,
 		Status:    "ACTIVE",
 		ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339),
+		CartID:    a.CartID,
+		Currency:  a.Currency,
+		Amount:    a.Amount,
 	}, nil
 }
 
@@ -121,10 +133,13 @@ func (a okAuthorizer) VerifyAuthorization(
 func TestIdempotencyKeySameKeyNoSecondRazorpayOrder(t *testing.T) {
 	provider := &countingProvider{}
 	repo := newMemRepo()
-	service := NewServiceWithAuthorizer(provider, repo, nil, nil, okAuthorizer{})
+	service := NewServiceWithAuthorizer(provider, repo, nil, nil, okAuthorizer{
+		CartID: "cart_923", Currency: "INR", Amount: 24900,
+	})
 
 	ord := order.Order{
 		ID:       "order_idem_001",
+		CartID:   "cart_923",
 		Subtotal: 24900,
 		Currency: "INR",
 	}

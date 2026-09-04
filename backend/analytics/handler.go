@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/garinesaiajay/commerceos/audit"
+	"github.com/garinesaiajay/commerceos/auth"
 )
 
 // Handler serves the dashboard API.
@@ -19,10 +20,22 @@ func NewHandler(metrics *Service, experiment *ExperimentService, verifier *audit
 }
 
 // Overview handles GET /dashboard/overview — a source-labelled merchant
-// dashboard read model. It is intentionally separate from simulated reports.
+// dashboard read model. It is intentionally separate from simulated
+// reports. Scoped to the calling operator's own merchant (P0 security
+// fix, full-codebase re-audit 2026-09-04) -- this handler previously
+// never checked auth.OperatorFromContext at all, so despite
+// RequireOperator gating this route at the authentication layer
+// (main.go), there was no authorization check here: any authenticated
+// operator of any merchant saw the entire platform's revenue, orders,
+// and raw audit log. See Service.Compute/Overview's doc comments.
 func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	operator, ok := auth.OperatorFromContext(r.Context())
+	if !ok {
+		http.Error(w, "operator session required", http.StatusUnauthorized)
 		return
 	}
 
@@ -39,7 +52,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	overview, err := h.metrics.Overview(r.Context(), integrity)
+	overview, err := h.metrics.Overview(r.Context(), operator.MerchantID, integrity)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -47,14 +60,21 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, overview)
 }
 
-// Metrics handles GET /dashboard/metrics — real numbers from DB rows.
+// Metrics handles GET /dashboard/metrics — real numbers from DB rows,
+// scoped to the calling operator's own merchant. Same P0 fix as
+// Overview above -- this handler had the identical gap.
 func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	operator, ok := auth.OperatorFromContext(r.Context())
+	if !ok {
+		http.Error(w, "operator session required", http.StatusUnauthorized)
+		return
+	}
 
-	m, err := h.metrics.Compute(r.Context())
+	m, err := h.metrics.Compute(r.Context(), operator.MerchantID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

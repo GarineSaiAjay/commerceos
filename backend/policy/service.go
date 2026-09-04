@@ -230,6 +230,11 @@ func (s *Service) Propose(
 			ExpiresAt:     s.now().Add(10 * time.Minute).Format("2006-01-02T15:04:05Z"),
 			Status:        "ACTIVE",
 			ActionID:      actionID,
+			// CartID binds this authorization to the cart it was
+			// proposed for -- see Authorization.CartID's doc comment.
+			// Empty for a cart-less proposal, exactly like
+			// action.CartID itself.
+			CartID: action.CartID,
 		}
 		if err := s.repo.SaveAuthorization(ctx, auth); err != nil {
 			return Decision{}, err
@@ -467,6 +472,12 @@ func (s *Service) Approve(ctx context.Context, approvalRequestID, cartID, operat
 		ExpiresAt:     s.now().Add(10 * time.Minute).Format("2006-01-02T15:04:05Z"),
 		Status:        "ACTIVE",
 		ActionID:      req.ActionID,
+		// CartID binds this authorization to the same cart the
+		// approval request was bound to -- see Authorization.CartID's
+		// doc comment. resolveApprover already required a buyer
+		// approver to prove they know this exact cart_id, so req.CartID
+		// is trustworthy here regardless of who approved.
+		CartID: req.CartID,
 	}
 	if err := s.repo.SaveAuthorization(ctx, auth); err != nil {
 		return Decision{}, err
