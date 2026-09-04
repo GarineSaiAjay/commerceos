@@ -42,6 +42,24 @@ func (v *Verifier) Verify(ctx context.Context) (VerificationResult, error) {
 
 	result := VerificationResult{Verified: true}
 	var expectedPrev *string
+	// chainStarted becomes true on the first row with a non-NULL
+	// event_hash. Full-codebase re-audit (P2): the NULL-hash skip below
+	// used to apply unconditionally to ANY row, anywhere in the table --
+	// but postgres_writer.go's Write always sets a real event_hash
+	// before a row is ever visible to a legitimate reader (the INSERT
+	// creates the row, then an UPDATE sets event_hash/prev_hash in the
+	// same call), so a NULL hash is only ever legitimate for the
+	// contiguous prefix of rows written before
+	// 20260822131000_add_audit_hash_chain.sql added the columns (they
+	// default to NULL with no backfill). A NULL hash anywhere AFTER the
+	// chain has started is not a legacy row -- it's either direct DB
+	// tampering (delete/replace real rows, then null out their hash to
+	// dodge verification) or a crash between the INSERT and the
+	// hash-computing UPDATE -- and skipping it silently defeated the
+	// entire point of a tamper-evident chain by walking straight past
+	// exactly the row an attacker would forge. Now only the true legacy
+	// prefix is skipped; anything after is reported as ChainBroken.
+	chainStarted := false
 
 	for rows.Next() {
 		var (
@@ -62,10 +80,20 @@ func (v *Verifier) Verify(ctx context.Context) (VerificationResult, error) {
 			return VerificationResult{}, fmt.Errorf("scan audit row: %w", err)
 		}
 
-		// Skip rows that predate the hash chain (event_hash is NULL).
 		if eventHash == nil {
+			if chainStarted {
+				// A NULL hash after real hashed rows have already been
+				// seen -- not a legacy row, a break in the chain.
+				result.Verified = false
+				result.ChainBroken = true
+				result.BrokenAtID = id
+				break
+			}
+			// Still in the legacy pre-hash-chain prefix -- nothing to
+			// verify for these, skip them.
 			continue
 		}
+		chainStarted = true
 
 		// Recompute the expected hash.
 		content := string(detail) + "|" + actor + "|" + action + "|" + entityType + "|" + entityID
