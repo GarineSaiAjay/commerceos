@@ -55,10 +55,12 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 	rev, err := h.service.Submit(r.Context(), orderID, req.ProductID, req.BuyerReference, req.Rating, req.Comment)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrInvalidRating), errors.Is(err, ErrProductNotInOrder):
+		case errors.Is(err, ErrInvalidRating), errors.Is(err, ErrProductNotInOrder), errors.Is(err, ErrOrderNotEligibleForReview):
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		case errors.Is(err, order.ErrOrderNotFound):
 			http.Error(w, "order not found", http.StatusNotFound)
+		case errors.Is(err, ErrDuplicateReview):
+			http.Error(w, err.Error(), http.StatusConflict)
 		default:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}

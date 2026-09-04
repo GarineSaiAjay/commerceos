@@ -209,42 +209,92 @@ func (r *PostgresRepository) CheckoutCart(
 		break
 	}
 
-	// Lock each product row and decrement inventory.
+	// Lock each cart item's VARIANT row and decrement inventory there --
+	// product_variants.availability, not products.availability, is the
+	// real per-SKU stock count (catalog.PostgresRepository.GetVariant
+	// already reads pv.availability; every cart item carries a
+	// variant_id, since commerce/cart.Service.AddItem requires one and
+	// every product is guaranteed at least its own "<id>-default"
+	// variant -- see CreateProduct and
+	// db/migrations/*_backfill_missing_default_variants.sql).
 	//
-	// GetVariant currently reads availability from products, so the
-	// product row is the inventory row we lock here.
+	// A fresh audit against PLAN-02-CATALOG-AND-COMMERCE.md found this
+	// loop previously locked and decremented products.availability
+	// keyed only on product_id, completely ignoring variant_id even
+	// though order_items.variant_id is persisted right next to it.
+	// Two products.availability and product_variants.availability
+	// counters existed with no sync between them: per-variant stock
+	// shown in the UI never moved after a purchase, and -- worse --
+	// buying one color could push a DIFFERENT, still-in-stock color
+	// into a false "insufficient availability" (or a low-stock variant
+	// could be oversold past its own displayed count) purely because
+	// the shared product-level counter still had headroom. Locking
+	// product_variants directly here fixes both: each variant's own
+	// row is now the single, race-safe (FOR UPDATE, same transaction)
+	// source of truth checkout actually enforces.
 	for _, item := range items {
-		var availability int
+		var variantAvailability int
 
 		err := tx.QueryRow(ctx, `
 			SELECT availability
-			FROM products
+			FROM product_variants
 			WHERE id = $1
 			FOR UPDATE
-		`, item.ProductID).Scan(&availability)
+		`, item.VariantID).Scan(&variantAvailability)
 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Order{}, fmt.Errorf(
-				"product %s not found",
-				item.ProductID,
+				"variant %s not found",
+				item.VariantID,
 			)
 		}
 
 		if err != nil {
 			return Order{}, fmt.Errorf(
-				"lock inventory for product %s: %w",
-				item.ProductID,
+				"lock inventory for variant %s: %w",
+				item.VariantID,
 				err,
 			)
 		}
 
-		if availability < item.Quantity {
+		if variantAvailability < item.Quantity {
 			return Order{}, ErrInsufficientAvailability
 		}
 
 		_, err = tx.Exec(ctx, `
-			UPDATE products
+			UPDATE product_variants
 			SET availability = availability - $1,
+			    updated_at = NOW()
+			WHERE id = $2
+		`,
+			item.Quantity,
+			item.VariantID,
+		)
+
+		if err != nil {
+			return Order{}, fmt.Errorf(
+				"decrement inventory for variant %s: %w",
+				item.VariantID,
+				err,
+			)
+		}
+
+		// products.availability is no longer the gating count (a
+		// multi-variant product has no single true "total" -- see the
+		// comment above), but it is still read as a fallback display
+		// value before a buyer has picked a variant (frontend/app/
+		// checkout/ProductList.tsx's "activeVariant?.availability ??
+		// product.availability") and by the seller dashboard's
+		// top-level out-of-stock badge (frontend/app/dashboard/catalog/
+		// page.tsx). Best-effort keep it moving in the same direction
+		// as the real, authoritative variant counter above rather than
+		// leaving it frozen forever -- floored at 0 (GREATEST) since it
+		// no longer gates anything and must never go negative just
+		// because a product's variants collectively outsold whatever
+		// number happened to seed it at creation.
+		_, err = tx.Exec(ctx, `
+			UPDATE products
+			SET availability = GREATEST(availability - $1, 0),
 			    updated_at = NOW()
 			WHERE id = $2
 		`,
@@ -254,7 +304,7 @@ func (r *PostgresRepository) CheckoutCart(
 
 		if err != nil {
 			return Order{}, fmt.Errorf(
-				"decrement inventory for product %s: %w",
+				"update display availability for product %s: %w",
 				item.ProductID,
 				err,
 			)
