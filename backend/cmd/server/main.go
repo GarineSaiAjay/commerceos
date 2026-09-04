@@ -3,6 +3,7 @@ package main
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -36,6 +37,68 @@ import (
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "OK")
+}
+
+// newReviewSummaryHandler builds the handler for GET /products/{id}/
+// reviews/summary -- idea #5 of files/agent-ai-integration-ideas.md
+// (Review Summarization Agent). A thin HTTP wrapper: it fetches real
+// reviews via reviewService (never sees or writes anything else),
+// fetches the product's title from catalogService for LLM prompt
+// context only (a failed lookup degrades to an empty title rather than
+// failing the whole request over a non-essential detail), and asks
+// summarizer to synthesize them.
+//
+// Every outcome that isn't a genuine infra error (the review fetch
+// itself failing) is reported as a 200 with available:false -- not
+// enough reviews yet, or no summarizer configured -- exactly the same
+// "the AI feature had nothing to offer this time, not a request
+// failure" contract growth.GrowthAgent's SuggestResponse.available
+// already established for /growth/suggest, so the frontend can render
+// both the same way: no summary section, no error state.
+func newReviewSummaryHandler(reviewService *review.Service, catalogService *catalog.Service, summarizer *agents.ReviewSummarizer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		path := strings.TrimPrefix(r.URL.Path, "/products/")
+		path = strings.TrimSuffix(path, "/reviews/summary")
+		productID := strings.Trim(path, "/")
+		if productID == "" {
+			http.Error(w, "product ID required", http.StatusBadRequest)
+			return
+		}
+
+		reviews, err := reviewService.ListByProduct(r.Context(), productID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		comments := make([]string, len(reviews))
+		for i, rev := range reviews {
+			comments[i] = rev.Comment
+		}
+
+		title := ""
+		if product, err := catalogService.GetProduct(r.Context(), productID); err == nil {
+			title = product.Title
+		}
+
+		summary, err := summarizer.Summarize(r.Context(), productID, title, comments)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err != nil {
+			// ErrReviewSummarizerUnavailable, ErrNotEnoughReviews, or a
+			// real LLM failure -- all three degrade to the same
+			// available:false response; see this function's own doc
+			// comment for why that's the right contract here.
+			_ = json.NewEncoder(w).Encode(map[string]any{"available": false})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"available": true, "summary": summary})
+	}
 }
 
 func corsMiddleware(allowedOrigin string, next http.Handler) http.Handler {
@@ -241,21 +304,28 @@ func main() {
 	// deferred below) -- the budget is still enforced immediately
 	// either way, it just has nowhere durable to log a trip until then.
 	costGuard := agents.NewCostGuardFromEnv()
-
 	// rejectionNarrator is idea #4 of files/agent-ai-integration-ideas.md
-	// (LLM-Narrated Rejection Explanations) -- an optional rephrasing
-	// pass over policy.ExplainRejection's deterministic sentence, wired
-	// into the explain_decision MCP tool below. Shares costGuard with
-	// llmExtractor/toolLoopAgent for the same reason they share it with
-	// each other (see CostGuard's own doc comment): all three use the
-	// same OPENROUTER_API_KEY, so one daily budget has to cover all of
-	// them or combined spend could run to multiples of the configured
-	// budget before any one call site noticed. A nil rejectionNarrator
-	// (no OPENROUTER_API_KEY) is a fully supported no-op -- see
-	// RejectionNarrator.Narrate's own nil-receiver handling -- so
-	// explain_decision keeps returning exactly today's deterministic
-	// sentence with zero LLM configuration, unchanged.
+	// (LLM-Narrated Rejection Explanations) -- it rephrases a single
+	// deterministic sentence explaining why an action was rejected by
+	// policy, racing a 3.5s window against the LLM the same way
+	// RacingExtractor does. A nil rejectionNarrator (no
+	// OPENROUTER_API_KEY) or a race timeout both fall back to the
+	// original deterministic sentence unchanged, so this is purely
+	// cosmetic and never blocks or changes the actual policy decision.
 	rejectionNarrator := agents.NewRejectionNarratorFromEnv().WithCostGuard(costGuard)
+
+	// reviewSummarizer is idea #5 of files/agent-ai-integration-ideas.md
+	// (Review Summarization Agent) -- shares costGuard for the same
+	// reason rejectionNarrator/llmExtractor/toolLoopAgent do: all of
+	// them bill against the same OPENROUTER_API_KEY, so one daily
+	// budget has to cover all of them. A nil reviewSummarizer (no
+	// OPENROUTER_API_KEY) is a fully supported state -- GET
+	// /products/{id}/reviews/summary (wired further down, Phase:
+	// Commerce Service routes) just answers available:false, the same
+	// "the AI feature had nothing to offer this time" contract
+	// growth.GrowthAgent's SuggestResponse already established for
+	// /growth/suggest.
+	reviewSummarizer := agents.NewReviewSummarizerFromEnv().WithCostGuard(costGuard)
 
 	llmExtractor := agents.NewLLMExtractorFromEnv().WithCostGuard(costGuard)
 	deterministicExtractor := agents.NewDeterministicExtractor()
@@ -389,6 +459,13 @@ func main() {
 	reviewRepo := review.NewPostgresRepository(dbPool)
 	reviewService := review.NewService(reviewRepo, orderService)
 	reviewHandler := review.NewHandler(reviewService)
+
+	// reviewSummaryHandler serves GET /products/{id}/reviews/summary --
+	// see newReviewSummaryHandler's own doc comment. Built here (not
+	// inline at the route registration below) because it needs
+	// reviewService/catalogService/reviewSummarizer, all already in
+	// scope at this point in main().
+	reviewSummaryHandler := newReviewSummaryHandler(reviewService, catalogService, reviewSummarizer)
 
 	// -------------------------
 	// Payment
@@ -763,6 +840,17 @@ func main() {
 		"/products/",
 		func(w http.ResponseWriter, r *http.Request) {
 			switch {
+			// GET /products/{id}/reviews/summary (idea #5,
+			// files/agent-ai-integration-ideas.md) -- checked before the
+			// plain /reviews case below. Currently non-overlapping
+			// either way (this path ends in "summary", not "reviews"),
+			// but the more specific suffix is checked first on
+			// principle, matching every other suffix-matched case in
+			// this switch.
+			case r.Method == http.MethodGet &&
+				strings.HasSuffix(r.URL.Path, "/reviews/summary"):
+				reviewSummaryHandler(w, r)
+
 			// GET /products/{id}/reviews -- checked first so it never
 			// shadows the plain GET /products/{id} case below.
 			case r.Method == http.MethodGet &&

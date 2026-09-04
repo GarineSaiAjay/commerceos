@@ -241,6 +241,14 @@ export default function CheckoutFlow({
   // its own loading state -- so one failing never blocks the other.
   const [detailReviews, setDetailReviews] = useState<Review[]>([]);
   const [detailReviewsLoading, setDetailReviewsLoading] = useState(false);
+  // detailReviewSummary is idea #5 of files/agent-ai-integration-
+  // ideas.md (Review Summarization Agent, GET /products/{id}/reviews/
+  // summary) -- null covers both "still loading" and "nothing
+  // available" (not enough reviews yet, or no OPENROUTER_API_KEY
+  // configured); ProductList renders nothing in either case, same
+  // convention detailSuggestion already uses for its own available
+  // flag, so no separate loading state is needed here.
+  const [detailReviewSummary, setDetailReviewSummary] = useState<string | null>(null);
 
   // Post-checkout "complete the set" cross-sell (item 19, PLAN-03-
   // PROACTIVE-GROWTH-AGENT.md §4) -- scored once against the order that
@@ -679,6 +687,7 @@ export default function CheckoutFlow({
       setExpandedProductId(null);
       setDetailSuggestion(null);
       setDetailReviews([]);
+      setDetailReviewSummary(null);
       return;
     }
     setExpandedProductId(productId);
@@ -686,11 +695,15 @@ export default function CheckoutFlow({
     setDetailSuggestionLoading(true);
     setDetailReviews([]);
     setDetailReviewsLoading(true);
+    setDetailReviewSummary(null);
     // Fired independently of the cross-sell suggestion fetch below --
     // its own try/catch/loading state in fetchDetailReviews, so a slow
     // or failed reviews fetch never blocks (or is blocked by) the
-    // suggestion one.
+    // suggestion one. fetchDetailReviewSummary is likewise independent
+    // of both -- a slow/unavailable summary never blocks the review
+    // list or the cross-sell suggestion from rendering.
     fetchDetailReviews(productId);
+    fetchDetailReviewSummary(productId);
     try {
       const res = await fetch(`${API_BASE}/growth/suggest/product`, {
         method: "POST",
@@ -730,6 +743,29 @@ export default function CheckoutFlow({
       setDetailReviews([]);
     } finally {
       setDetailReviewsLoading(false);
+    }
+  }
+
+  // GET /products/{id}/reviews/summary -- idea #5 of files/agent-ai-
+  // integration-ideas.md (Review Summarization Agent): a short "buyers
+  // say ..." synthesis of this product's real review comments.
+  // available:false is a normal, expected outcome (not enough reviews
+  // yet, or no OPENROUTER_API_KEY configured), not a failure -- same
+  // convention /growth/suggest's own available flag already
+  // established -- so both that case and a genuine fetch failure both
+  // just leave detailReviewSummary null, which ProductList renders as
+  // nothing rather than an error.
+  async function fetchDetailReviewSummary(productId: string) {
+    try {
+      const res = await fetch(`${API_BASE}/products/${productId}/reviews/summary`);
+      if (res.ok) {
+        const data = (await res.json()) as { available: boolean; summary?: string };
+        setDetailReviewSummary(data.available && data.summary ? data.summary : null);
+      } else {
+        setDetailReviewSummary(null);
+      }
+    } catch {
+      setDetailReviewSummary(null);
     }
   }
 
@@ -1249,6 +1285,7 @@ export default function CheckoutFlow({
               onAcceptDetailSuggestion={acceptDetailSuggestion}
               detailReviews={detailReviews}
               detailReviewsLoading={detailReviewsLoading}
+              detailReviewSummary={detailReviewSummary}
               onAddToCart={addToCart}
               loading={loading}
             />
