@@ -18,6 +18,20 @@ type CartReader interface {
 	GetCart(ctx context.Context, id string) (cart.Cart, error)
 }
 
+// suggestHandlerTimeout bounds every growth-suggestion HTTP handler
+// below at the context level, the same way agents/tool_loop.go's
+// loopTimeout bounds the agent loop -- so that a hung dependency (a
+// saturated pgxpool connection pool, a slow query) fails the request
+// instead of leaving it (and the frontend fetch awaiting it, and the
+// "Checking for a match" placeholder it's driving -- see
+// checkout/SuggestionCard.tsx's optimistic phase) hanging indefinitely.
+// http.Server sets no read/write deadline on r.Context() by default, so
+// without this a stuck dependency has no ceiling at all. Every handler
+// here is a handful of catalog/cart/impression reads plus at most one
+// upsert (GrowthAgent.EvaluateCandidate's Save) -- no LLM call is ever
+// on this path -- so 6s is generous headroom, not a tight budget.
+const suggestHandlerTimeout = 6 * time.Second
+
 // OrderReader is the order surface SuggestForOrder needs -- just enough
 // to read back a completed order's line items and totals. GET
 // /orders/{id} is already reachable without login so checkout.tsx can
@@ -388,7 +402,8 @@ func (h *SuggestHandler) Suggest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), suggestHandlerTimeout)
+	defer cancel()
 
 	c, err := h.cart.GetCart(ctx, req.CartID)
 	if err != nil {
@@ -476,7 +491,8 @@ func (h *SuggestHandler) SuggestForProduct(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), suggestHandlerTimeout)
+	defer cancel()
 
 	viewed, err := h.catalog.GetProduct(ctx, req.ProductID)
 	if err != nil {
@@ -557,7 +573,8 @@ func (h *SuggestHandler) SuggestForOrder(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), suggestHandlerTimeout)
+	defer cancel()
 
 	ord, err := h.orders.GetOrder(ctx, req.OrderID)
 	if err != nil {
@@ -646,7 +663,10 @@ func (h *SuggestHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.dismissals.SaveDismissal(r.Context(), req.CartID, req.ProductID); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), suggestHandlerTimeout)
+	defer cancel()
+
+	if err := h.dismissals.SaveDismissal(ctx, req.CartID, req.ProductID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -684,7 +704,10 @@ func (h *SuggestHandler) Accept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.impressions.RecordAcceptance(r.Context(), req.CartID, req.ProductID); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), suggestHandlerTimeout)
+	defer cancel()
+
+	if err := h.impressions.RecordAcceptance(ctx, req.CartID, req.ProductID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

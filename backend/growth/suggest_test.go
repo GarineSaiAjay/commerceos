@@ -54,6 +54,21 @@ func (f *fakeCartReader) GetCart(ctx context.Context, id string) (cart.Cart, err
 	return c, nil
 }
 
+// capturingCartReader wraps fakeCartReader and records the context each
+// GetCart call actually received, so TestSuggestHandlerBoundsContext
+// WithATimeout below can assert on it directly instead of needing a
+// dependency that genuinely blocks for suggestHandlerTimeout (which
+// would make the test itself take 6+ seconds).
+type capturingCartReader struct {
+	fakeCartReader
+	capturedCtx context.Context
+}
+
+func (c *capturingCartReader) GetCart(ctx context.Context, id string) (cart.Cart, error) {
+	c.capturedCtx = ctx
+	return c.fakeCartReader.GetCart(ctx, id)
+}
+
 type fakeOrderReader struct {
 	orders map[string]order.Order
 }
@@ -566,5 +581,51 @@ func TestSuggestPropagatesFrequencyCapLookupError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 when the frequency-cap lookup itself fails, got %d", rec.Code)
+	}
+}
+
+
+// TestSuggestHandlerBoundsContextWithATimeout guards against the "cart
+// suggestion card stuck forever on Checking for a match" bug: Suggest
+// used to run entirely on r.Context(), which net/http sets no deadline
+// on by default, so a hung dependency (a saturated pgxpool connection
+// pool, in production) left the request -- and the frontend fetch
+// awaiting it, and the optimistic placeholder it drives -- blocked
+// indefinitely. Suggest now wraps r.Context() in
+// context.WithTimeout(..., suggestHandlerTimeout) before calling
+// anything; this asserts that wrapped context, with its deadline, is
+// what actually reaches a downstream dependency (GetCart), not
+// r.Context() itself.
+func TestSuggestHandlerBoundsContextWithATimeout(t *testing.T) {
+	products := map[string]catalog.Product{
+		"widget": testProduct("widget", "m1", 200_000, 5, "earbuds"),
+		"case":   testProduct("case", "m1", 50_000, 5, "earbuds"),
+	}
+	fc := &fakeCatalog{products: products}
+	agent := NewGrowthAgent(fc, fakeRecommendationStore{})
+	cr := &capturingCartReader{fakeCartReader: fakeCartReader{carts: map[string]cart.Cart{
+		"cart_1": {
+			ID:       "cart_1",
+			Items:    []cart.CartItem{{ProductID: "widget", VariantID: "widget-default", Quantity: 1, Total: 200_000}},
+			Subtotal: 200_000,
+		},
+	}}}
+	h := NewSuggestHandler(fc, cr, &fakeOrderReader{orders: map[string]order.Order{}}, agent, &fakeDismissals{dismissed: map[string][]string{}})
+
+	req := httptest.NewRequest(http.MethodPost, "/growth/suggest", strings.NewReader(`{"cart_id":"cart_1"}`))
+	rec := httptest.NewRecorder()
+	before := time.Now()
+	h.Suggest(rec, req)
+
+	if cr.capturedCtx == nil {
+		t.Fatal("expected GetCart to be called with a context")
+	}
+	deadline, ok := cr.capturedCtx.Deadline()
+	if !ok {
+		t.Fatal("expected Suggest to bind a deadline (suggestHandlerTimeout) onto the context it passes downstream, got none -- this is the exact gap that let a hung dependency block the request forever")
+	}
+	remaining := deadline.Sub(before)
+	if remaining <= 0 || remaining > suggestHandlerTimeout {
+		t.Fatalf("expected the deadline to fall within suggestHandlerTimeout (%s) of the request starting, got %s remaining", suggestHandlerTimeout, remaining)
 	}
 }

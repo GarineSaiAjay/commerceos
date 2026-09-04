@@ -594,10 +594,22 @@ export default function CheckoutFlow({
   async function fetchSuggestion(): Promise<SuggestResponse | null> {
     setSuggestionLoading(true);
     try {
+      // AbortSignal.timeout (item: fix/suggest-request-timeout) bounds
+      // this request client-side, mirroring the ceiling
+      // backend/growth/suggest.go's Suggest handler now enforces
+      // server-side via suggestHandlerTimeout. Belt-and-suspenders on
+      // purpose: without a client-side bound too, a request that hangs
+      // for any reason upstream of the handler actually running (a
+      // proxy, a dropped response after the server already committed
+      // to writing it) would still never resolve, leaving
+      // suggestionLoading stuck true forever and the "Checking for a
+      // match" placeholder (SuggestionCard.tsx's optimistic phase)
+      // frozen on screen instead of clearing.
       const res = await fetch(`${API_BASE}/growth/suggest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cart_id: cartId }),
+        signal: AbortSignal.timeout(8_000),
       });
       if (!res.ok) {
         setSuggestion(null);
