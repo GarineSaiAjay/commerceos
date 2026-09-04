@@ -831,8 +831,24 @@ export default function CheckoutFlow({
       // fetch and a genuinely empty order list need to render as two
       // different things, not stack on top of each other.
       setOrders([]);
+      // `fetch` itself throws a bare `TypeError` (message: "Failed to
+      // fetch" in Chrome, "NetworkError when attempting to fetch
+      // resource." in Firefox, ...) for anything that fails before an
+      // HTTP response comes back at all -- the backend being down, a
+      // CORS misconfiguration, or a browser extension (an ad blocker
+      // or privacy tool) blocking the request outright. Surfacing that
+      // raw browser string verbatim ("Failed to fetch -- try again")
+      // told the buyer nothing actionable and looked like an unhandled
+      // error rather than a real status message. The `!res.ok` branch
+      // above still throws a real `Error` with our own message, so
+      // only the bare-TypeError case (no HTTP response at all) gets
+      // the friendlier fallback here.
       setOrdersError(
-        error instanceof Error ? error.message : "Failed to load orders"
+        error instanceof TypeError
+          ? "Couldn't reach the CommerceOS server. Check it's running (and that nothing -- like a browser extension -- is blocking the request), then try again."
+          : error instanceof Error
+            ? error.message
+            : "Failed to load orders"
       );
     } finally {
       setOrdersLoading(false);
