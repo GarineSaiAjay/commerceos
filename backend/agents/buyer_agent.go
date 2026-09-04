@@ -156,8 +156,18 @@ func (a *BuyerAgent) PlanCheckoutInConversation(
 		return a.PlanCheckout(ctx, prompt, merchant)
 	}
 
+	// Only fold this turn into the previous one when it actually
+	// contributed some recognizable signal (budget, category, priority,
+	// or recipient) -- see hasSignal's doc comment. A prompt the
+	// extractor couldn't parse at all (e.g. "i want a pair of shoes"
+	// against a catalog with no shoes category) must never silently
+	// inherit the *entire* previous intent just because ValidateIntent
+	// happens to pass on those stale values -- that previously made an
+	// unrelated new request look like a confidently-answered
+	// continuation of the old one instead of asking for clarification
+	// (files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md, Finding A).
 	merged := newIntent
-	if hadPrev {
+	if hadPrev && hasSignal(newIntent) {
 		merged = mergeIntent(prevIntent, newIntent)
 	} else {
 		merged.Clarify = ""
@@ -167,7 +177,14 @@ func (a *BuyerAgent) PlanCheckoutInConversation(
 		// Still incomplete even with prior context -- same safe no-op
 		// as PlanCheckout's clarify path, just recorded in history so
 		// the buyer's next attempt has this turn to build on too.
-		a.recordTurn(ctx, cartID, prompt, merged, hadPrev || merged != (Intent{}))
+		//
+		// saveIntent is keyed on whether THIS turn contributed a field,
+		// not on hadPrev alone: a zero-signal prompt (this whole guard's
+		// reason for existing, see above) must never overwrite a good
+		// previous snapshot with this turn's empty one, or the buyer's
+		// next, on-topic follow-up would have nothing real left to
+		// build on.
+		a.recordTurn(ctx, cartID, prompt, merged, hasSignal(newIntent))
 		a.recordAssistantTurn(ctx, cartID, clarifyText(newIntent))
 		return CheckoutPlan{}, ErrAmbiguousIntent
 	}
