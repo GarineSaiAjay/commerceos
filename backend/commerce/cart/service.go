@@ -15,6 +15,23 @@ var ErrInvalidQuantity = errors.New("invalid quantity")
 var ErrItemNotFound = errors.New("cart item not found")
 var ErrInsufficientAvailability = errors.New("insufficient availability")
 
+// ErrCartConflict is returned by Repository.SaveCart when the cart was
+// modified by someone else since it was last read (full-codebase
+// re-audit, P2 -- see 20260904110000_add_carts_version.sql). mutateCart
+// below retries the whole read-modify-write on this error rather than
+// propagating it to most callers; it is exported because it can still
+// surface if maxCartMutateRetries is exhausted under sustained
+// contention.
+var ErrCartConflict = errors.New("cart was concurrently modified, please retry")
+
+// maxCartMutateRetries bounds mutateCart's retry loop. A real conflict
+// only ever needs a handful of retries to resolve (each one is one
+// buyer's own rapid double-click or one agent/UI race, not sustained
+// contention from many concurrent writers on the same cart), so this is
+// generous headroom against a genuinely stuck scenario without looping
+// forever.
+const maxCartMutateRetries = 5
+
 type VariantReader interface {
 	GetVariant(ctx context.Context, id string) (catalog.ProductVariant, error)
 }
@@ -54,6 +71,54 @@ func (s *Service) CreateCart(
 	return cart, nil
 }
 
+// mutateCart implements the retry-on-conflict read-modify-write shared
+// by AddItem/UpdateItemQuantity/RemoveItem (full-codebase re-audit,
+// P2): it re-reads the cart, hands it to mutate, and saves the result
+// mutate returns -- retrying the whole cycle from a fresh read whenever
+// Repository.SaveCart reports ErrCartConflict (another writer saved
+// this cart first), instead of the previous single unlocked
+// GetCart-then-SaveCart that let a concurrent writer's update silently
+// disappear. mutate returns the cart to save, or an error (e.g.
+// ErrInsufficientAvailability, ErrItemNotFound) that aborts immediately
+// without ever calling SaveCart -- matching every existing caller's
+// "no-op on a rejected mutation" expectation.
+//
+// This intentionally calls s.repo.GetCart directly, not s.GetCart --
+// same as every call site it replaces did before this fix -- so it
+// does not change whether an expired or already-checked-out cart can
+// still be mutated; that's a separate question from the lost-update
+// race this fixes.
+func (s *Service) mutateCart(
+	ctx context.Context,
+	cartID string,
+	mutate func(cart Cart) (Cart, error),
+) error {
+	var lastErr error
+
+	for attempt := 0; attempt < maxCartMutateRetries; attempt++ {
+		cart, err := s.repo.GetCart(ctx, cartID)
+		if err != nil {
+			return err
+		}
+
+		updated, err := mutate(cart)
+		if err != nil {
+			return err
+		}
+
+		err = s.repo.SaveCart(ctx, updated)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrCartConflict) {
+			return err
+		}
+		lastErr = err
+	}
+
+	return lastErr
+}
+
 func (s *Service) AddItem(
 	ctx context.Context,
 	cartID string,
@@ -61,11 +126,6 @@ func (s *Service) AddItem(
 ) error {
 	if item.Quantity <= 0 {
 		return ErrInvalidQuantity
-	}
-
-	cart, err := s.repo.GetCart(ctx, cartID)
-	if err != nil {
-		return err
 	}
 
 	variant, err := s.variantReader.GetVariant(ctx, item.VariantID)
@@ -77,36 +137,38 @@ func (s *Service) AddItem(
 	item.ProductID = variant.ProductID
 	item.UnitPrice = variant.Price.Amount
 
-	for i := range cart.Items {
-		if cart.Items[i].VariantID == item.VariantID {
-			newQuantity := cart.Items[i].Quantity + item.Quantity
+	return s.mutateCart(ctx, cartID, func(cart Cart) (Cart, error) {
+		for i := range cart.Items {
+			if cart.Items[i].VariantID == item.VariantID {
+				newQuantity := cart.Items[i].Quantity + item.Quantity
 
-			if newQuantity > variant.Availability {
-				return ErrInsufficientAvailability
+				if newQuantity > variant.Availability {
+					return Cart{}, ErrInsufficientAvailability
+				}
+
+				cart.Items[i].Quantity = newQuantity
+				cart.Items[i].UnitPrice = variant.Price.Amount
+				cart.Items[i].Total =
+					cart.Items[i].UnitPrice * int64(cart.Items[i].Quantity)
+
+				s.recomputeTotal(&cart)
+
+				return cart, nil
 			}
-
-			cart.Items[i].Quantity = newQuantity
-			cart.Items[i].UnitPrice = variant.Price.Amount
-			cart.Items[i].Total =
-				cart.Items[i].UnitPrice * int64(cart.Items[i].Quantity)
-
-			s.recomputeTotal(&cart)
-
-			return s.repo.SaveCart(ctx, cart)
 		}
-	}
 
-	if item.Quantity > variant.Availability {
-		return ErrInsufficientAvailability
-	}
+		if item.Quantity > variant.Availability {
+			return Cart{}, ErrInsufficientAvailability
+		}
 
-	item.Total = item.UnitPrice * int64(item.Quantity)
+		item.Total = item.UnitPrice * int64(item.Quantity)
 
-	cart.Items = append(cart.Items, item)
+		cart.Items = append(cart.Items, item)
 
-	s.recomputeTotal(&cart)
+		s.recomputeTotal(&cart)
 
-	return s.repo.SaveCart(ctx, cart)
+		return cart, nil
+	})
 }
 
 func (s *Service) UpdateItemQuantity(
@@ -119,11 +181,6 @@ func (s *Service) UpdateItemQuantity(
 		return ErrInvalidQuantity
 	}
 
-	cart, err := s.repo.GetCart(ctx, cartID)
-	if err != nil {
-		return err
-	}
-
 	variant, err := s.variantReader.GetVariant(ctx, variantID)
 	if err != nil {
 		return err
@@ -133,18 +190,20 @@ func (s *Service) UpdateItemQuantity(
 		return ErrInsufficientAvailability
 	}
 
-	for i := range cart.Items {
-		if cart.Items[i].VariantID == variantID {
-			cart.Items[i].Quantity = quantity
-			cart.Items[i].UnitPrice = variant.Price.Amount
+	return s.mutateCart(ctx, cartID, func(cart Cart) (Cart, error) {
+		for i := range cart.Items {
+			if cart.Items[i].VariantID == variantID {
+				cart.Items[i].Quantity = quantity
+				cart.Items[i].UnitPrice = variant.Price.Amount
 
-			s.recomputeTotal(&cart)
+				s.recomputeTotal(&cart)
 
-			return s.repo.SaveCart(ctx, cart)
+				return cart, nil
+			}
 		}
-	}
 
-	return ErrItemNotFound
+		return Cart{}, ErrItemNotFound
+	})
 }
 
 func (s *Service) RemoveItem(
@@ -152,25 +211,22 @@ func (s *Service) RemoveItem(
 	cartID string,
 	variantID string,
 ) error {
-	cart, err := s.repo.GetCart(ctx, cartID)
-	if err != nil {
-		return err
-	}
+	return s.mutateCart(ctx, cartID, func(cart Cart) (Cart, error) {
+		for i := range cart.Items {
+			if cart.Items[i].VariantID == variantID {
+				cart.Items = append(
+					cart.Items[:i],
+					cart.Items[i+1:]...,
+				)
 
-	for i := range cart.Items {
-		if cart.Items[i].VariantID == variantID {
-			cart.Items = append(
-				cart.Items[:i],
-				cart.Items[i+1:]...,
-			)
+				s.recomputeTotal(&cart)
 
-			s.recomputeTotal(&cart)
-
-			return s.repo.SaveCart(ctx, cart)
+				return cart, nil
+			}
 		}
-	}
 
-	return ErrItemNotFound
+		return Cart{}, ErrItemNotFound
+	})
 }
 
 func (s *Service) GetCart(

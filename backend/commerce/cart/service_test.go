@@ -2,14 +2,29 @@ package cart
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/garinesaiajay/commerceos/commerce/catalog"
 )
 
+// fakeRepository is an in-memory cart.Repository. SaveCart enforces
+// the same optimistic-concurrency contract as PostgresRepository
+// (full-codebase re-audit, P2): it rejects with ErrCartConflict when
+// the incoming cart.Version doesn't match what's currently stored,
+// otherwise it saves and bumps the version -- so Service.mutateCart's
+// retry-on-conflict behavior can actually be exercised by these tests
+// (see TestAddItemRetriesOnConflictAndDoesNotLoseTheUpdate below),
+// not just its happy path.
 type fakeRepository struct {
 	carts map[string]Cart
+	// onSaveAttempt, if set, runs at the start of every SaveCart call
+	// (before the version check), keyed by cart ID -- tests use it to
+	// simulate a concurrent writer's own SaveCart landing between this
+	// call's GetCart and SaveCart, by bumping the stored version out
+	// from under it.
+	onSaveAttempt func(cartID string)
 }
 
 func newFakeRepository() *fakeRepository {
@@ -33,6 +48,16 @@ func (r *fakeRepository) GetCart(ctx context.Context, id string) (Cart, error) {
 }
 
 func (r *fakeRepository) SaveCart(ctx context.Context, cart Cart) error {
+	if r.onSaveAttempt != nil {
+		r.onSaveAttempt(cart.ID)
+	}
+
+	existing, ok := r.carts[cart.ID]
+	if ok && existing.Version != cart.Version {
+		return ErrCartConflict
+	}
+
+	cart.Version++
 	r.carts[cart.ID] = cart
 	return nil
 }
@@ -590,5 +615,114 @@ func TestUpdateItemQuantityRejectsMissingItem(t *testing.T) {
 			"expected ErrItemNotFound, got %v",
 			err,
 		)
+	}
+}
+
+// TestAddItemRetriesOnConflictAndDoesNotLoseTheUpdate is the regression
+// test for the cart lost-update race (full-codebase re-audit, P2): it
+// simulates a concurrent writer's own SaveCart landing between this
+// call's GetCart and SaveCart (via fakeRepository.onSaveAttempt bumping
+// the stored version once), and proves AddItem retries from a fresh
+// read instead of either failing outright or silently discarding its
+// own mutation.
+func TestAddItemRetriesOnConflictAndDoesNotLoseTheUpdate(t *testing.T) {
+	repo := newFakeRepository()
+	variantReader := newFakeVariantReader()
+	service := NewService(repo, variantReader)
+
+	_, err := service.CreateCart(
+		context.Background(),
+		"cart_conflict_test",
+		"merchant_001",
+		"INR",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conflictInjected := false
+	repo.onSaveAttempt = func(cartID string) {
+		if cartID != "cart_conflict_test" || conflictInjected {
+			return
+		}
+		conflictInjected = true
+		// Simulate a concurrent writer's own SaveCart landing right
+		// before this attempt's SaveCart -- same as a real second
+		// pgx UPDATE committing first and bumping the row's version.
+		c := repo.carts["cart_conflict_test"]
+		c.Version++
+		repo.carts["cart_conflict_test"] = c
+	}
+
+	item := CartItem{
+		ProductID: "airpods-pro-2",
+		VariantID: "airpods-pro-2-default",
+		Title:     "AirPods Pro",
+		Quantity:  1,
+		UnitPrice: 24900,
+	}
+
+	if err := service.AddItem(context.Background(), "cart_conflict_test", item); err != nil {
+		t.Fatalf("expected AddItem to retry past the injected conflict and succeed, got: %v", err)
+	}
+	if !conflictInjected {
+		t.Fatal("test setup bug: onSaveAttempt was never invoked")
+	}
+
+	cart, err := service.GetCart(context.Background(), "cart_conflict_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cart.Items) != 1 || cart.Items[0].Quantity != 1 {
+		t.Fatalf("expected the retried AddItem to have actually applied, got items: %+v", cart.Items)
+	}
+}
+
+// TestMutateCartGivesUpAfterMaxRetries proves the retry loop is bounded:
+// a cart stuck in permanent conflict (every SaveCart attempt rejected)
+// must eventually surface ErrCartConflict rather than looping forever.
+func TestMutateCartGivesUpAfterMaxRetries(t *testing.T) {
+	repo := newFakeRepository()
+	variantReader := newFakeVariantReader()
+	service := NewService(repo, variantReader)
+
+	_, err := service.CreateCart(
+		context.Background(),
+		"cart_stuck_conflict_test",
+		"merchant_001",
+		"INR",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saveAttempts := 0
+	repo.onSaveAttempt = func(cartID string) {
+		if cartID != "cart_stuck_conflict_test" {
+			return
+		}
+		saveAttempts++
+		// Bump the version on every single attempt -- this writer can
+		// never win the race.
+		c := repo.carts["cart_stuck_conflict_test"]
+		c.Version++
+		repo.carts["cart_stuck_conflict_test"] = c
+	}
+
+	item := CartItem{
+		ProductID: "airpods-pro-2",
+		VariantID: "airpods-pro-2-default",
+		Title:     "AirPods Pro",
+		Quantity:  1,
+		UnitPrice: 24900,
+	}
+
+	err = service.AddItem(context.Background(), "cart_stuck_conflict_test", item)
+	if !errors.Is(err, ErrCartConflict) {
+		t.Fatalf("expected ErrCartConflict after exhausting retries, got: %v", err)
+	}
+	if saveAttempts != maxCartMutateRetries {
+		t.Fatalf("expected exactly %d SaveCart attempts, got %d", maxCartMutateRetries, saveAttempts)
 	}
 }

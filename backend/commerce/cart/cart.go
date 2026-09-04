@@ -14,6 +14,16 @@ type Cart struct {
 	// further shopping; Service.GetCart treats one as not-found.
 	Status    string    `json:"status"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// Version is an optimistic-concurrency counter (full-codebase
+	// re-audit, P2): PostgresRepository.SaveCart conditions its UPDATE
+	// on the version last read via GetCart and increments it on every
+	// successful save, so two concurrent read-modify-write cycles
+	// against the same cart (see Service.AddItem/UpdateItemQuantity/
+	// RemoveItem) can no longer silently clobber one another -- the
+	// second writer's SaveCart affects zero rows and Service retries
+	// instead. Internal plumbing, not buyer-facing data -- excluded
+	// from the JSON wire shape.
+	Version int `json:"-"`
 }
 
 type CartItem struct {
