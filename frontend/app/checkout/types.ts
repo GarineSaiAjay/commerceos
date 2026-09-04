@@ -226,6 +226,12 @@ export interface CheckoutPlan {
 export interface AgentChatMessage {
   role: "user" | "assistant";
   content: string;
+  // isError marks an assistant turn that is a failure message (LLM/
+  // network unavailable, etc.), not a real reply -- lets the chat
+  // transcript style it as a distinct warning bubble (with a retry
+  // affordance) instead of an indistinguishable plain agent reply.
+  // Never set on a user turn.
+  isError?: boolean;
   // crossSellProductId marks this assistant turn as the one that
   // triggered the cart's current cross-sell suggestion (PLAN-03-GROWTH-
   // AND-DEMAND-INTELLIGENCE.md §2, item 43 audit follow-up) -- set only
