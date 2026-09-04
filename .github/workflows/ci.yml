@@ -101,6 +101,19 @@ jobs:
         run: |
           goose -dir db/migrations postgres "$DATABASE_URL" up
 
+      # Only 001 (catalog + merchant_001) and 002 (demo operator) --
+      # docker-compose's migrate service (infra/docker-compose.yml)
+      # additionally applies 003_reviews.sql and 004_policy_settings.sql,
+      # but neither changes anything a test here could observe: 003 is
+      # purely cosmetic starter review rows so the catalog doesn't look
+      # empty for a judge on first run (db/seeds/003_reviews.sql's own
+      # header), and 004 just materializes policy.DefaultConfig()'s
+      # existing hardcoded values into a policy_settings row -- a
+      # merchant with no seeded row already gets those exact same
+      # defaults via ErrPolicyConfigNotFound's fallback
+      # (backend/policy/repository.go). Skipping both here is
+      # deliberate -- CI only seeds what actually changes test
+      # behavior -- not an oversight.
       - name: Seed catalog data
         working-directory: .
         run: |
