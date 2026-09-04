@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -173,7 +174,37 @@ func (h *Handler) PlanCheckoutLoop(w http.ResponseWriter, r *http.Request) {
 		result, err = h.loopAgent.Run(r.Context(), req.Prompt, req.Merchant)
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		// ErrAmbiguousIntent (an empty prompt -- see Run/RunInConversation's
+		// own strings.TrimSpace check) is the loop's only genuine
+		// user-input error; it's a real, correct answer ("ask the buyer to
+		// say more"), same contract as PlanCheckout's identical case
+		// above, so it stays a 400.
+		//
+		// Every other error runLoop/chat can return is an infrastructure
+		// failure, not a bad request: a network error reaching the LLM
+		// provider, a non-200 upstream response, a malformed response
+		// body, or -- the case that was actually happening in
+		// production -- "read llm response: context deadline exceeded"
+		// when a multi-step tool-calling run (up to loopMaxToolCalls
+		// round trips sharing one loopTimeout budget) doesn't finish in
+		// time. Returning 400 for these made the buyer-facing card show
+		// them as the loop's own real, failed answer instead of what
+		// they actually are ("the agent is unavailable right now") --
+		// and, critically, frontend/app/checkout.tsx's askAgent() only
+		// treats a 503 as "unavailable, fall back to /agent/checkout";
+		// a 400 here was silently skipping that fallback and showing the
+		// generic error instead of ever trying the single-shot
+		// RacingExtractor-backed path, which has a genuine deterministic
+		// fallback and would very likely have succeeded. The loop has no
+		// rule-based equivalent of its own multi-step reasoning (see
+		// NewToolCallingAgentFromEnv's doc comment), so 503 -- the same
+		// status a missing OPENROUTER_API_KEY already produces above --
+		// is the honest signal here too.
+		if errors.Is(err, ErrAmbiguousIntent) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
