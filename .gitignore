@@ -15,3 +15,38 @@ node_modules/
 .gocache/
 .DS_Store
 **/.DS_Store
+
+# Editor / OS cruft (defensive -- none currently tracked, keep it that way)
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+
+# Go test/coverage artifacts, in case a local `go test -cover` run drops
+# one of these inside the tree instead of /tmp
+*.test
+coverage.out
+coverage.html
+
+# Internal working docs from the development/audit process (bug lists,
+# gap audits, phased build plans, the pre-build vision doc) -- useful
+# during the build, not meant to ship in the judged submission. The
+# curated, judge-facing doc set is what README.md's own "Docs" section
+# links to (files/AUTH.md, GIT-WORKFLOW.md, agent-commerce-contract.md,
+# trust-boundary.md, pitch-one-pager.md, demo-script.md); none of those
+# are affected. Note: dozens of code comments across backend/ and
+# frontend/ still cite these filenames (e.g. "PLAN-05-SELLER-DASHBOARD.md
+# §4") as internal design notes -- those citations are now unresolvable
+# from inside the repo, a deliberate tradeoff for a cleaner file tree.
+files/BUGS.md
+files/AUDIT-2026-08-29.md
+files/REALITY-CHECK-2026-08-30.md
+files/ROADMAP-PRIORITIZED.md
+files/ORIGINAL-VISION-AUTONOMOUS-REVENUE-AGENT.md
+files/ORIGINAL-VISION-BUILD-GUIDE.md
+files/PLAN-01-AGENTIC-CORE.md
+files/PLAN-02-CATALOG-AND-COMMERCE.md
+files/PLAN-03-PROACTIVE-GROWTH-AGENT.md
+files/PLAN-04-UI-UX-AND-LATENCY.md
+files/PLAN-05-SELLER-DASHBOARD.md
+files/PLAN-06-ADDITIONAL-OPPORTUNITIES.md
