@@ -37,7 +37,7 @@ type fakeRunner struct {
 	calls int
 }
 
-func (f *fakeRunner) RunSuite(ctx context.Context, mandateID string) (safety.Evaluation, error) {
+func (f *fakeRunner) RunSuite(ctx context.Context) (safety.Evaluation, error) {
 	f.calls++
 	return f.eval, f.err
 }

@@ -53,10 +53,11 @@ export default function SafetyPage() {
     setRunning(true);
     setError("");
     try {
+      // The backend now provisions its own real mandate per attack run
+      // (backend/safety/runner.go's ensureRedTeamMandate) instead of
+      // trusting a client-supplied mandate_id, so no body is sent here.
       const res = await authFetch(`/safety/attacks/${a.attack_id}/run`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mandate_id: "mnd_demo" }),
       });
       if (!res.ok) throw new Error(await res.text());
       const r = (await res.json()) as AttackResult;
@@ -72,10 +73,9 @@ export default function SafetyPage() {
     setRunning(true);
     setError("");
     try {
+      // Same reasoning as runAttack above: no mandate_id body needed.
       const res = await authFetch("/safety/evaluations/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mandate_id: "mnd_demo" }),
       });
       if (!res.ok) throw new Error(await res.text());
       const e = (await res.json()) as Evaluation;
