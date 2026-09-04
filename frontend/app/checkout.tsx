@@ -167,6 +167,14 @@ export default function CheckoutFlow({
   	const [approvalSnapshot, setApprovalSnapshot] = useState<ApprovalRequestDetail | null>(null);
   	const [gateConfirmed, setGateConfirmed] = useState(false);
   	const [gateError, setGateError] = useState("");
+  	// Set when the Razorpay checkout window fails to open on the pay
+  	// screen -- most commonly checkout.js (layout.tsx's afterInteractive
+  	// <Script>) hadn't finished loading yet by the time the payment was
+  	// created (see waitForRazorpay in usePaymentFlow.ts). Separate from
+  	// the shared `message` state, same as gateError above, so PayStep's
+  	// "Retry opening payment" button only appears for this specific
+  	// failure, not for every unrelated status message.
+  	const [paymentWindowError, setPaymentWindowError] = useState("");
   	const [loading, setLoading] = useState(false);
   	const [message, setMessage] = useState("");
   	const [agentPrompt, setAgentPrompt] = useState("");
@@ -980,8 +988,10 @@ export default function CheckoutFlow({
     resetToCatalog,
     approveGateAndPay,
     backToOrderFromGate,
+    retryOpenPayment,
   } = usePaymentFlow({
     order,
+    payment,
     step,
     runId,
     run,
@@ -1009,6 +1019,7 @@ export default function CheckoutFlow({
     setSubstituteSuggestionLoading,
     setRemovingVariantId,
     setPolicyRejectionReason,
+    setPaymentWindowError,
   });
 
   // The following four are composite, multi-setState reset/relaunch
@@ -1305,7 +1316,12 @@ export default function CheckoutFlow({
         )}
 
         {step === "pay" && payment && (
-          <PayStep payment={payment} onCancel={cancelPayment} />
+          <PayStep
+            payment={payment}
+            paymentWindowError={paymentWindowError}
+            onRetry={retryOpenPayment}
+            onCancel={cancelPayment}
+          />
         )}
 
 	{step === "failed" && (

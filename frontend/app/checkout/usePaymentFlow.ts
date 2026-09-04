@@ -40,15 +40,17 @@ import type {
 // inside any condition) -- exactly like these functions being defined
 // directly in the component body used to work, since a fresh closure
 // over that render's state is formed here on every call in exactly the
-// same way. Only the eight functions CheckoutFlow's JSX actually calls
+// same way. Only the nine functions CheckoutFlow's JSX actually calls
 // (startPayment, approveAndPay, rejectApproval, removeAccessoryAndRetry,
 // acceptSubstitute, resetToCatalog, approveGateAndPay,
-// backToOrderFromGate) are returned; the rest (createPaymentWithLaunch,
-// loadRecovery, fetchSubstituteSuggestion, fetchApprovalRequest,
-// fetchRun, verifyPayment) are internal-only, called from within this
-// cluster exactly as they were before the move.
+// backToOrderFromGate, retryOpenPayment) are returned; the rest
+// (createPaymentWithLaunch, openRazorpayCheckout, loadRecovery,
+// fetchSubstituteSuggestion, fetchApprovalRequest, fetchRun,
+// verifyPayment) are internal-only, called from within this cluster
+// exactly as they were before the move.
 export interface UsePaymentFlowParams {
   order: Order | null;
+  payment: Payment | null;
   step: Step;
   runId: string;
   run: Run | null;
@@ -77,6 +79,7 @@ export interface UsePaymentFlowParams {
   setSubstituteSuggestionLoading: (loading: boolean) => void;
   setRemovingVariantId: (variantId: string | null) => void;
   setPolicyRejectionReason: (reason: string) => void;
+  setPaymentWindowError: (error: string) => void;
 }
 
 declare global {
@@ -116,9 +119,37 @@ interface RazorpayInstance {
   open: () => void;
 }
 
+// checkout.js (layout.tsx's <Script strategy="afterInteractive">) starts
+// loading only once the page itself is interactive, with no guarantee it
+// has finished executing by the time a buyer reaches this screen --
+// `new window.Razorpay(...)` throws immediately if the constructor isn't
+// defined yet. Poll briefly instead of assuming it's already there; see
+// openRazorpayCheckout below for what happens if it never shows up.
+function waitForRazorpay(timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (typeof window !== "undefined" && window.Razorpay) {
+      resolve();
+      return;
+    }
+    const start = Date.now();
+    const interval = setInterval(() => {
+      if (typeof window !== "undefined" && window.Razorpay) {
+        clearInterval(interval);
+        resolve();
+        return;
+      }
+      if (Date.now() - start >= timeoutMs) {
+        clearInterval(interval);
+        reject(new Error("The payment window could not load. Check your connection and retry."));
+      }
+    }, 200);
+  });
+}
+
 export function usePaymentFlow(params: UsePaymentFlowParams) {
   const {
     order,
+    payment,
     step,
     runId,
     run,
@@ -146,6 +177,7 @@ export function usePaymentFlow(params: UsePaymentFlowParams) {
     setSubstituteSuggestionLoading,
     setRemovingVariantId,
     setPolicyRejectionReason,
+    setPaymentWindowError,
   } = params;
 
   async function startPayment() {
@@ -264,22 +296,24 @@ export function usePaymentFlow(params: UsePaymentFlowParams) {
       				resetToCatalog("Purchase cancelled. The approval was not granted.");
       			}
 
-      			// Create the Razorpay order and open the Standard Checkout UI.
-      			async function createPaymentWithLaunch(authId: string) {
-      				const res = await fetch(`${API_BASE}/orders/${order!.order_id}/payment`, {
-      					method: "POST",
-      					headers: {
-      						"Authorization-Id": authId,
-      						"Idempotency-Key": `payment_${order!.order_id}`,
-      					},
-      				});
-      				if (!res.ok) throw new Error("Failed to create payment");
-      				const pay = (await res.json()) as Payment;
-      				setPayment(pay);
-      				setStep("pay");
-      				setLoading(false);
+      			// Build the Razorpay Standard Checkout options for an
+      			// already-created payment and open the checkout window. Split out
+      			// of createPaymentWithLaunch so a buyer who lands on the pay
+      			// screen before checkout.js has finished loading (waitForRazorpay
+      			// above) can retry opening the SAME payment -- via
+      			// retryOpenPayment below -- instead of the checkout window simply
+      			// never appearing with no recourse but "Cancel payment".
+      			async function openRazorpayCheckout(pay: Payment) {
+      				try {
+      					await waitForRazorpay();
+      				} catch (error) {
+      					setPaymentWindowError(
+      						error instanceof Error ? error.message : "The payment window could not load.",
+      					);
+      					return;
+      				}
+      				setPaymentWindowError("");
 
-      				// Open Razorpay Standard Checkout with the server-created order.
       				const options: RazorpayOptions = {
       					key: pay.key_id,
       					amount: pay.amount,
@@ -302,6 +336,37 @@ export function usePaymentFlow(params: UsePaymentFlowParams) {
 
       				const razorpay = new window.Razorpay(options);
       				razorpay.open();
+      			}
+
+      			// Create the Razorpay order and open the Standard Checkout UI.
+      			async function createPaymentWithLaunch(authId: string) {
+      				const res = await fetch(`${API_BASE}/orders/${order!.order_id}/payment`, {
+      					method: "POST",
+      					headers: {
+      						"Authorization-Id": authId,
+      						"Idempotency-Key": `payment_${order!.order_id}`,
+      					},
+      				});
+      				if (!res.ok) throw new Error("Failed to create payment");
+      				const pay = (await res.json()) as Payment;
+      				setPayment(pay);
+      				setStep("pay");
+      				setLoading(false);
+      				setPaymentWindowError("");
+
+      				// Open Razorpay Standard Checkout with the server-created order.
+      				await openRazorpayCheckout(pay);
+      			}
+
+      			// Retry opening the checkout window for the payment that was
+      			// already created server-side (e.g. after the waitForRazorpay
+      			// timeout above). Deliberately does NOT re-call the payment API --
+      			// it reuses the same Razorpay order already stored in `payment`,
+      			// so retrying never creates a second payment attempt for one
+      			// commerceos order.
+      			async function retryOpenPayment() {
+      				if (!payment) return;
+      				await openRazorpayCheckout(payment);
       			}
 
       			// Fetch the authoritative recovery view from the server.
@@ -583,5 +648,6 @@ export function usePaymentFlow(params: UsePaymentFlowParams) {
     resetToCatalog,
     approveGateAndPay,
     backToOrderFromGate,
+    retryOpenPayment,
   };
 }
