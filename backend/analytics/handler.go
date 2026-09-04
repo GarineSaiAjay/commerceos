@@ -124,7 +124,24 @@ func (h *Handler) Experiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Name == "" || req.Seed == 0 {
+	// Two independent defaults, deliberately NOT combined into one `||`
+	// condition (a prior version did exactly that -- `if req.Name == ""
+	// || req.Seed == 0 { req.Seed = 42 }` -- which had two real bugs: an
+	// empty name was never actually defaulted to anything, so it sailed
+	// through to Run/ExperimentReport.ID as literal "exp_" (every
+	// unnamed run silently overwrote the same row instead of getting a
+	// usable identity), and a request that legitimately named an
+	// experiment but omitted seed had ITS seed silently reset to 42 even
+	// when seed 0 was never the actual condition that should have
+	// triggered it for name-less requests). Matches the frontend's own
+	// default experiment name (frontend/app/dashboard/analytics/
+	// page.tsx's useState("ai_cross_sell")) so a bare POST with no body
+	// at all behaves the same as loading the dashboard and clicking
+	// "Run experiment" without changing anything.
+	if req.Name == "" {
+		req.Name = "ai_cross_sell"
+	}
+	if req.Seed == 0 {
 		req.Seed = 42
 	}
 	if req.Treatment == 0 {
