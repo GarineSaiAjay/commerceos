@@ -94,3 +94,23 @@ func mergeIntent(prev Intent, next Intent) Intent {
 
 	return merged
 }
+
+// hasSignal reports whether the extractor recognized ANYTHING at all in
+// this turn's prompt -- at least one of budget, category, priority, or
+// recipient. It is deliberately blind to Clarify: DeterministicExtractor
+// (and the LLM extractor's analogous case) sets Clarify precisely when it
+// found nothing else either, so checking the four data fields alone is
+// equivalent and keeps this function usable without first knowing which
+// extractor produced the Intent.
+//
+// This is what PlanCheckoutInConversation uses to decide whether a new
+// turn is a genuine follow-up worth merging into the prior intent, or a
+// prompt the extractor couldn't parse at all -- e.g. "i want a pair of
+// shoes" against a catalog with no shoes category. Folding a zero-signal
+// turn into the previous intent via mergeIntent would silently answer an
+// unrelated new request with a stale category and budget instead of
+// admitting it wasn't understood (see
+// files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md, Finding A).
+func hasSignal(i Intent) bool {
+	return i.Budget > 0 || i.Category != "" || i.Priority != "" || i.Recipient != ""
+}
