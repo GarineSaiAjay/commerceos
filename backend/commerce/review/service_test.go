@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/garinesaiajay/commerceos/commerce/order"
+	"github.com/garinesaiajay/commerceos/statemachine"
 )
 
 // fakeOrderReader is an in-memory order.OrderReader for tests -- no
@@ -58,7 +59,7 @@ func newTestService(orders map[string]order.Order) (*Service, *fakeRepo) {
 // verified.
 func TestSubmitValidReview(t *testing.T) {
 	svc, _ := newTestService(map[string]order.Order{
-		"order_1": {ID: "order_1", Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
+		"order_1": {ID: "order_1", Status: statemachine.OrderPaid, Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
 	})
 
 	rev, err := svc.Submit(context.Background(), "order_1", "airpods-pro-2", "Test Buyer", 5, "Great!")
@@ -82,7 +83,7 @@ func TestSubmitValidReview(t *testing.T) {
 // string.
 func TestSubmitDefaultsBuyerReference(t *testing.T) {
 	svc, _ := newTestService(map[string]order.Order{
-		"order_1": {ID: "order_1", Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
+		"order_1": {ID: "order_1", Status: statemachine.OrderPaid, Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
 	})
 
 	rev, err := svc.Submit(context.Background(), "order_1", "airpods-pro-2", "", 4, "")
@@ -98,7 +99,7 @@ func TestSubmitDefaultsBuyerReference(t *testing.T) {
 // reach storage.
 func TestSubmitRejectsInvalidRating(t *testing.T) {
 	svc, repo := newTestService(map[string]order.Order{
-		"order_1": {ID: "order_1", Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
+		"order_1": {ID: "order_1", Status: statemachine.OrderPaid, Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
 	})
 
 	for _, rating := range []int{0, 6, -1} {
@@ -116,12 +117,62 @@ func TestSubmitRejectsInvalidRating(t *testing.T) {
 // gamed by naming a product_id the order never actually contained.
 func TestSubmitRejectsProductNotInOrder(t *testing.T) {
 	svc, _ := newTestService(map[string]order.Order{
-		"order_1": {ID: "order_1", Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
+		"order_1": {ID: "order_1", Status: statemachine.OrderPaid, Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
 	})
 
 	_, err := svc.Submit(context.Background(), "order_1", "airpods-case", "", 5, "")
 	if !errors.Is(err, ErrProductNotInOrder) {
 		t.Fatalf("expected ErrProductNotInOrder, got %v", err)
+	}
+}
+
+// TestSubmitRejectsUnpaidOrder proves the item-16-style gap a fresh
+// audit against PLAN-02-CATALOG-AND-COMMERCE.md found: Submit used to
+// check only that the order existed and contained the product, never
+// that it had actually completed payment -- so a review (with
+// VerifiedPurchase implicitly true) could be filed against an order
+// still mid-checkout or one that never completed at all. Covers every
+// non-eligible status on the order lifecycle
+// (statemachine.OrderTransitionTable), not just one.
+func TestSubmitRejectsUnpaidOrder(t *testing.T) {
+	for _, status := range []string{
+		statemachine.OrderDraft,
+		statemachine.OrderAuthorized,
+		statemachine.OrderPaymentPending,
+		statemachine.OrderFailed,
+		statemachine.OrderCancelled,
+	} {
+		svc, repo := newTestService(map[string]order.Order{
+			"order_1": {ID: "order_1", Status: status, Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
+		})
+
+		_, err := svc.Submit(context.Background(), "order_1", "airpods-pro-2", "", 5, "")
+		if !errors.Is(err, ErrOrderNotEligibleForReview) {
+			t.Errorf("status %q: expected ErrOrderNotEligibleForReview, got %v", status, err)
+		}
+		if len(repo.reviews) != 0 {
+			t.Errorf("status %q: expected no review stored, got %d", status, len(repo.reviews))
+		}
+	}
+}
+
+// TestSubmitAcceptsEveryPostPaymentStatus proves the gate does not
+// over-correct: any order.Status from OrderPaid onward (the buyer's
+// payment succeeded; fulfillment progress afterward is orthogonal to
+// whether they may leave a review) is still accepted.
+func TestSubmitAcceptsEveryPostPaymentStatus(t *testing.T) {
+	for _, status := range []string{
+		statemachine.OrderPaid,
+		statemachine.OrderFulfillmentPending,
+		statemachine.OrderCompleted,
+	} {
+		svc, _ := newTestService(map[string]order.Order{
+			"order_1": {ID: "order_1", Status: status, Items: []order.OrderItem{{ProductID: "airpods-pro-2"}}},
+		})
+
+		if _, err := svc.Submit(context.Background(), "order_1", "airpods-pro-2", "", 5, ""); err != nil {
+			t.Errorf("status %q: expected review to be accepted, got %v", status, err)
+		}
 	}
 }
 
@@ -141,7 +192,7 @@ func TestSubmitRejectsUnknownOrder(t *testing.T) {
 // own reviews.
 func TestListByProductFiltersByProduct(t *testing.T) {
 	svc, _ := newTestService(map[string]order.Order{
-		"order_1": {ID: "order_1", Items: []order.OrderItem{{ProductID: "airpods-pro-2"}, {ProductID: "airpods-case"}}},
+		"order_1": {ID: "order_1", Status: statemachine.OrderPaid, Items: []order.OrderItem{{ProductID: "airpods-pro-2"}, {ProductID: "airpods-case"}}},
 	})
 
 	if _, err := svc.Submit(context.Background(), "order_1", "airpods-pro-2", "A", 5, ""); err != nil {

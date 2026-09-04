@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/garinesaiajay/commerceos/commerce/order"
+	"github.com/garinesaiajay/commerceos/statemachine"
 )
 
 var (
@@ -16,7 +17,42 @@ var (
 	// only be filed against a product that was actually part of the
 	// named order, not any product_id the caller names.
 	ErrProductNotInOrder = errors.New("product was not part of this order")
+
+	// ErrOrderNotEligibleForReview closes a gap a fresh audit against
+	// PLAN-02-CATALOG-AND-COMMERCE.md found: Submit checked that the
+	// order existed and contained the product, but never checked the
+	// order actually reached a paid state -- so an order still in
+	// DRAFT/AUTHORIZED/PAYMENT_PENDING, or one that ended in FAILED/
+	// CANCELLED, could still have a review filed against it, complete
+	// with VerifiedPurchase implicitly true just because order_id was
+	// non-empty. Not reachable through the normal UI (checkout.tsx only
+	// shows the review form after payment/verify succeeds -- see
+	// usePaymentFlow.ts's verifyPayment), but unenforced server-side,
+	// which is what actually matters for "verified purchase" to mean
+	// what this codebase's own doc comments say it means.
+	ErrOrderNotEligibleForReview = errors.New("order has not completed payment")
+
+	// ErrDuplicateReview guards against a retried or duplicated
+	// POST /orders/{id}/review call inflating a product's
+	// average_rating/review_count with more than one review from the
+	// same real purchase -- see db/migrations/*_add_reviews_order_
+	// product_unique.sql, the reviews_order_product_unique constraint
+	// this maps from (PostgresRepository.Create translates the
+	// resulting unique-violation into this error).
+	ErrDuplicateReview = errors.New("a review already exists for this order and product")
 )
+
+// reviewEligibleOrderStatuses are the order.Status values a review may
+// be filed against -- everything from the point payment succeeds
+// onward (statemachine.go's OrderPaid -> OrderFulfillmentPending ->
+// OrderCompleted), deliberately excluding OrderDraft/OrderAuthorized/
+// OrderPaymentPending (payment not yet confirmed) and OrderFailed/
+// OrderCancelled (payment never completed).
+var reviewEligibleOrderStatuses = map[string]bool{
+	statemachine.OrderPaid:               true,
+	statemachine.OrderFulfillmentPending: true,
+	statemachine.OrderCompleted:          true,
+}
 
 // defaultBuyerReference is used when a buyer submits a review without a
 // name -- this project has no buyer identity/auth (files/AUTH.md), so
@@ -53,6 +89,10 @@ func (s *Service) Submit(ctx context.Context, orderID, productID, buyerReference
 	ord, err := s.orders.GetOrder(ctx, orderID)
 	if err != nil {
 		return Review{}, err
+	}
+
+	if !reviewEligibleOrderStatuses[ord.Status] {
+		return Review{}, ErrOrderNotEligibleForReview
 	}
 
 	found := false

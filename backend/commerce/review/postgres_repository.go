@@ -2,8 +2,10 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,6 +33,9 @@ func (r *PostgresRepository) Create(ctx context.Context, rev Review) (Review, er
 		rev.ProductID, orderID, rev.BuyerReference, rev.Rating, rev.Comment,
 	).Scan(&rev.ID, &rev.CreatedAt)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return Review{}, ErrDuplicateReview
+		}
 		return Review{}, fmt.Errorf("create review: %w", err)
 	}
 
@@ -86,4 +91,16 @@ func (r *PostgresRepository) ListByProduct(ctx context.Context, productID string
 	}
 
 	return reviews, nil
+}
+
+// isUniqueViolation matches the codebase-wide convention for detecting
+// a Postgres unique-constraint violation (SQLSTATE 23505) -- see
+// catalog.isUniqueViolation, payment.isUniqueViolation, auth.
+// isUniqueViolation for the same helper defined per-package.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
 }
