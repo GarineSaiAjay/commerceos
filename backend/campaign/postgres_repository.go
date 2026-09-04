@@ -36,8 +36,8 @@ func (r *PostgresRepository) Save(ctx context.Context, c Campaign) error {
 	return nil
 }
 
-func (r *PostgresRepository) GetByID(ctx context.Context, id string) (Campaign, error) {
-	c, err := scanCampaign(r.db.QueryRow(ctx, campaignSelectSQL+` WHERE id = $1`, id))
+func (r *PostgresRepository) GetByID(ctx context.Context, merchantID, id string) (Campaign, error) {
+	c, err := scanCampaign(r.db.QueryRow(ctx, campaignSelectSQL+` WHERE id = $1 AND merchant_id = $2`, id, merchantID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Campaign{}, ErrCampaignNotFound
 	}
@@ -91,7 +91,17 @@ func (r *PostgresRepository) SumActiveBudget(ctx context.Context, merchantID str
 // step), recording who approved it and setting starts_at/ends_at from
 // duration_days. Runs in one transaction so a concurrent Approve/Reject
 // on the same campaign can't interleave between the read and the write.
-func (r *PostgresRepository) Approve(ctx context.Context, id string, approvedBy string) (Campaign, error) {
+// Approve/Reject take merchantID as a mandatory scoping parameter (P0
+// security fix, full-codebase re-audit 2026-09-04 -- see Repository's
+// doc comment for the full IDOR this closes). A cross-merchant id is
+// deliberately indistinguishable from a nonexistent or already-decided
+// one: both hit the same "0 rows matched id + status='PROPOSED'
+// (+ merchant_id)" branch below and return ErrCampaignNotProposed,
+// rather than a caller being able to tell "exists but isn't yours" apart
+// from "isn't PROPOSED" apart from "doesn't exist at all" -- the last
+// thing an IDOR fix should do is leak THAT distinction to an operator
+// who has no business knowing another merchant's campaign exists.
+func (r *PostgresRepository) Approve(ctx context.Context, merchantID, id string, approvedBy string) (Campaign, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return Campaign{}, fmt.Errorf("begin approve transaction: %w", err)
@@ -100,8 +110,9 @@ func (r *PostgresRepository) Approve(ctx context.Context, id string, approvedBy 
 
 	var durationDays int
 	err = tx.QueryRow(ctx, `
-		SELECT duration_days FROM campaigns WHERE id = $1 AND status = 'PROPOSED' FOR UPDATE
-	`, id).Scan(&durationDays)
+		SELECT duration_days FROM campaigns
+		WHERE id = $1 AND merchant_id = $2 AND status = 'PROPOSED' FOR UPDATE
+	`, id, merchantID).Scan(&durationDays)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Campaign{}, ErrCampaignNotProposed
 	}
@@ -109,17 +120,31 @@ func (r *PostgresRepository) Approve(ctx context.Context, id string, approvedBy 
 		return Campaign{}, fmt.Errorf("read campaign for approval: %w", err)
 	}
 
+	// make_interval(days => $2), not ($2 || ' days')::interval: with
+	// the merchant_id scoping added above, this statement picked up a
+	// live-Postgres integration test for the first time
+	// (postgres_repository_test.go, added alongside the P0 fix -- full-
+	// codebase re-audit 2026-09-04) and the ($2 || ' days') form failed
+	// there with "unable to encode 7 into text format for text (OID
+	// 25): cannot find encode plan" -- Postgres resolves $2's type as
+	// text because of the || operator, and pgx v5 has no encode plan
+	// for a Go int against a server-declared text OID in the extended
+	// protocol. make_interval's days parameter is declared integer, so
+	// $2 resolves unambiguously to int4/int8 and durationDays (a plain
+	// Go int) encodes correctly. This is a pre-existing bug in this
+	// exact query (not introduced by the merchant_id scoping) that
+	// simply had no live-DB test exercising Approve before now.
 	_, err = tx.Exec(ctx, `
 		UPDATE campaigns
 		SET status = 'ACTIVE', approved_by = $1, starts_at = NOW(),
-		    ends_at = NOW() + ($2 || ' days')::interval, updated_at = NOW()
-		WHERE id = $3
-	`, approvedBy, durationDays, id)
+		    ends_at = NOW() + make_interval(days => $2), updated_at = NOW()
+		WHERE id = $3 AND merchant_id = $4
+	`, approvedBy, durationDays, id, merchantID)
 	if err != nil {
 		return Campaign{}, fmt.Errorf("approve campaign: %w", err)
 	}
 
-	c, err := scanCampaign(tx.QueryRow(ctx, campaignSelectSQL+` WHERE id = $1`, id))
+	c, err := scanCampaign(tx.QueryRow(ctx, campaignSelectSQL+` WHERE id = $1 AND merchant_id = $2`, id, merchantID))
 	if err != nil {
 		return Campaign{}, fmt.Errorf("read approved campaign: %w", err)
 	}
@@ -130,19 +155,19 @@ func (r *PostgresRepository) Approve(ctx context.Context, id string, approvedBy 
 	return c, nil
 }
 
-func (r *PostgresRepository) Reject(ctx context.Context, id string, reason string) (Campaign, error) {
+func (r *PostgresRepository) Reject(ctx context.Context, merchantID, id string, reason string) (Campaign, error) {
 	ct, err := r.db.Exec(ctx, `
 		UPDATE campaigns
 		SET status = 'REJECTED', rejected_reason = $1, updated_at = NOW()
-		WHERE id = $2 AND status = 'PROPOSED'
-	`, reason, id)
+		WHERE id = $2 AND merchant_id = $3 AND status = 'PROPOSED'
+	`, reason, id, merchantID)
 	if err != nil {
 		return Campaign{}, fmt.Errorf("reject campaign: %w", err)
 	}
 	if ct.RowsAffected() == 0 {
 		return Campaign{}, ErrCampaignNotProposed
 	}
-	return r.GetByID(ctx, id)
+	return r.GetByID(ctx, merchantID, id)
 }
 
 // FindActiveForProduct is a plain read (no lock) for the dashboard/

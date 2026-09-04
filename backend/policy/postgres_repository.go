@@ -183,16 +183,17 @@ func (r *PostgresRepository) GetAuthorization(
 	var expiresAt time.Time
 	var actionID *string
 
+	var cartID *string
 	err := r.db.QueryRow(ctx, `
 		SELECT id, mandate_id, action, amount, currency, merchant, items,
 			policy_version, decision, risk_score, level, expires_at, status,
-			action_id
+			action_id, cart_id
 		FROM authorizations
 		WHERE id = $1
 	`, id).Scan(
 		&a.ID, &a.MandateID, &a.Action, &a.Amount, &a.Currency, &a.Merchant,
 		&items, &a.PolicyVersion, &a.Decision, &a.RiskScore, &a.Level,
-		&expiresAt, &a.Status, &actionID,
+		&expiresAt, &a.Status, &actionID, &cartID,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -205,6 +206,9 @@ func (r *PostgresRepository) GetAuthorization(
 	a.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
 	if actionID != nil {
 		a.ActionID = *actionID
+	}
+	if cartID != nil {
+		a.CartID = *cartID
 	}
 
 	if err := json.Unmarshal(items, &a.Items); err != nil {
@@ -229,13 +233,13 @@ func (r *PostgresRepository) SaveAuthorization(
 		INSERT INTO authorizations (
 			id, mandate_id, action, amount, currency, merchant, items,
 			policy_version, decision, risk_score, level, expires_at, status,
-			action_id
+			action_id, cart_id
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 	`,
 		a.ID, a.MandateID, a.Action, a.Amount, a.Currency, a.Merchant,
 		items, a.PolicyVersion, a.Decision, a.RiskScore, a.Level,
-		expiresAt, a.Status, nilIfEmpty(a.ActionID),
+		expiresAt, a.Status, nilIfEmpty(a.ActionID), nilIfEmpty(a.CartID),
 	)
 
 	if err != nil {
@@ -245,18 +249,36 @@ func (r *PostgresRepository) SaveAuthorization(
 	return nil
 }
 
+// MarkAuthorizationUsed atomically transitions id from ACTIVE to USED.
+// The WHERE status = 'ACTIVE' guard is load-bearing, not defensive
+// styling: this is the only thing that makes consuming an authorization
+// safe under concurrency. Before this fix (P0, full-codebase re-audit
+// 2026-09-04) the UPDATE had no status guard and nobody checked rows
+// affected, so two concurrent CreatePaymentOrder calls racing the same
+// authorization_id (trivially triggerable -- nothing scoped one
+// authorization to one order before this same audit's cart_id binding
+// fix either) could both pass VerifyAuthorization, both proceed to spend
+// it, and both blindly mark it USED afterward: one authorization funding
+// two real payments. Returning ErrAuthorizationInvalid on zero rows
+// affected -- and payment.Service.CreatePaymentOrder now calling this
+// BEFORE creating the payment, not after -- means the loser of the race
+// is rejected before any money moves, not after.
 func (r *PostgresRepository) MarkAuthorizationUsed(
 	ctx context.Context,
 	id string,
 ) error {
-	_, err := r.db.Exec(ctx, `
+	tag, err := r.db.Exec(ctx, `
 		UPDATE authorizations
 		SET status = 'USED', updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status = 'ACTIVE'
 	`, id)
 
 	if err != nil {
 		return fmt.Errorf("mark authorization used: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: already used, expired, or revoked", ErrAuthorizationInvalid)
 	}
 
 	return nil
@@ -347,9 +369,17 @@ func (r *PostgresRepository) GetActiveAuthorization(
 
 	var auth Authorization
 	var expiresAt time.Time
+	var cartID *string
+	// cart_id is matched with IS NOT DISTINCT FROM (not =) because
+	// a.CartID is often "" for a cart-less proposal, and plain "="
+	// against a NULL/empty column would never match itself as
+	// intended -- this keeps a repeated cart-less proposal idempotent
+	// (same behavior as before cart_id existed) while still refusing
+	// to hand a cart-A-bound authorization back to a cart-B proposal.
 	err := r.db.QueryRow(ctx, `
 		SELECT id, mandate_id, action, amount, currency, merchant, items,
-			policy_version, decision, risk_score, level, expires_at, status
+			policy_version, decision, risk_score, level, expires_at, status,
+			cart_id
 		FROM authorizations
 		WHERE status = 'ACTIVE'
 		  AND action = $1
@@ -357,12 +387,13 @@ func (r *PostgresRepository) GetActiveAuthorization(
 		  AND currency = $3
 		  AND merchant = $4
 		  AND items = $5::jsonb
+		  AND cart_id IS NOT DISTINCT FROM $6
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, a.Action, a.Amount, a.Currency, a.Merchant, items).Scan(
+	`, a.Action, a.Amount, a.Currency, a.Merchant, items, nilIfEmpty(a.CartID)).Scan(
 		&auth.ID, &auth.MandateID, &auth.Action, &auth.Amount, &auth.Currency, &auth.Merchant,
 		&items, &auth.PolicyVersion, &auth.Decision, &auth.RiskScore, &auth.Level,
-		&expiresAt, &auth.Status,
+		&expiresAt, &auth.Status, &cartID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Authorization{}, ErrAuthorizationNotFound
@@ -372,6 +403,9 @@ func (r *PostgresRepository) GetActiveAuthorization(
 	}
 
 	auth.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
+	if cartID != nil {
+		auth.CartID = *cartID
+	}
 	if err := json.Unmarshal(items, &auth.Items); err != nil {
 		return Authorization{}, fmt.Errorf("unmarshal authorization items: %w", err)
 	}

@@ -10,6 +10,20 @@ import (
 	"github.com/garinesaiajay/commerceos/statemachine"
 )
 
+// ErrAuthorizationMismatch means a caller-supplied authorization_id was
+// verified ACTIVE and unexpired (policy.Service.VerifyAuthorization) but
+// does not actually cover the order being paid -- a different amount,
+// currency, merchant, or cart than what was authorized. Added as a P0
+// security fix (full-codebase re-audit 2026-09-04): before this,
+// CreatePaymentOrder trusted VerifyAuthorization's ACTIVE/unexpired check
+// alone, which let a cheap, auto-approved authorization for a trivial
+// amount be spent against an arbitrarily expensive order -- the mandate
+// ceiling and budget-tolerance checks that ran against the cheap proposal
+// never applied to the real charge. See CreatePaymentOrder's doc comment.
+// The word "authorization" in this error's text matters: handler.go maps
+// any error containing it to 401, same as an invalid/expired authorization.
+var ErrAuthorizationMismatch = errors.New("authorization does not match this order")
+
 type Service struct {
 	provider   Provider
 	repo       Repository
@@ -27,9 +41,14 @@ type Authorizer interface {
 	) (policy.Authorization, error)
 }
 
-// AuthorizationConsumer marks an authorization as consumed AFTER a new
-// payment was created, so the same authorization cannot be replayed to
-// create a second payment. The idempotent-return path is unaffected.
+// AuthorizationConsumer atomically marks an authorization as consumed.
+// CreatePaymentOrder calls this BEFORE creating a new payment (moved
+// here as part of the P0 fix, full-codebase re-audit 2026-09-04 -- see
+// CreatePaymentOrder's inline comment at the call site for why), so the
+// same authorization cannot be replayed -- concurrently or sequentially
+// -- to create a second payment. The idempotent-return path (an
+// existing payment for this idempotency key or order) is unaffected: it
+// returns before this is ever called.
 type AuthorizationConsumer interface {
 	MarkAuthorizationUsed(ctx context.Context, authorizationID string) error
 }
@@ -167,6 +186,32 @@ func (s *Service) CreatePaymentOrder(
 		return Payment{}, fmt.Errorf("authorization required: %w", err)
 	}
 
+	// The authorization being ACTIVE and unexpired (just verified above)
+	// is not by itself proof it was ever meant to pay for THIS order --
+	// see ErrAuthorizationMismatch's doc comment for why this matters.
+	// Currency and merchant must match exactly. Amount is allowed to be
+	// authorized-for-more-than-charged (never the reverse): ord.Subtotal
+	// is already net of any campaign discount applied at checkout
+	// (order.Order.Subtotal's doc comment), which can only ever reduce
+	// what's actually charged below what was authorized, never increase
+	// it. cart_id must match exactly and must be present on the
+	// authorization -- an order always has a real cart_id (it is created
+	// FROM a cart), so an authorization with none (a cart-less
+	// "generalized" proposal, see Engine.checkMandateCartBound) can never
+	// legitimately be the one that paid for it.
+	if auth.Currency != ord.Currency {
+		return Payment{}, fmt.Errorf("%w: authorization currency %s does not match order currency %s", ErrAuthorizationMismatch, auth.Currency, ord.Currency)
+	}
+	if auth.Merchant != ord.MerchantID {
+		return Payment{}, fmt.Errorf("%w: authorization merchant %s does not match order merchant %s", ErrAuthorizationMismatch, auth.Merchant, ord.MerchantID)
+	}
+	if auth.Amount < ord.Subtotal {
+		return Payment{}, fmt.Errorf("%w: authorization covers %d but order subtotal is %d", ErrAuthorizationMismatch, auth.Amount, ord.Subtotal)
+	}
+	if auth.CartID == "" || auth.CartID != ord.CartID {
+		return Payment{}, fmt.Errorf("%w: authorization is not bound to order %s's cart", ErrAuthorizationMismatch, ord.ID)
+	}
+
 	// Idempotency: if a payment already exists for this idempotency
 	// key, return it — never create a second Razorpay order.
 	if idempotencyKey != "" {
@@ -189,6 +234,31 @@ func (s *Service) CreatePaymentOrder(
 
 	if err != ErrPaymentNotFound {
 		return Payment{}, err
+	}
+
+	// This is a genuine new spend (not an idempotent repeat, both checks
+	// above having found nothing), so consume the authorization NOW --
+	// atomically, and BEFORE calling out to the payment provider or
+	// creating any Payment row. This ordering is itself part of the P0
+	// fix (full-codebase re-audit 2026-09-04): consuming AFTER payment
+	// creation (the previous order) left a window where two concurrent
+	// CreatePaymentOrder calls racing the same authorization_id could
+	// both pass every check above and both create a payment before
+	// either got around to marking the authorization used -- one
+	// authorization funding two payments. MarkAuthorizationUsed's
+	// UPDATE ... WHERE status = 'ACTIVE' is now the sole atomic
+	// arbiter: only one concurrent caller can win it, and the loser is
+	// rejected here, before any payment record exists and before the
+	// payment provider is ever called. The trade-off this accepts: if
+	// the provider call or DB insert below fails AFTER a successful
+	// consume, this authorization is burned with no payment to show for
+	// it. That is an acceptable, cheap-to-recover-from cost (the caller
+	// just requests a fresh authorization; they expire in 10 minutes
+	// regardless) next to the alternative of a double-spend.
+	if consumer, ok := s.authorizer.(AuthorizationConsumer); ok {
+		if err := consumer.MarkAuthorizationUsed(ctx, authorizationID); err != nil {
+			return Payment{}, fmt.Errorf("mark authorization used: %w", err)
+		}
 	}
 
 	// No payment exists yet, so create the Razorpay order.
@@ -215,15 +285,6 @@ func (s *Service) CreatePaymentOrder(
 
 	if err := s.repo.Create(ctx, payment); err != nil {
 		return Payment{}, err
-	}
-
-	// The authorization was genuinely consumed to create a NEW payment
-	// (not an idempotent repeat), so mark it used — a single
-	// authorization must not create a second payment.
-	if consumer, ok := s.authorizer.(AuthorizationConsumer); ok {
-		if err := consumer.MarkAuthorizationUsed(ctx, authorizationID); err != nil {
-			return Payment{}, fmt.Errorf("mark authorization used: %w", err)
-		}
 	}
 
 	// Tag the order with the run that authorized it (PLAN-05-SELLER-

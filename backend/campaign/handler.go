@@ -193,10 +193,22 @@ func campaignID(path string) string {
 	return rest
 }
 
-// Get serves GET /campaigns/{id}.
+// Get serves GET /campaigns/{id}. Scoped to the calling operator's own
+// merchant (P0 security fix, full-codebase re-audit 2026-09-04) -- this
+// handler previously never checked auth.OperatorFromContext at all
+// (every OTHER handler in this file did), so despite RequireOperator
+// gating the whole /campaigns/ subtree (main.go) at the authentication
+// layer, there was no authorization check here whatsoever: any
+// authenticated operator of any merchant could read any other
+// merchant's campaign by id. See Repository.GetByID's doc comment.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	operator, ok := auth.OperatorFromContext(r.Context())
+	if !ok {
+		http.Error(w, "operator session required", http.StatusUnauthorized)
 		return
 	}
 	id := campaignID(r.URL.Path)
@@ -204,7 +216,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "campaign ID required", http.StatusBadRequest)
 		return
 	}
-	c, err := h.repo.GetByID(r.Context(), id)
+	c, err := h.repo.GetByID(r.Context(), operator.MerchantID, id)
 	if err != nil {
 		if errors.Is(err, ErrCampaignNotFound) {
 			http.Error(w, "campaign not found", http.StatusNotFound)
@@ -233,7 +245,7 @@ func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "campaign ID required", http.StatusBadRequest)
 		return
 	}
-	c, err := h.repo.Approve(r.Context(), id, operator.Email)
+	c, err := h.repo.Approve(r.Context(), operator.MerchantID, id, operator.Email)
 	if err != nil {
 		if errors.Is(err, ErrCampaignNotProposed) {
 			http.Error(w, err.Error(), http.StatusConflict)
@@ -255,7 +267,8 @@ func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if _, ok := auth.OperatorFromContext(r.Context()); !ok {
+	operator, ok := auth.OperatorFromContext(r.Context())
+	if !ok {
 		http.Error(w, "operator session required", http.StatusUnauthorized)
 		return
 	}
@@ -267,7 +280,7 @@ func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
 	var req rejectRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	c, err := h.repo.Reject(r.Context(), id, req.Reason)
+	c, err := h.repo.Reject(r.Context(), operator.MerchantID, id, req.Reason)
 	if err != nil {
 		if errors.Is(err, ErrCampaignNotProposed) {
 			http.Error(w, err.Error(), http.StatusConflict)

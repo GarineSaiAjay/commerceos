@@ -46,9 +46,9 @@ func (r *fakeCampaignRepo) Save(ctx context.Context, c Campaign) error {
 	return nil
 }
 
-func (r *fakeCampaignRepo) GetByID(ctx context.Context, id string) (Campaign, error) {
+func (r *fakeCampaignRepo) GetByID(ctx context.Context, merchantID, id string) (Campaign, error) {
 	c, ok := r.campaigns[id]
-	if !ok {
+	if !ok || c.MerchantID != merchantID {
 		return Campaign{}, ErrCampaignNotFound
 	}
 	return c, nil
@@ -68,9 +68,9 @@ func (r *fakeCampaignRepo) SumActiveBudget(ctx context.Context, merchantID strin
 	return r.activeBudget, nil
 }
 
-func (r *fakeCampaignRepo) Approve(ctx context.Context, id string, approvedBy string) (Campaign, error) {
+func (r *fakeCampaignRepo) Approve(ctx context.Context, merchantID, id string, approvedBy string) (Campaign, error) {
 	c, ok := r.campaigns[id]
-	if !ok || c.Status != StatusProposed {
+	if !ok || c.MerchantID != merchantID || c.Status != StatusProposed {
 		return Campaign{}, ErrCampaignNotProposed
 	}
 	c.Status = StatusActive
@@ -79,9 +79,9 @@ func (r *fakeCampaignRepo) Approve(ctx context.Context, id string, approvedBy st
 	return c, nil
 }
 
-func (r *fakeCampaignRepo) Reject(ctx context.Context, id string, reason string) (Campaign, error) {
+func (r *fakeCampaignRepo) Reject(ctx context.Context, merchantID, id string, reason string) (Campaign, error) {
 	c, ok := r.campaigns[id]
-	if !ok || c.Status != StatusProposed {
+	if !ok || c.MerchantID != merchantID || c.Status != StatusProposed {
 		return Campaign{}, ErrCampaignNotProposed
 	}
 	c.Status = StatusRejected

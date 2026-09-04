@@ -90,16 +90,27 @@ func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db}
 }
 
-// Compute aggregates live from the orders/payments/recommendations tables.
-func (s *Service) Compute(ctx context.Context) (Metrics, error) {
+// Compute aggregates live from the orders/payments/recommendations
+// tables, scoped to ONE merchant. merchantID is a mandatory scoping
+// parameter -- added as a P0 security fix (full-codebase re-audit
+// 2026-09-04): every query below previously had zero merchant
+// filtering at all, so GET /dashboard/metrics handed back the entire
+// PLATFORM's total revenue, order count, and average order value to
+// whichever operator happened to be logged in, not just their own
+// merchant's. Every table here reaches merchant_id one join away
+// (orders directly; payments via order_id; recommendations and
+// suggestion_impressions via cart_id -> carts.merchant_id).
+func (s *Service) Compute(ctx context.Context, merchantID string) (Metrics, error) {
 	var m Metrics
 
-	// Total revenue from captured payments.
+	// Total revenue from captured payments, scoped via payments.order_id
+	// -> orders.merchant_id (payments itself has no merchant_id column).
 	err := s.db.QueryRow(ctx, `
-		SELECT COALESCE(SUM(amount), 0)
-		FROM payments
-		WHERE status IN ('captured', 'completed')
-	`).Scan(&m.Revenue)
+		SELECT COALESCE(SUM(p.amount), 0)
+		FROM payments p
+		JOIN orders o ON o.id = p.order_id
+		WHERE p.status IN ('captured', 'completed') AND o.merchant_id = $1
+	`, merchantID).Scan(&m.Revenue)
 	if err != nil {
 		return Metrics{}, fmt.Errorf("sum revenue: %w", err)
 	}
@@ -111,10 +122,11 @@ func (s *Service) Compute(ctx context.Context) (Metrics, error) {
 	err = s.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(o.subtotal), 0)
 		FROM orders o
-		WHERE o.cart_id IN (
+		WHERE o.merchant_id = $1
+		  AND o.cart_id IN (
 			SELECT DISTINCT cart_id FROM recommendations WHERE decision = 'RECOMMEND'
 		)
-	`).Scan(&m.AIRevenue)
+	`, merchantID).Scan(&m.AIRevenue)
 	if err != nil {
 		return Metrics{}, fmt.Errorf("sum ai revenue: %w", err)
 	}
@@ -123,8 +135,8 @@ func (s *Service) Compute(ctx context.Context) (Metrics, error) {
 	// (i.e. were converted from a cart at least once). Counting ALL carts
 	// deflates the number with carts that were never checked out.
 	var checkoutOrders, paid int64
-	_ = s.db.QueryRow(ctx, `SELECT COALESCE(COUNT(*), 0) FROM orders`).Scan(&checkoutOrders)
-	_ = s.db.QueryRow(ctx, `SELECT COALESCE(COUNT(*), 0) FROM orders WHERE status = 'paid'`).Scan(&paid)
+	_ = s.db.QueryRow(ctx, `SELECT COALESCE(COUNT(*), 0) FROM orders WHERE merchant_id = $1`, merchantID).Scan(&checkoutOrders)
+	_ = s.db.QueryRow(ctx, `SELECT COALESCE(COUNT(*), 0) FROM orders WHERE merchant_id = $1 AND status = 'paid'`, merchantID).Scan(&paid)
 
 	if checkoutOrders > 0 {
 		m.ConversionRate = float64(paid) / float64(checkoutOrders)
@@ -133,22 +145,30 @@ func (s *Service) Compute(ctx context.Context) (Metrics, error) {
 	// AOV: subtotal / paid orders.
 	if paid > 0 {
 		_ = s.db.QueryRow(ctx, `
-			SELECT COALESCE(SUM(subtotal), 0) FROM orders WHERE status = 'paid'
-		`).Scan(&m.AverageOrderValue)
+			SELECT COALESCE(SUM(subtotal), 0) FROM orders WHERE merchant_id = $1 AND status = 'paid'
+		`, merchantID).Scan(&m.AverageOrderValue)
 		m.AverageOrderValue /= paid
 	}
 
 	// Suggestion impressions/acceptances (item 20) -- see the Metrics
 	// doc comment above for why these are a real, honest counter pair
-	// rather than a single lifetime revenue figure.
+	// rather than a single lifetime revenue figure. Neither table has
+	// its own merchant_id column, so both are scoped via cart_id ->
+	// carts.merchant_id, same join shape as AI-attributed revenue above.
 	if err := s.db.QueryRow(ctx, `
-		SELECT COALESCE(COUNT(*), 0) FROM suggestion_impressions
-	`).Scan(&m.SuggestionImpressions); err != nil {
+		SELECT COALESCE(COUNT(*), 0)
+		FROM suggestion_impressions si
+		JOIN carts c ON c.id = si.cart_id
+		WHERE c.merchant_id = $1
+	`, merchantID).Scan(&m.SuggestionImpressions); err != nil {
 		return Metrics{}, fmt.Errorf("count suggestion impressions: %w", err)
 	}
 	if err := s.db.QueryRow(ctx, `
-		SELECT COALESCE(COUNT(*), 0) FROM recommendations WHERE accepted = TRUE
-	`).Scan(&m.SuggestionAcceptances); err != nil {
+		SELECT COALESCE(COUNT(*), 0)
+		FROM recommendations r
+		JOIN carts c ON c.id = r.cart_id
+		WHERE r.accepted = TRUE AND c.merchant_id = $1
+	`, merchantID).Scan(&m.SuggestionAcceptances); err != nil {
 		return Metrics{}, fmt.Errorf("count suggestion acceptances: %w", err)
 	}
 
@@ -156,9 +176,11 @@ func (s *Service) Compute(ctx context.Context) (Metrics, error) {
 }
 
 // Overview builds the dashboard read model from persisted source-of-truth
-// tables. It returns empty lists rather than fake example activity.
-func (s *Service) Overview(ctx context.Context, integrity AuditIntegrity) (Overview, error) {
-	metrics, err := s.Compute(ctx)
+// tables, scoped to ONE merchant (see Compute's doc comment for the P0
+// fix this and every query below is part of -- full-codebase re-audit
+// 2026-09-04). It returns empty lists rather than fake example activity.
+func (s *Service) Overview(ctx context.Context, merchantID string, integrity AuditIntegrity) (Overview, error) {
+	metrics, err := s.Compute(ctx, merchantID)
 	if err != nil {
 		return Overview{}, err
 	}
@@ -188,12 +210,50 @@ func (s *Service) Overview(ctx context.Context, integrity AuditIntegrity) (Overv
 		overview.Safety.Message = "Latest safety evaluation is recorded below."
 	}
 
+	// audit_events has no merchant_id column at all (it's a generic
+	// actor/action/entity_type/entity_id ledger -- see
+	// db/migrations/20260822122000_create_audit_events_table.sql), so
+	// unlike every other query in this file there is no single join
+	// that scopes it. Instead this matches against the actual, complete
+	// set of entity_type values any audit.Writer.Write call in this
+	// codebase produces today (verified by grepping every ".Write(ctx, ...)"
+	// call site: order/postgres_repository.go's campaign_discount_
+	// applied/campaign_budget_exhausted, payment/webhook_applier.go's
+	// payment.captured/payment.failed, policy/service.go's
+	// policy_settings_updated, agents/cost_guard.go's
+	// llm_daily_cost_budget_exceeded) -- resolving each entity_id back
+	// to a merchant the same way its own write call site would. This is
+	// a P0 security fix (full-codebase re-audit 2026-09-04): before
+	// this, GET /dashboard/overview handed every operator the raw
+	// actor/action/detail JSON of the last 12 audit events PLATFORM-
+	// WIDE, not just their own merchant's -- a straightforward
+	// cross-tenant data leak on the exact ledger meant to prove
+	// tamper-evidence, not broadcast it. llm_cost_guard is intentionally
+	// NOT filtered: it's a platform-wide daily LLM spend guard with no
+	// merchant dimension at all (see CostGuard.Check), so there is
+	// nothing merchant-private in it to leak.
+	//
+	// MAINTENANCE NOTE: a future entity_type written by a NEW
+	// audit.Writer.Write call site that isn't added to this WHERE
+	// clause will simply never appear in this list for anyone -- safe
+	// by default (fails closed, not open), but worth updating here when
+	// one is added, the same static-list staleness this codebase
+	// already documents for policy.PolicyConfig.AllowedProducts.
 	rows, err := s.db.Query(ctx, `
 		SELECT id, actor, action, entity_type, entity_id, detail, created_at
 		FROM audit_events
+		WHERE
+			(entity_type = 'campaign' AND entity_id IN (
+				SELECT id FROM campaigns WHERE merchant_id = $1
+			))
+			OR (entity_type = 'payment' AND entity_id IN (
+				SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.merchant_id = $1
+			))
+			OR (entity_type = 'policy_config' AND entity_id = $1)
+			OR entity_type = 'llm_cost_guard'
 		ORDER BY id DESC
 		LIMIT 12
-	`)
+	`, merchantID)
 	if err != nil {
 		return Overview{}, fmt.Errorf("load recent activity: %w", err)
 	}
@@ -216,9 +276,10 @@ func (s *Service) Overview(ctx context.Context, integrity AuditIntegrity) (Overv
 	actionRows, err := s.db.Query(ctx, `
 		SELECT id, action, merchant, amount, created_at
 		FROM agent_actions
+		WHERE merchant = $1
 		ORDER BY created_at DESC
 		LIMIT 6
-	`)
+	`, merchantID)
 	if err != nil {
 		return Overview{}, fmt.Errorf("load agent actions: %w", err)
 	}
