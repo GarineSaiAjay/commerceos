@@ -26,6 +26,12 @@ type Product = {
   // json:"variants,omitempty") -- optional here only because a stale
   // cached entry (see cachedProducts below) predates this field.
   variants?: ProductVariant[];
+  // attributes/purchase_constraints (backend/commerce/catalog/product.go)
+  // have no editor UI on this page yet -- see editingAttributes/
+  // editingPurchaseConstraints below for why this page still has to
+  // carry them through untouched on every save regardless.
+  attributes?: Record<string, unknown>;
+  purchase_constraints?: Record<string, unknown>;
 };
 
 // Item 23 (PLAN-04-UI-UX-AND-LATENCY.md §B2, "client-side" layer): a
@@ -115,6 +121,22 @@ export default function CatalogPage() {
   // other string = editing that product_id.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  // editingAttributes/editingPurchaseConstraints: full-codebase re-audit,
+  // P1. This form has no fields for catalog.Product's attributes/
+  // purchase_constraints (no editor UI for either exists yet), but
+  // UpdateProduct (backend/commerce/catalog/handler.go) is a full
+  // replace, not a partial merge -- it decodes the whole Product from
+  // the PATCH body and repository.go's UpdateProduct unconditionally
+  // overwrites both columns with whatever came in. Omitting these keys
+  // from save()'s body decodes as Go nil maps, so saving *any* other
+  // field via this form (even just a price change) was silently
+  // wiping a product's attributes and purchase_constraints. Captured
+  // from the product being edited and re-sent as-is on every save so
+  // this page can safely omit editor fields for them without losing
+  // data it doesn't have UI for -- reset to {} on create (nothing to
+  // preserve for a brand new product).
+  const [editingAttributes, setEditingAttributes] = useState<Record<string, unknown>>({});
+  const [editingPurchaseConstraints, setEditingPurchaseConstraints] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -165,18 +187,24 @@ export default function CatalogPage() {
   function startCreate() {
     setEditingId("");
     setForm(EMPTY_FORM);
+    setEditingAttributes({});
+    setEditingPurchaseConstraints({});
     setFormError("");
   }
 
   function startEdit(p: Product) {
     setEditingId(p.product_id);
     setForm(productToForm(p));
+    setEditingAttributes(p.attributes ?? {});
+    setEditingPurchaseConstraints(p.purchase_constraints ?? {});
     setFormError("");
   }
 
   function cancelForm() {
     setEditingId(null);
     setForm(EMPTY_FORM);
+    setEditingAttributes({});
+    setEditingPurchaseConstraints({});
     setFormError("");
   }
 
@@ -211,6 +239,8 @@ export default function CatalogPage() {
       merchant: { id: MERCHANT_ID },
       return_policy: { days: Math.max(0, Math.round(Number(form.returnDays) || 0)) },
       shipping: { estimated_days: Math.max(0, Math.round(Number(form.shippingDays) || 0)) },
+      attributes: editingAttributes,
+      purchase_constraints: editingPurchaseConstraints,
     };
 
     setSaving(true);
