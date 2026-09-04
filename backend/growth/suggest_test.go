@@ -584,7 +584,6 @@ func TestSuggestPropagatesFrequencyCapLookupError(t *testing.T) {
 	}
 }
 
-
 // TestSuggestHandlerBoundsContextWithATimeout guards against the "cart
 // suggestion card stuck forever on Checking for a match" bug: Suggest
 // used to run entirely on r.Context(), which net/http sets no deadline
