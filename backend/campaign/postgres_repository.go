@@ -120,10 +120,24 @@ func (r *PostgresRepository) Approve(ctx context.Context, merchantID, id string,
 		return Campaign{}, fmt.Errorf("read campaign for approval: %w", err)
 	}
 
+	// make_interval(days => $2), not ($2 || ' days')::interval: with
+	// the merchant_id scoping added above, this statement picked up a
+	// live-Postgres integration test for the first time
+	// (postgres_repository_test.go, added alongside the P0 fix -- full-
+	// codebase re-audit 2026-09-04) and the ($2 || ' days') form failed
+	// there with "unable to encode 7 into text format for text (OID
+	// 25): cannot find encode plan" -- Postgres resolves $2's type as
+	// text because of the || operator, and pgx v5 has no encode plan
+	// for a Go int against a server-declared text OID in the extended
+	// protocol. make_interval's days parameter is declared integer, so
+	// $2 resolves unambiguously to int4/int8 and durationDays (a plain
+	// Go int) encodes correctly. This is a pre-existing bug in this
+	// exact query (not introduced by the merchant_id scoping) that
+	// simply had no live-DB test exercising Approve before now.
 	_, err = tx.Exec(ctx, `
 		UPDATE campaigns
 		SET status = 'ACTIVE', approved_by = $1, starts_at = NOW(),
-		    ends_at = NOW() + ($2 || ' days')::interval, updated_at = NOW()
+		    ends_at = NOW() + make_interval(days => $2), updated_at = NOW()
 		WHERE id = $3 AND merchant_id = $4
 	`, approvedBy, durationDays, id, merchantID)
 	if err != nil {
