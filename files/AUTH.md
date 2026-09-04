@@ -24,7 +24,7 @@ psql "$DATABASE_URL" -f db/seeds/001_catalog.sql   # if not already applied
 psql "$DATABASE_URL" -f db/seeds/002_operator.sql
 ```
 
-Sign in at `/dashboard` (any of the five dashboard tabs redirect through
+Sign in at `/dashboard` (any of the ten dashboard tabs redirect through
 the same login wall — `frontend/app/dashboard/auth-gate.tsx`).
 
 ## What is and isn't gated
