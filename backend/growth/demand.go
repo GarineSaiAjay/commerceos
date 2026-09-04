@@ -64,6 +64,14 @@ func reinstatableCount(rows []evaluationContext, discountPercent int) int {
 // (carts.merchant_id, recommendations.cart_id -> carts.id are both
 // FK-enforced). Returns products ordered by reject count descending, so
 // the caller's argmax pick is just demand[0].
+//
+// Both queries below use make_interval(days => $2), not
+// ($2 || ' days')::interval -- see Funnel's doc comment in
+// dashboard.go for exactly why the || form fails against pgx v5. This
+// function backs both GET /dashboard/growth and the Campaign
+// Orchestrator's POST /campaigns/propose, so the bug affected both
+// surfaces. See TestPostgresStoreQueriesAgainstLiveDB for a live-DB
+// regression test.
 func (s *PostgresStore) RejectedDemandByProduct(
 	ctx context.Context,
 	merchantID string,
@@ -82,7 +90,7 @@ func (s *PostgresStore) RejectedDemandByProduct(
 		JOIN carts c ON c.id = r.cart_id
 		WHERE c.merchant_id = $1
 		  AND r.decision = 'REJECT'
-		  AND r.created_at >= NOW() - ($2 || ' days')::interval
+		  AND r.created_at >= NOW() - make_interval(days => $2)
 		GROUP BY r.product_id
 		ORDER BY reject_count DESC
 	`, merchantID, windowDays)
@@ -115,7 +123,7 @@ func (s *PostgresStore) RejectedDemandByProduct(
 		JOIN carts c ON c.id = r.cart_id
 		WHERE c.merchant_id = $1
 		  AND r.decision = 'REJECT'
-		  AND r.created_at >= NOW() - ($2 || ' days')::interval
+		  AND r.created_at >= NOW() - make_interval(days => $2)
 		  AND r.cart_total_at_evaluation IS NOT NULL
 		  AND r.budget_at_evaluation IS NOT NULL
 	`, merchantID, windowDays)

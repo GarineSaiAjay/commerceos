@@ -73,6 +73,19 @@ type RejectedDemandSummary struct {
 // via a JOIN to carts (none of suggestion_impressions/recommendations/
 // suggestion_dismissals carry their own merchant_id column) -- the
 // same join pattern RejectedDemandByProduct below already uses.
+//
+// Every time-windowed query in this file uses make_interval(days =>
+// $N), not ($N || ' days')::interval: the || form makes Postgres
+// resolve $N's type as text, and pgx v5 has no encode plan for a Go
+// int against a server-declared text OID in the extended protocol --
+// so every one of these queries failed with "unable to encode N into
+// text format for text (OID 25): cannot find encode plan", which
+// GrowthDashboardHandler.Overview turned into a plain 500 and the
+// frontend turned into "Could not load growth data." on every real
+// request. This is the exact same bug
+// campaign/postgres_repository.go's Approve hit and fixed the same
+// way; see TestPostgresStoreQueriesAgainstLiveDB for a live-Postgres
+// regression test covering this file and demand.go together.
 func (s *PostgresStore) Funnel(ctx context.Context, merchantID string, windowDays int) (FunnelSummary, error) {
 	var f FunnelSummary
 
@@ -80,7 +93,7 @@ func (s *PostgresStore) Funnel(ctx context.Context, merchantID string, windowDay
 		SELECT COUNT(*) FROM suggestion_impressions si
 		JOIN carts c ON c.id = si.cart_id
 		WHERE c.merchant_id = $1
-		  AND si.shown_at >= NOW() - ($2 || ' days')::interval
+		  AND si.shown_at >= NOW() - make_interval(days => $2)
 	`, merchantID, windowDays).Scan(&f.Shown); err != nil {
 		return FunnelSummary{}, fmt.Errorf("count shown suggestions: %w", err)
 	}
@@ -90,7 +103,7 @@ func (s *PostgresStore) Funnel(ctx context.Context, merchantID string, windowDay
 		JOIN carts c ON c.id = r.cart_id
 		WHERE c.merchant_id = $1
 		  AND r.accepted = TRUE
-		  AND r.created_at >= NOW() - ($2 || ' days')::interval
+		  AND r.created_at >= NOW() - make_interval(days => $2)
 	`, merchantID, windowDays).Scan(&f.Accepted); err != nil {
 		return FunnelSummary{}, fmt.Errorf("count accepted suggestions: %w", err)
 	}
@@ -99,7 +112,7 @@ func (s *PostgresStore) Funnel(ctx context.Context, merchantID string, windowDay
 		SELECT COUNT(*) FROM suggestion_dismissals sd
 		JOIN carts c ON c.id = sd.cart_id
 		WHERE c.merchant_id = $1
-		  AND sd.dismissed_at >= NOW() - ($2 || ' days')::interval
+		  AND sd.dismissed_at >= NOW() - make_interval(days => $2)
 	`, merchantID, windowDays).Scan(&f.Dismissed); err != nil {
 		return FunnelSummary{}, fmt.Errorf("count dismissed suggestions: %w", err)
 	}
@@ -122,7 +135,7 @@ func (s *PostgresStore) TopProductsByAcceptance(ctx context.Context, merchantID 
 		FROM suggestion_impressions si
 		JOIN carts c ON c.id = si.cart_id
 		WHERE c.merchant_id = $1
-		  AND si.shown_at >= NOW() - ($2 || ' days')::interval
+		  AND si.shown_at >= NOW() - make_interval(days => $2)
 		GROUP BY si.product_id
 	`, merchantID, windowDays)
 	if err != nil {
@@ -150,7 +163,7 @@ func (s *PostgresStore) TopProductsByAcceptance(ctx context.Context, merchantID 
 		JOIN carts c ON c.id = r.cart_id
 		WHERE c.merchant_id = $1
 		  AND r.accepted = TRUE
-		  AND r.created_at >= NOW() - ($2 || ' days')::interval
+		  AND r.created_at >= NOW() - make_interval(days => $2)
 		GROUP BY r.product_id
 	`, merchantID, windowDays)
 	if err != nil {
