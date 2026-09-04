@@ -108,7 +108,7 @@ func TestAuditTraceComplete(t *testing.T) {
 					ErrorDesc string `json:"error_description"`
 				}{
 					ID:       "pay_audit_test_success",
-					OrderID:  "audit_test_success",
+					OrderID:  "pay_audit_test_success-rzp",
 					Amount:   24900,
 					Currency: "INR",
 				},
@@ -152,7 +152,7 @@ func TestAuditTraceComplete(t *testing.T) {
 					ErrorDesc string `json:"error_description"`
 				}{
 					ID:        "pay_audit_test_fail",
-					OrderID:   "audit_test_fail",
+					OrderID:   "pay_audit_test_fail-rzp",
 					Amount:    24900,
 					Currency:  "INR",
 					ErrorCode: "BAD_REQUEST_ERROR",

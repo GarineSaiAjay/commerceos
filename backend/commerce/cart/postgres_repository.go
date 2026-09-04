@@ -56,7 +56,8 @@ func (r *PostgresRepository) GetCart(ctx context.Context, id string) (Cart, erro
 			currency,
 			subtotal_amount,
 			status,
-			expires_at
+			expires_at,
+			version
 		FROM carts
 		WHERE id = $1
 	`, id).Scan(
@@ -66,6 +67,7 @@ func (r *PostgresRepository) GetCart(ctx context.Context, id string) (Cart, erro
 		&cart.Subtotal,
 		&cart.Status,
 		&cart.ExpiresAt,
+		&cart.Version,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -121,6 +123,15 @@ func (r *PostgresRepository) GetCart(ctx context.Context, id string) (Cart, erro
 	return cart, nil
 }
 
+// SaveCart persists cart.Items/Subtotal, guarded by optimistic
+// concurrency (full-codebase re-audit, P2 -- see
+// 20260904110000_add_carts_version.sql for the full rationale): the
+// UPDATE only applies if cart.Version still matches the row's current
+// version (i.e. nothing else saved this cart since the caller's own
+// GetCart), and bumps version by one. Zero rows affected means a
+// concurrent SaveCart won the race since this cart was read --
+// ErrCartConflict tells Service to re-read and retry its mutation
+// rather than silently proceeding as if the stale write had applied.
 func (r *PostgresRepository) SaveCart(ctx context.Context, cart Cart) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -128,19 +139,25 @@ func (r *PostgresRepository) SaveCart(ctx context.Context, cart Cart) error {
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE carts
 		SET
 			subtotal_amount = $1,
+			version = version + 1,
 			updated_at = NOW()
-		WHERE id = $2
+		WHERE id = $2 AND version = $3
 	`,
 		cart.Subtotal,
 		cart.ID,
+		cart.Version,
 	)
 
 	if err != nil {
 		return fmt.Errorf("update cart: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrCartConflict
 	}
 
 	_, err = tx.Exec(ctx, `

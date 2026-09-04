@@ -70,8 +70,8 @@ LLM (intent) ──▶ Agent (proposal) ──▶ Policy Engine ──▶ Paymen
      see the cross-sell, go over budget, watch the graceful rejection,
      read the audit trail -- so a judge can self-drive the whole story
      without a live presenter narrating it.
-   - A one-off `migrate` service applies goose migrations and then both
-     seed files automatically before `backend` starts (every seed
+   - A one-off `migrate` service applies goose migrations and then all
+     four seed files automatically before `backend` starts (every seed
      `INSERT` uses `ON CONFLICT ... DO NOTHING`, so this is safe to run
      on every `up`, not just the first) -- there is no separate manual
      migration/seed step anymore. `backend` waits for `postgres` and
@@ -129,7 +129,7 @@ directory's own README before running it.
 | `POST /auth/login` · `/auth/invites` · `/auth/invites/accept` · `/auth/operators` | Operator auth + multi-operator invites (item 40) -- see `files/AUTH.md` |
 | `POST /mcp` | MCP server (JSON-RPC) |
 | `GET /.well-known/agent-commerce.json` | Agent-readable manifest: MCP tools, REST endpoints, mandate/policy model, example flows |
-| `GET /dashboard/overview` · `/analytics` · `/experiment` | Dashboard |
+| `GET /dashboard/overview` · `/metrics` · `/experiment` | Dashboard |
 | `GET /adapter/calls` | Razorpay call counter (audit proof) |
 | `GET /trust/summary` · `POST /trust/run-suite` | Public audit-chain status, call counter, and one-click 14-attack suite (no auth) |
 | `GET /x402/priority-support` | Test-mode-only x402 HTTP 402 challenge/response demo (item 39) -- see `backend/commerce/payment/x402/README.md` |

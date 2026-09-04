@@ -193,6 +193,17 @@ func (h *Handler) AddItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if err == ErrCartConflict {
+			// Full-codebase re-audit (P2): Service.mutateCart already
+			// retries a concurrent-write conflict internally (see
+			// service.go) -- this only surfaces after
+			// maxCartMutateRetries attempts under sustained
+			// contention, genuinely rare. 409, not 500: the request
+			// itself was fine, the cart just needs re-reading.
+			http.Error(w, "cart was concurrently modified, please retry", http.StatusConflict)
+			return
+		}
+
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -253,6 +264,11 @@ func (h *Handler) UpdateItemQuantity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if err == ErrCartConflict {
+			http.Error(w, "cart was concurrently modified, please retry", http.StatusConflict)
+			return
+		}
+
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -286,6 +302,11 @@ func (h *Handler) RemoveItem(w http.ResponseWriter, r *http.Request) {
 
 		if err == ErrItemNotFound {
 			http.Error(w, "cart item not found", http.StatusNotFound)
+			return
+		}
+
+		if err == ErrCartConflict {
+			http.Error(w, "cart was concurrently modified, please retry", http.StatusConflict)
 			return
 		}
 
