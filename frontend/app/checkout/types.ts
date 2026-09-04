@@ -194,6 +194,12 @@ export interface Intent {
   priority: string;
   recipient: string;
   clarify?: string;
+  // Which extractor produced this intent -- "llm" or "deterministic".
+  // Optional so older cached responses (or a backend that hasn't picked
+  // up this field yet) degrade to showing no badge at all, never a
+  // broken one. See backend/agents/intent.go's Intent.Source doc
+  // comment and files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md, Finding C.
+  source?: string;
 }
 
 export interface AlternativeProduct {

@@ -21,7 +21,7 @@ func (d *DeterministicExtractor) Extract(ctx context.Context, prompt string) (In
 	// "buy me something" (with nothing else to go on) and an empty
 	// prompt are always ambiguous, regardless of anything else.
 	if strings.Contains(lower, "buy me something") || strings.TrimSpace(prompt) == "" {
-		return Intent{Clarify: "What would you like to buy, and what is your budget?"}, nil
+		return Intent{Clarify: "What would you like to buy, and what is your budget?", Source: sourceDeterministic}, nil
 	}
 
 	budget := parseBudget(prompt)
@@ -58,6 +58,7 @@ func (d *DeterministicExtractor) Extract(ctx context.Context, prompt string) (In
 			Priority:  priority,
 			Recipient: recipient,
 			Clarify:   "What would you like to buy, and what is your budget?",
+			Source:    sourceDeterministic,
 		}, nil
 	}
 
@@ -66,6 +67,7 @@ func (d *DeterministicExtractor) Extract(ctx context.Context, prompt string) (In
 		Category:  category,
 		Priority:  priority,
 		Recipient: recipient,
+		Source:    sourceDeterministic,
 	}
 
 	if err := ValidateIntent(intent); err != nil {

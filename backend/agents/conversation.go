@@ -77,6 +77,16 @@ func mergeIntent(prev Intent, next Intent) Intent {
 	if next.Recipient != "" {
 		merged.Recipient = next.Recipient
 	}
+	// Source reflects which extractor produced the merged intent's
+	// newest information. This mirrors the other fields' "next wins
+	// when present" rule rather than blindly overwriting: mergeIntent is
+	// only ever called by PlanCheckoutInConversation when hasSignal(next)
+	// is already true (see buyer_agent.go), so next.Source is always set
+	// in practice -- the fallback to prev.Source just keeps this
+	// function correct on its own terms if that ever changes.
+	if next.Source != "" {
+		merged.Source = next.Source
+	}
 
 	// Clarify is never part of merged state -- it is a per-turn signal
 	// from the extractor, not something to carry forward or persist.
