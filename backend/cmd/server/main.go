@@ -382,7 +382,13 @@ func main() {
 
 	// The RazorpayAdapter is the only code path that touches the Razorpay
 	// SDK. The Payment Service depends only on the narrow Provider surface,
-	// so swapping rails (mock, x402, …) is a one-line change.
+	// so swapping in a synthetic rail shaped like it (a mock, a simulator)
+	// is a one-line change. x402 is NOT such a rail -- its resource-
+	// initiated 402-challenge flow doesn't fit CreatePayment/
+	// VerifyPaymentSignature at all, so backend/commerce/payment/x402
+	// is a standalone handler, not a PaymentAdapter implementation. See
+	// payment.PaymentAdapter's own doc comment and x402/README.md ("Why
+	// this isn't payment.PaymentAdapter") for the full explanation.
 	razorpayAdapter := payment.NewRazorpayAdapter(razorpayClient)
 
 	paymentRepo := payment.NewPostgresRepository(dbPool)
