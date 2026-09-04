@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/garinesaiajay/commerceos/audit"
@@ -135,6 +136,27 @@ func (s *Service) Propose(
 		return Decision{}, err
 	}
 	decision.ActionID = actionID
+
+	// Best-effort: link this action back to the agent_plans row (if
+	// any) whose reasoning led here, so GetRun/ListRuns show one
+	// continuous run instead of two disconnected ones (item 16 gap --
+	// see db/migrations/*_link_agent_plans_to_actions.sql). Applies
+	// regardless of the decision outcome below (approved, pending
+	// approval, or rejected) -- the buyer's reasoning trail is just as
+	// relevant to a rejected proposal as an approved one. Never blocks
+	// or fails Propose: a buyer who never used the agent at all for
+	// this cart (action.CartID == ""), or for whom no matching plan is
+	// found, or a lookup/tag error, must never turn into a failed
+	// checkout.
+	if action.CartID != "" {
+		if planID, found, err := s.repo.LatestPlanIDForCart(ctx, action.CartID, s.now()); err != nil {
+			log.Printf("[policy] failed to look up agent plan for cart %s: %v", action.CartID, err)
+		} else if found {
+			if err := s.repo.SetActionPlanID(ctx, actionID, planID); err != nil {
+				log.Printf("[policy] failed to link action %s to plan %s: %v", actionID, planID, err)
+			}
+		}
+	}
 
 	assessment := RiskAssessment{
 		ID:        fmt.Sprintf("risk_%d", s.now().UnixNano()),
@@ -341,12 +363,19 @@ func (s *Service) GetRun(ctx context.Context, runID string) (Run, error) {
 // "plan_<unixnano>" before calling this, since Handler is what needs
 // to know the ID isn't going to collide with an agent_actions row
 // (the "plan_" vs "action_" prefix is what GetRun routes on).
-func (s *Service) SaveAgentPlan(ctx context.Context, id string, action ProposedAction, steps []RunStep) error {
+//
+// cartID is stored on the plan so a later Propose call for the same
+// cart can find it again and link the two -- see AgentPlan.CartID and
+// db/migrations/*_link_agent_plans_to_actions.sql. Empty for a
+// memoryless call with no cart_id at all, same as CartID everywhere
+// else in this package.
+func (s *Service) SaveAgentPlan(ctx context.Context, id string, action ProposedAction, steps []RunStep, cartID string) error {
 	return s.repo.SaveAgentPlan(ctx, AgentPlan{
 		ID:        id,
 		Proposal:  action,
 		Steps:     steps,
 		CreatedAt: s.now(),
+		CartID:    cartID,
 	})
 }
 

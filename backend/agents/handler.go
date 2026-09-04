@@ -40,7 +40,7 @@ func (h *Handler) WithLoopAgent(loopAgent *ToolCallingAgent) *Handler {
 // there's no reverse edge from policy back to agents: policy must never
 // import agents.
 type RunRecorder interface {
-	SaveAgentPlan(ctx context.Context, id string, action policy.ProposedAction, steps []policy.RunStep) error
+	SaveAgentPlan(ctx context.Context, id string, action policy.ProposedAction, steps []policy.RunStep, cartID string) error
 }
 
 // WithRunRecorder attaches the audit-trail sink (item 16) that lets a
@@ -63,12 +63,18 @@ func (h *Handler) WithRunRecorder(runs RunRecorder) *Handler {
 // silently when there's no recorder configured or the plan has no
 // reasoning trail to save (e.g. a test double CheckoutPlan built by
 // hand, or an old caller that hasn't looked at ReasoningTrail).
-func (h *Handler) recordPlan(ctx context.Context, plan CheckoutPlan) {
+//
+// cartID is passed through from the originating request (planRequest/
+// loopRequest's own CartID -- empty for a memoryless call with no
+// cart_id at all) so policy.Service.Propose can later find this plan
+// again by cart_id and link it to the checkout it led to -- see
+// policy.AgentPlan.CartID and db/migrations/*_link_agent_plans_to_actions.sql.
+func (h *Handler) recordPlan(ctx context.Context, plan CheckoutPlan, cartID string) {
 	if h.runs == nil || len(plan.ReasoningTrail) == 0 {
 		return
 	}
 	id := fmt.Sprintf("plan_%d", time.Now().UnixNano())
-	if err := h.runs.SaveAgentPlan(ctx, id, plan.Proposal, plan.ReasoningTrail); err != nil {
+	if err := h.runs.SaveAgentPlan(ctx, id, plan.Proposal, plan.ReasoningTrail, cartID); err != nil {
 		log.Printf("[agents] failed to save agent plan reasoning trail: %v", err)
 	}
 }
@@ -116,7 +122,7 @@ func (h *Handler) PlanCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.recordPlan(r.Context(), plan)
+	h.recordPlan(r.Context(), plan, req.CartID)
 
 	writeJSON(w, http.StatusOK, plan)
 }
@@ -172,7 +178,7 @@ func (h *Handler) PlanCheckoutLoop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.Plan != nil {
-		h.recordPlan(r.Context(), *result.Plan)
+		h.recordPlan(r.Context(), *result.Plan, req.CartID)
 	}
 
 	writeJSON(w, http.StatusOK, result)

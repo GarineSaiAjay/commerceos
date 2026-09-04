@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var ErrMandateNotFound = errors.New("mandate not found")
@@ -92,6 +93,24 @@ type Repository interface {
 	// a failure here must never block a checkout proposal from
 	// reaching the buyer.
 	SaveAgentPlan(ctx context.Context, p AgentPlan) error
+
+	// LatestPlanIDForCart returns the most recently created agent_plans
+	// row for cartID with created_at strictly before `before`
+	// (found=false, no error, if none exists) -- the correlation
+	// Service.Propose uses to connect a checkout's resulting
+	// agent_actions row back to whichever agent reasoning trail (if
+	// any) led the buyer to this cart, so GetRun can present both as
+	// one continuous Run regardless of which ID a caller looks up. See
+	// db/migrations/*_link_agent_plans_to_actions.sql for why this can
+	// only be discovered at Propose time, not fabricated at plan-save
+	// time.
+	LatestPlanIDForCart(ctx context.Context, cartID string, before time.Time) (planID string, found bool, err error)
+
+	// SetActionPlanID tags an already-persisted agent_actions row with
+	// the agent_plans row (if any) that led to it -- best-effort,
+	// called right after SaveAction by Service.Propose once
+	// LatestPlanIDForCart has found a match.
+	SetActionPlanID(ctx context.Context, actionID, planID string) error
 
 	// UpdateApprovalRequestStatus transitions the request and records the
 	// authorization ID (if issued) and a reason.

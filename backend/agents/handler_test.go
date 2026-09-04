@@ -22,15 +22,17 @@ type fakeRunRecorder struct {
 		id     string
 		action policy.ProposedAction
 		steps  []policy.RunStep
+		cartID string
 	}
 }
 
-func (f *fakeRunRecorder) SaveAgentPlan(ctx context.Context, id string, action policy.ProposedAction, steps []policy.RunStep) error {
+func (f *fakeRunRecorder) SaveAgentPlan(ctx context.Context, id string, action policy.ProposedAction, steps []policy.RunStep, cartID string) error {
 	f.calls = append(f.calls, struct {
 		id     string
 		action policy.ProposedAction
 		steps  []policy.RunStep
-	}{id, action, steps})
+		cartID string
+	}{id, action, steps, cartID})
 	return f.err
 }
 
@@ -108,6 +110,33 @@ func TestPlanCheckoutWithoutRunRecorderStillSucceeds(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestPlanCheckoutRecordsCartID proves recordPlan passes planRequest's
+// own CartID through to SaveAgentPlan unchanged -- this is the
+// correlation key Service.Propose later uses (LatestPlanIDForCart) to
+// link this plan to the checkout it led to (item 16 gap fix; see
+// AgentPlan.CartID and db/migrations/*_link_agent_plans_to_actions.sql).
+func TestPlanCheckoutRecordsCartID(t *testing.T) {
+	recorder := &fakeRunRecorder{}
+	handler := NewHandler(NewBuyerAgent(NewDeterministicExtractor(), NewSearcher(fakeCatalog{}))).
+		WithRunRecorder(recorder)
+
+	body := strings.NewReader(`{"prompt":"I need wireless earbuds for my sister. Budget ₹25,000. I want good noise cancellation.","merchant":"merchant_001","cart_id":"cart_123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/agent/checkout", body)
+	w := httptest.NewRecorder()
+
+	handler.PlanCheckout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if len(recorder.calls) != 1 {
+		t.Fatalf("expected 1 SaveAgentPlan call, got %d", len(recorder.calls))
+	}
+	if got := recorder.calls[0].cartID; got != "cart_123" {
+		t.Errorf("recorded cartID = %q, want cart_123", got)
 	}
 }
 
