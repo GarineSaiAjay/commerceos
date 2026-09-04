@@ -140,6 +140,58 @@ func TestPlanCheckoutRecordsCartID(t *testing.T) {
 	}
 }
 
+// TestPlanCheckoutLoopInfraFailureReturns503 proves an infrastructure
+// failure from the loop agent (a non-200 upstream response here -- the
+// same family of error as the "read llm response: context deadline
+// exceeded" seen in production when a multi-step run didn't finish
+// inside loopTimeout) maps to 503, not 400. This is the status
+// frontend/app/checkout.tsx's askAgent() specifically checks for to
+// fall back from /agent/loop to /agent/checkout's deterministic-
+// fallback-backed pipeline; before this fix every non-ErrAmbiguousIntent
+// error here was a flat 400, which askAgent() treated as the loop's
+// own real, failed answer and never triggered that fallback.
+func TestPlanCheckoutLoopInfraFailureReturns503(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("upstream provider error"))
+	}))
+	defer srv.Close()
+
+	loopAgent := NewToolCallingAgent("test-key", srv.URL, "test-model", loopTestDeps())
+	handler := NewHandler(nil).WithLoopAgent(loopAgent)
+
+	body := strings.NewReader(`{"prompt":"wireless earbuds under 25000 for my sister","merchant":"merchant_001"}`)
+	req := httptest.NewRequest(http.MethodPost, "/agent/loop", body)
+	w := httptest.NewRecorder()
+
+	handler.PlanCheckoutLoop(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s -- want 503 so the frontend falls back to /agent/checkout", w.Code, w.Body.String())
+	}
+}
+
+// TestPlanCheckoutLoopAmbiguousIntentReturns400 proves the one genuine
+// user-input error the loop can return (an empty prompt, per
+// Run/RunInConversation's own ErrAmbiguousIntent check) still maps to
+// 400, not 503 -- it's a real, correct "ask the buyer to say more"
+// answer, not an infrastructure failure, so TestPlanCheckoutLoopInfraFailureReturns503's
+// fix above must not have swallowed this distinction.
+func TestPlanCheckoutLoopAmbiguousIntentReturns400(t *testing.T) {
+	loopAgent := NewToolCallingAgent("test-key", "http://unused.invalid", "test-model", loopTestDeps())
+	handler := NewHandler(nil).WithLoopAgent(loopAgent)
+
+	body := strings.NewReader(`{"prompt":"","merchant":"merchant_001"}`)
+	req := httptest.NewRequest(http.MethodPost, "/agent/loop", body)
+	w := httptest.NewRecorder()
+
+	handler.PlanCheckoutLoop(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s -- want 400 for an empty prompt", w.Code, w.Body.String())
+	}
+}
+
 // TestPlanCheckoutLoopRecordsRunBestEffort proves the same best-effort
 // persistence happens on the POST /agent/loop path once it produces a
 // Plan, using the same fake-LLM harness tool_loop_test.go established
