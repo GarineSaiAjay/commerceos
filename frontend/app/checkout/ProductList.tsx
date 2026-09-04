@@ -35,6 +35,7 @@ export function ProductList({
   onAcceptDetailSuggestion,
   detailReviews,
   detailReviewsLoading,
+  detailReviewSummary,
   onAddToCart,
   loading,
 }: {
@@ -56,6 +57,11 @@ export function ProductList({
   onAcceptDetailSuggestion: () => void;
   detailReviews: Review[];
   detailReviewsLoading: boolean;
+  // detailReviewSummary is idea #5 of files/agent-ai-integration-
+  // ideas.md (Review Summarization Agent) -- null covers both "still
+  // loading" and "nothing available" (see checkout.tsx's
+  // fetchDetailReviewSummary), rendered as nothing in either case.
+  detailReviewSummary: string | null;
   onAddToCart: (product: Product, variantId?: string) => void;
   loading: boolean;
 }) {
@@ -210,6 +216,14 @@ export function ProductList({
                         number for a few seconds even though it already
                         appears here, since this list is fetched fresh
                         on every expand. */}
+                    {detailReviewSummary && (
+                      <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">
+                          Buyers say
+                        </p>
+                        <p className="mt-1 text-sm text-indigo-900">{detailReviewSummary}</p>
+                      </div>
+                    )}
                     {detailReviewsLoading && (
                       <div className="mt-3 space-y-2">
                         <Skeleton className="h-3 w-full" />
