@@ -18,15 +18,20 @@ func (fakeProposer) Propose(ctx context.Context, action policy.ProposedAction, m
 	}, nil
 }
 
+// CreateMandate is a no-op: fakeProposer also satisfies MandateCreator so
+// RunAttack's ensureRedTeamMandate step succeeds without a real policy
+// service backing it.
+func (fakeProposer) CreateMandate(ctx context.Context, mandate policy.Mandate) error { return nil }
+
 type fakeCounter struct{ n int64 }
 
 func (c *fakeCounter) CallCount() int64 { return c.n }
 
 // TestRunAttackBlocked proves an attack is blocked with zero provider calls.
 func TestRunAttackBlocked(t *testing.T) {
-	runner := NewRunner(fakeProposer{}, &fakeCounter{n: 3})
+	runner := NewRunner(fakeProposer{}, fakeProposer{}, &fakeCounter{n: 3})
 	attack, _ := GetAttack("att_01")
-	res, err := runner.RunAttack(context.Background(), attack, "mnd_demo")
+	res, err := runner.RunAttack(context.Background(), attack)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +46,8 @@ func TestRunAttackBlocked(t *testing.T) {
 // TestRunSuitePasses proves the full suite reports zero failures when every
 // attack is blocked with zero provider calls.
 func TestRunSuitePasses(t *testing.T) {
-	runner := NewRunner(fakeProposer{}, &fakeCounter{n: 0})
-	eval, err := runner.RunSuite(context.Background(), "mnd_demo")
+	runner := NewRunner(fakeProposer{}, fakeProposer{}, &fakeCounter{n: 0})
+	eval, err := runner.RunSuite(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,9 +70,12 @@ func (approveProposer) Propose(ctx context.Context, action policy.ProposedAction
 	return policy.Decision{Decision: policy.DecisionApproved}, nil
 }
 
+// CreateMandate is a no-op for the same reason as fakeProposer's above.
+func (approveProposer) CreateMandate(ctx context.Context, mandate policy.Mandate) error { return nil }
+
 func TestRunAttackApprovedIsUnauthorized(t *testing.T) {
-	runner := NewRunner(approveProposer{}, &fakeCounter{n: 0})
-	eval, err := runner.RunSuite(context.Background(), "mnd_demo")
+	runner := NewRunner(approveProposer{}, approveProposer{}, &fakeCounter{n: 0})
+	eval, err := runner.RunSuite(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

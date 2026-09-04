@@ -489,7 +489,7 @@ func main() {
 	// gated /safety/* handler and the public /trust/* handler, not two
 	// separate ones racing to write the same table.
 	safetyStore := safety.NewStore(dbPool)
-	safetyRunner := safety.NewRunner(policyService, razorpayAdapter)
+	safetyRunner := safety.NewRunner(policyService, policyService, razorpayAdapter)
 	safetyHandler := safety.NewHandler(safetyRunner, safetyStore)
 
 	// item 36 (P3, PLAN-06-ADDITIONAL-OPPORTUNITIES.md §3): the public,

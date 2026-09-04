@@ -45,7 +45,7 @@ type Verifier interface {
 // Runner runs the safety attack suite. Matches safety.Runner's RunSuite
 // method exactly, same reasoning as Verifier above.
 type Runner interface {
-	RunSuite(ctx context.Context, mandateID string) (safety.Evaluation, error)
+	RunSuite(ctx context.Context) (safety.Evaluation, error)
 }
 
 // EvaluationStore persists/lists safety evaluations. Matches the subset
@@ -165,7 +165,11 @@ func (h *Handler) RunSuite(w http.ResponseWriter, r *http.Request) {
 	h.lastSuiteRun = now
 	h.suiteMu.Unlock()
 
-	eval, err := h.runner.RunSuite(r.Context(), "mnd_demo")
+	// The runner now provisions its own real, per-attack mandate
+	// (safety.Runner.ensureRedTeamMandate) instead of relying on a
+	// caller-supplied mandate ID, so no mandate ID is passed here --
+	// see safety/runner.go's MandateCreator doc comment for why.
+	eval, err := h.runner.RunSuite(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

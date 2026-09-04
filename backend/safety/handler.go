@@ -46,15 +46,14 @@ func (h *Handler) RunAttack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "attack not found", http.StatusNotFound)
 		return
 	}
-	var req struct {
-		MandateID string `json:"mandate_id"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.MandateID == "" {
-		req.MandateID = "mnd_demo"
-	}
 
-	res, err := h.runner.RunAttack(r.Context(), attack, req.MandateID)
+	// No mandate_id from the request body anymore: the runner provisions
+	// a fresh, real mandate itself (Runner.ensureRedTeamMandate) so every
+	// attack is actually evaluated against its claimed guard instead of
+	// failing generically on a caller-supplied ID that was never real
+	// (the old default, the literal string "mnd_demo", was never seeded
+	// anywhere and could never arise from POST /policy/mandates).
+	res, err := h.runner.RunAttack(r.Context(), attack)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -69,15 +68,10 @@ func (h *Handler) RunSuite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var req struct {
-		MandateID string `json:"mandate_id"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.MandateID == "" {
-		req.MandateID = "mnd_demo"
-	}
-
-	eval, err := h.runner.RunSuite(r.Context(), req.MandateID)
+	// Same reasoning as RunAttack above: the runner provisions its own
+	// fresh, real mandate per attack now, so no mandate_id is read from
+	// the request body here either.
+	eval, err := h.runner.RunSuite(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
