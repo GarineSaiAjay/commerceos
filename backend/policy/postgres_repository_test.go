@@ -268,4 +268,3 @@ func TestGetRunFollowsLinkedPlanToAction(t *testing.T) {
 		t.Error("ListRuns still included the plan separately after it was linked to an action")
 	}
 }
-
