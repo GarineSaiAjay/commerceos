@@ -304,17 +304,27 @@ func main() {
 	// deferred below) -- the budget is still enforced immediately
 	// either way, it just has nowhere durable to log a trip until then.
 	costGuard := agents.NewCostGuardFromEnv()
+	// rejectionNarrator is idea #4 of files/agent-ai-integration-ideas.md
+	// (LLM-Narrated Rejection Explanations) -- it rephrases a single
+	// deterministic sentence explaining why an action was rejected by
+	// policy, racing a 3.5s window against the LLM the same way
+	// RacingExtractor does. A nil rejectionNarrator (no
+	// OPENROUTER_API_KEY) or a race timeout both fall back to the
+	// original deterministic sentence unchanged, so this is purely
+	// cosmetic and never blocks or changes the actual policy decision.
+	rejectionNarrator := agents.NewRejectionNarratorFromEnv().WithCostGuard(costGuard)
 
 	// reviewSummarizer is idea #5 of files/agent-ai-integration-ideas.md
 	// (Review Summarization Agent) -- shares costGuard for the same
-	// reason llmExtractor/toolLoopAgent do below: all of them bill
-	// against the same OPENROUTER_API_KEY, so one daily budget has to
-	// cover all of them. A nil reviewSummarizer (no OPENROUTER_API_KEY)
-	// is a fully supported state -- GET /products/{id}/reviews/summary
-	// (wired further down, Phase: Commerce Service routes) just answers
-	// available:false, the same "the AI feature had nothing to offer
-	// this time" contract growth.GrowthAgent's SuggestResponse already
-	// established for /growth/suggest.
+	// reason rejectionNarrator/llmExtractor/toolLoopAgent do: all of
+	// them bill against the same OPENROUTER_API_KEY, so one daily
+	// budget has to cover all of them. A nil reviewSummarizer (no
+	// OPENROUTER_API_KEY) is a fully supported state -- GET
+	// /products/{id}/reviews/summary (wired further down, Phase:
+	// Commerce Service routes) just answers available:false, the same
+	// "the AI feature had nothing to offer this time" contract
+	// growth.GrowthAgent's SuggestResponse already established for
+	// /growth/suggest.
 	reviewSummarizer := agents.NewReviewSummarizerFromEnv().WithCostGuard(costGuard)
 
 	llmExtractor := agents.NewLLMExtractorFromEnv().WithCostGuard(costGuard)
@@ -627,13 +637,18 @@ func main() {
 		Payment: paymentService,
 		Policy:  policyService,
 		Growth:  growthAgent,
-		Explain: func(a policy.ProposedAction, m policy.Mandate, check string) string {
+		Explain: func(ctx context.Context, a policy.ProposedAction, m policy.Mandate, check string) string {
 			// policyEngine.Config().Ceiling, not policyConfig.Ceiling: the
 			// latter is a one-time snapshot taken at startup, which item 25
 			// (P2, PLAN-05-SELLER-DASHBOARD.md §4) made stale the moment the
 			// ceiling became operator-editable at runtime via
 			// /dashboard/settings/policy.
-			return policy.ExplainRejection(check, a, m, policyEngine.Config().Ceiling)
+			deterministic := policy.ExplainRejection(check, a, m, policyEngine.Config().Ceiling)
+			// Narrate is nil-receiver-safe and has its own 3.5s race
+			// window/fallback discipline -- this always returns SOME
+			// explanation, at worst the unmodified deterministic one, and
+			// never blocks longer than that window regardless of LLM health.
+			return rejectionNarrator.Narrate(ctx, deterministic)
 		},
 	})
 	mcpHandler := mcp.NewHTTPServer(mcpServer)

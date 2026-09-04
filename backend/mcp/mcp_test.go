@@ -328,7 +328,7 @@ func testDeps() Dependencies {
 		Order:   order.NewService(nil),
 		Growth:  growth.NewGrowthAgent(catalogSvc, nil),
 		Policy:  nil,
-		Explain: func(a policy.ProposedAction, m policy.Mandate, check string) string {
+		Explain: func(_ context.Context, a policy.ProposedAction, m policy.Mandate, check string) string {
 			return policy.ExplainRejection(check, a, m, policy.DefaultConfig().Ceiling)
 		},
 	}

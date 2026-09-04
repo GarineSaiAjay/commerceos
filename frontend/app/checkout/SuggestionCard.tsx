@@ -101,12 +101,22 @@ export function SuggestionCard({
     const recommendation = snapshot.suggestion.recommendation;
     return (
       <div
-        className={`mt-4 animate-fade-in rounded-xl border border-indigo-200 bg-indigo-50 p-5 transition-opacity duration-150 ${exitClass}`}
+        className={`mt-4 animate-fade-in rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-white p-5 shadow-sm transition-opacity duration-150 ${exitClass}`}
       >
-        <p className="text-xs font-medium uppercase tracking-wide text-indigo-700">
-          Agent suggests
-        </p>
-        <p className="mt-1 font-semibold text-slate-900">
+        <div className="flex items-center gap-1.5">
+          <span
+            aria-hidden
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-white"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="h-3 w-3">
+              <path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z" />
+            </svg>
+          </span>
+          <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">
+            Agent suggests
+          </p>
+        </div>
+        <p className="mt-2 font-semibold text-slate-900">
           Add {product.title} -- {formatINR(product.price)}
         </p>
         {recommendation && (
@@ -116,14 +126,14 @@ export function SuggestionCard({
           <button
             onClick={onAccept}
             disabled={loading || phase === "leaving"}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-700 hover:shadow disabled:opacity-50 disabled:shadow-none"
           >
             Add to cart
           </button>
           <button
             onClick={onDismiss}
             disabled={phase === "leaving"}
-            className="rounded-lg border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+            className="rounded-lg border border-indigo-300 bg-white px-4 py-2 text-sm font-medium text-indigo-800 transition hover:bg-indigo-100 disabled:opacity-50"
           >
             No thanks
           </button>
@@ -135,20 +145,23 @@ export function SuggestionCard({
     if (snapshot.optimistic) {
       return (
         <div
-          className={`mt-4 animate-fade-in rounded-xl border border-dashed border-indigo-200 bg-indigo-50/60 p-5 transition-opacity duration-150 ${exitClass}`}
+          className={`mt-4 animate-fade-in rounded-2xl border border-indigo-100 bg-indigo-50 p-5 shadow-sm transition-opacity duration-150 ${exitClass}`}
         >
-          <p className="text-xs font-medium uppercase tracking-wide text-indigo-400">
-            Maybe
-          </p>
-          <p className="mt-1 font-medium text-slate-500">
-            {snapshot.optimistic.title} -- {formatINR(snapshot.optimistic.price.amount)}
+          <div className="flex items-center gap-2">
+            <span aria-hidden className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-indigo-400" />
+            <p className="text-xs font-semibold uppercase tracking-wide text-indigo-500">
+              Checking for a match
+            </p>
+          </div>
+          <p className="mt-2 font-medium text-slate-600">
+            Maybe {snapshot.optimistic.title} -- {formatINR(snapshot.optimistic.price.amount)}
           </p>
         </div>
       );
     }
     return (
       <div
-        className={`mt-4 animate-fade-in rounded-xl border border-indigo-200 bg-indigo-50 p-5 transition-opacity duration-150 ${exitClass}`}
+        className={`mt-4 animate-fade-in rounded-2xl border border-indigo-200 bg-indigo-50 p-5 shadow-sm transition-opacity duration-150 ${exitClass}`}
       >
         <Skeleton className="h-3 w-28" />
         <Skeleton className="mt-2 h-4 w-2/3" />
