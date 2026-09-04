@@ -361,7 +361,7 @@ export default function CheckoutFlow({
           quantity: 1,
         }),
       });
-      if (!res.ok) throw new Error("Failed to add item to cart");
+      if (!res.ok) throw new Error(await res.text());
 
       setCart(await fetch(`${API_BASE}/carts/${id}`).then((r) => r.json()));
       setStep("cart");

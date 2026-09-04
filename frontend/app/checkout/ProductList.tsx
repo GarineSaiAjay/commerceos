@@ -171,10 +171,10 @@ export function ProductList({
                   </div>
                   <button
                     onClick={() => onAddToCart(product, activeVariantId)}
-                    disabled={loading}
+                    disabled={loading || displayAvailability === 0}
                     className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50"
                   >
-                    Add to cart
+                    {displayAvailability === 0 ? "Out of stock" : "Add to cart"}
                   </button>
                 </div>
 
