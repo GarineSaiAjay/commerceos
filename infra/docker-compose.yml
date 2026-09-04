@@ -1,6 +1,9 @@
 # CommerceOS local stack.
-# Reads values from infra/.env (gitignored). Copy infra/.env.example to
-# infra/.env and fill in Razorpay keys + OpenRouter key.
+# Reads values from infra/.env (gitignored) via the backend service's
+# `env_file: .env` below -- resolved relative to this file's own
+# directory, so it works regardless of which directory `docker compose`
+# is invoked from. Copy infra/.env.example to infra/.env and fill in
+# Razorpay keys + OpenRouter key.
 
 services:
   postgres:
@@ -92,23 +95,43 @@ services:
     container_name: commerceos-backend
     restart: unless-stopped
 
+    # Loads infra/.env directly into this container's environment --
+    # relative to THIS compose file's own directory (infra/), not to
+    # whatever directory `docker compose` happens to be run from. This
+    # is deliberately NOT the same thing as the `${VAR}` interpolation
+    # used below for DATABASE_URL: that interpolation is resolved by
+    # Compose's *own* implicit ".env in the current working directory"
+    # lookup, which silently comes up empty when this stack is started
+    # with the README's own documented command
+    # (`docker compose -f infra/docker-compose.yml up -d --build`, run
+    # from the repo root) -- the repo root has no `.env`, only
+    # `.env.example`. That mismatch meant RAZORPAY_KEY_ID/SECRET and
+    # OPENROUTER_API_KEY/LLM_BASE_URL/LLM_MODEL previously reached this
+    # container as empty strings regardless of what infra/.env
+    # contained, and the backend silently fell back to no Razorpay
+    # config and to the deterministic (non-LLM) intent extractor with
+    # no log line or UI indicator that either had happened. `env_file`
+    # below fixes this for good, independent of invocation cwd. See
+    # files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md, Finding B.
+    env_file: .env
+
     environment:
-      # Postgres / Redis come from infra/.env; inside the compose network the
-      # hosts are the service names, not localhost.
+      # Postgres / Redis come from infra/.env (via env_file above);
+      # inside the compose network the hosts are the service names, not
+      # localhost, so DATABASE_URL/REDIS_ADDR are still built explicitly
+      # here rather than left to infra/.env's host-facing values.
       DATABASE_URL: postgres://${POSTGRES_USER:-commerceos}:${POSTGRES_PASSWORD:-commerceos_dev_password}@postgres:5432/${POSTGRES_DB:-commerceos}?sslmode=disable
       REDIS_ADDR: redis:6379
 
-      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
-      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
-      # Razorpay signs webhooks with its own webhook secret (may differ
-      # from the API Key Secret). Falls back to the key secret if unset.
-      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
-
-      # LLM provider (OpenAI-compatible, e.g. OpenRouter). When unset the
-      # backend falls back to the deterministic intent extractor.
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://openrouter.ai/api/v1}
-      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
+      # RAZORPAY_KEY_ID/SECRET, RAZORPAY_WEBHOOK_SECRET,
+      # OPENROUTER_API_KEY, LLM_BASE_URL, LLM_MODEL, and
+      # LLM_DAILY_BUDGET_USD deliberately do NOT appear here anymore --
+      # env_file above now loads them straight from infra/.env,
+      # guaranteed regardless of the cwd `docker compose` is invoked
+      # from. Re-adding any of them here with a `${VAR:-...}` fallback
+      # would silently reintroduce exactly the Finding B bug this fixes
+      # (an `environment:` entry always wins over env_file, even when
+      # its interpolated value is an empty string).
 
       API_GATEWAY_PORT: "8080"
       COMMERCE_PORT: "8081"
