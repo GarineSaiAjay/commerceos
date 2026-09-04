@@ -70,6 +70,20 @@ func (r *memRepo) GetByOrderID(ctx context.Context, orderID string) (Payment, er
 	return p, nil
 }
 
+// GetByProviderOrderID: full-codebase re-audit (P2) added this method
+// to the Repository interface (see repository.go's doc comment) --
+// memRepo has no separate index for it, so it linear-scans byOrder for
+// a matching ProviderOrderID, which is fine for this fake's tiny test
+// fixtures.
+func (r *memRepo) GetByProviderOrderID(ctx context.Context, providerOrderID string) (Payment, error) {
+	for _, p := range r.byOrder {
+		if p.ProviderOrderID == providerOrderID {
+			return p, nil
+		}
+	}
+	return Payment{}, ErrPaymentNotFound
+}
+
 func (r *memRepo) GetByIdempotencyKey(ctx context.Context, key string) (Payment, error) {
 	p, ok := r.byKey[key]
 	if !ok {
