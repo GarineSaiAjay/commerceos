@@ -614,8 +614,16 @@ func TestSuggestHandlerBoundsContextWithATimeout(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/growth/suggest", strings.NewReader(`{"cart_id":"cart_1"}`))
 	rec := httptest.NewRecorder()
+	// before/after bracket every instant at which Suggest could have
+	// called context.WithTimeout(r.Context(), suggestHandlerTimeout) --
+	// the deadline it produced must fall in [before+timeout,
+	// after+timeout] regardless of how long the call itself took, so
+	// this has no flaky margin to tune (an earlier version compared
+	// against `before` alone and was off by however long Suggest took
+	// to reach that line -- a few microseconds, but still a failure).
 	before := time.Now()
 	h.Suggest(rec, req)
+	after := time.Now()
 
 	if cr.capturedCtx == nil {
 		t.Fatal("expected GetCart to be called with a context")
@@ -624,8 +632,9 @@ func TestSuggestHandlerBoundsContextWithATimeout(t *testing.T) {
 	if !ok {
 		t.Fatal("expected Suggest to bind a deadline (suggestHandlerTimeout) onto the context it passes downstream, got none -- this is the exact gap that let a hung dependency block the request forever")
 	}
-	remaining := deadline.Sub(before)
-	if remaining <= 0 || remaining > suggestHandlerTimeout {
-		t.Fatalf("expected the deadline to fall within suggestHandlerTimeout (%s) of the request starting, got %s remaining", suggestHandlerTimeout, remaining)
+	earliest := before.Add(suggestHandlerTimeout)
+	latest := after.Add(suggestHandlerTimeout)
+	if deadline.Before(earliest) || deadline.After(latest) {
+		t.Fatalf("expected the deadline to be suggestHandlerTimeout (%s) after the request started, i.e. between %s and %s, got %s", suggestHandlerTimeout, earliest, latest, deadline)
 	}
 }
