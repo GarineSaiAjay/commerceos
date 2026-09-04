@@ -76,12 +76,52 @@ export function SuggestionCard({
   // render pass, since the snapshot is already current in the very
   // render that first shows it. Only the timed exit below needs a real
   // effect (a setTimeout is a genuine side effect).
-  if (visible !== prevVisible) {
-    setPrevVisible(visible);
-    if (visible) {
+  //
+  // Bug fixed here: this used to only refresh `snapshot` on the
+  // false->true edge of `visible` (inside an `if (visible !==
+  // prevVisible)` guard), on the assumption that content only ever
+  // changes together with visibility. It doesn't -- `visible` is
+  // `suggestionLoading || (suggestion?.available && suggestion.product)`,
+  // so the normal, entirely successful path (optimistic placeholder
+  // shown while loading, then the real POST /growth/suggest response
+  // comes back and IS available) has `visible` stay continuously true
+  // the whole time: true because suggestionLoading, then true again
+  // because suggestion.available, never dipping to false in between.
+  // The edge-triggered version above never saw a transition to fire
+  // on, so it kept rendering the stale first snapshot -- the
+  // non-interactive "Checking for a match" placeholder -- forever,
+  // even once the real, interactive suggestion had long since arrived.
+  // That's the exact "cross-sell card stuck on Checking for a match"
+  // bug reported against this card; the earlier suggestHandlerTimeout/
+  // AbortSignal.timeout change (fix/suggest-request-timeout) addressed
+  // a real but different risk (a hung request never resolving at all)
+  // and left this one -- a resolved request whose result the snapshot
+  // never picked up -- untouched.
+  //
+  // Fixed by keeping the snapshot current on every render for which
+  // `visible` is true, not just the edge into it, while still only
+  // touching state when something actually changed (the underlying
+  // props are stable references between unrelated re-renders, so this
+  // converges immediately rather than looping). The freeze this
+  // component depends on for its exit animation is unaffected: once
+  // `visible` goes false, this branch stops running entirely, so
+  // `snapshot` simply keeps whatever it last held -- the real
+  // suggestion, mid-fade-out -- exactly as before.
+  if (visible) {
+    if (
+      snapshot.suggestion !== suggestion ||
+      snapshot.suggestionLoading !== suggestionLoading ||
+      snapshot.optimistic !== optimistic
+    ) {
       setSnapshot({ suggestion, suggestionLoading, optimistic });
+    }
+    if (!prevVisible) {
+      setPrevVisible(true);
       setPhase("visible");
-    } else if (phase !== "hidden") {
+    }
+  } else if (prevVisible) {
+    setPrevVisible(false);
+    if (phase !== "hidden") {
       setPhase("leaving");
     }
   }
