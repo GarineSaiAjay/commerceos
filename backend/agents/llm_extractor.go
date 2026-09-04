@@ -233,6 +233,11 @@ func (e *LLMExtractor) Extract(ctx context.Context, prompt string) (Intent, erro
 	if err != nil {
 		return Intent{}, err
 	}
+	// Stamped here, not by ParseIntentJSON itself -- Source describes
+	// which CODE PATH answered (see Intent.Source's doc comment in
+	// intent.go), so it must come from this call site, never from the
+	// model's own JSON output.
+	intent.Source = sourceLLM
 	if intent.Clarify != "" {
 		// The parsed intent (including any partial fields the model DID
 		// supply alongside its clarify request, per ParseIntentJSON's

@@ -4,6 +4,34 @@ import type { AgentChatMessage, AlternativeProduct, CheckoutPlan, LoopStep, Sugg
 import { formatINR } from "./helpers";
 import { SuggestionCard } from "./SuggestionCard";
 
+// SourceBadge makes visible what was previously silent and identical
+// either way: whether a proposal came from a real LLM call or the
+// keyword-matching deterministic fallback (backend/agents/intent.go's
+// Intent.Source). Renders nothing for an unset/unrecognized source --
+// e.g. a cached response from before this field existed -- rather than
+// showing a broken or misleading badge. See
+// files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md, Finding C.
+function SourceBadge({ source }: { source?: string }) {
+  if (source === "llm") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700">
+        AI-reasoned
+      </span>
+    );
+  }
+  if (source === "deterministic") {
+    return (
+      <span
+        className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700"
+        title="The AI model wasn't available for this answer, so a rule-based keyword match was used instead."
+      >
+        Rule-based fallback
+      </span>
+    );
+  }
+  return null;
+}
+
 // "Ask the shopping agent" card at the top of the catalog screen --
 // conversational entry point over POST /agent/loop (falling back to
 // /agent/checkout). The agent only ever returns a proposal (a selected
@@ -162,9 +190,12 @@ export function AgentChatPanel({
 
                   {isLast && !isUser && agentPlan && (
                     <div className="mt-2 animate-fade-in rounded-lg border border-slate-300 bg-white p-4">
-                      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                        Agent proposes
-                      </p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Agent proposes
+                        </p>
+                        <SourceBadge source={agentPlan.intent?.source} />
+                      </div>
                       <p className="mt-1 text-sm text-slate-700">{agentPlan.reasoning}</p>
                       <div className="mt-3 flex gap-3">
                         <button

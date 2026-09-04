@@ -14,10 +14,32 @@ type Intent struct {
 	Priority  string `json:"priority"`
 	Recipient string `json:"recipient"`
 	Clarify   string `json:"clarify,omitempty"`
+	// Source identifies which extractor actually produced this Intent --
+	// "llm" or "deterministic". Set by the concrete extractors
+	// (DeterministicExtractor, LLMExtractor) themselves, never by
+	// ParseIntentJSON: it describes which CODE PATH answered, so it must
+	// never be something an LLM's own JSON output can claim to be. A
+	// wrapper (RacingExtractor, FallbackExtractor) just returns whichever
+	// concrete extractor's Intent it picked, unchanged, so this
+	// propagates automatically without those wrappers needing to know
+	// about it. Threaded through to the buyer-facing reasoning trail and
+	// API response so a judge (or the buyer) can tell whether an answer
+	// came from a real LLM call or the keyword-matching fallback --
+	// previously indistinguishable (files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md,
+	// Finding C).
+	Source string `json:"source,omitempty"`
 }
 
 // ErrAmbiguousIntent is returned when the prompt is too vague to act on.
 var ErrAmbiguousIntent = errors.New("ambiguous intent: clarification required")
+
+// Intent.Source values -- see Intent.Source's doc comment. Named
+// constants so DeterministicExtractor/LLMExtractor can't typo the string
+// two different ways.
+const (
+	sourceLLM           = "llm"
+	sourceDeterministic = "deterministic"
+)
 
 // ValidateIntent strictly validates the schema. Malformed output is
 // rejected before anything else touches it.

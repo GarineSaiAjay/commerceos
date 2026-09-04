@@ -315,8 +315,8 @@ func buildReasoningTrail(intent Intent, alternatives []AlternativeProduct, reaso
 	steps := []policy.RunStep{{
 		Stage: "intent_extracted",
 		Detail: fmt.Sprintf(
-			"category=%s budget=₹%d priority=%s recipient=%s",
-			orDash(intent.Category), intent.Budget, orDash(intent.Priority), orDash(intent.Recipient),
+			"category=%s budget=₹%d priority=%s recipient=%s source=%s",
+			orDash(intent.Category), intent.Budget, orDash(intent.Priority), orDash(intent.Recipient), orDash(intent.Source),
 		),
 		Timestamp: now,
 	}}
