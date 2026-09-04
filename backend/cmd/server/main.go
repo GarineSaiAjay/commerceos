@@ -276,6 +276,18 @@ func main() {
 	// in-memory/per-process and per-IP rather than something more
 	// sophisticated -- the plan's own framing for this item is "doesn't
 	// need to be sophisticated."
+	//
+	// TRUST_PROXY_HEADERS opts into trusting the caller-supplied
+	// X-Forwarded-For header for rate-limit keying -- see
+	// ratelimit.ClientIP's own doc comment for why this must default to
+	// false: this deployment (infra/docker-compose.yml) exposes the
+	// backend directly, with no reverse proxy in front of it to set or
+	// overwrite that header, so trusting it by default would let any
+	// caller bypass llmLimiter for free by sending a fresh value on
+	// every request. Only set this if commerceos is ever redeployed
+	// behind a real, trusted reverse proxy.
+	trustProxyHeaders := os.Getenv("TRUST_PROXY_HEADERS") == "true"
+	llmClientIP := ratelimit.ClientIP(trustProxyHeaders)
 	llmLimiter := ratelimit.NewLimiter(10, 1.0/6.0)
 	go func() {
 		// Sweep bounds llmLimiter's memory growth from the many distinct
@@ -1049,7 +1061,7 @@ func main() {
 	// its own comment for why.
 	commerceMux.Handle(
 		"/agent/checkout",
-		llmLimiter.Middleware(ratelimit.ClientIP, http.HandlerFunc(agentHandler.PlanCheckout)),
+		llmLimiter.Middleware(llmClientIP, http.HandlerFunc(agentHandler.PlanCheckout)),
 	)
 
 	// Item 18: bounded tool-calling agent loop -- a second, genuinely
@@ -1058,7 +1070,7 @@ func main() {
 	// money-moving tool.
 	commerceMux.Handle(
 		"/agent/loop",
-		llmLimiter.Middleware(ratelimit.ClientIP, http.HandlerFunc(agentHandler.PlanCheckoutLoop)),
+		llmLimiter.Middleware(llmClientIP, http.HandlerFunc(agentHandler.PlanCheckoutLoop)),
 	)
 
 	// Phase 5: growth agent

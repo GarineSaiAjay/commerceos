@@ -122,34 +122,47 @@ func (l *Limiter) Middleware(keyFunc func(*http.Request) string, next http.Handl
 	})
 }
 
-// ClientIP extracts the caller's IP for use as a rate-limit key,
-// preferring the leftmost X-Forwarded-For entry (the original client,
-// when this service sits behind a reverse proxy or load balancer -- a
-// public judging deployment plausibly does) and falling back to the
-// connection's own RemoteAddr.
+// ClientIP returns a rate-limit key function that identifies the caller
+// by IP, falling back to the connection's own RemoteAddr -- which the
+// caller cannot forge, since it comes from the TCP connection itself,
+// not from any header the client controls.
 //
-// X-Forwarded-For is caller-supplied and trivially spoofable by anyone
-// connecting directly rather than through a trusted proxy -- this
-// limiter's job is blunt cost control against casual/naive abuse of a
-// public URL with an unmetered path to a paid LLM API, not a hardened
-// defense against a determined attacker who rotates headers (or source
-// IPs, which per-IP limiting can't stop either). That's the plan's own
-// framing for this item: "a simple per-IP token bucket is sufficient;
-// doesn't need to be sophisticated" -- a floor against runaway API
-// cost, not a ceiling against a motivated adversary.
-func ClientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		if i := strings.IndexByte(fwd, ','); i >= 0 {
-			fwd = fwd[:i]
+// trustForwardedFor gates whether the leftmost X-Forwarded-For entry is
+// preferred over RemoteAddr when present. This must stay false unless
+// this service is deployed behind a reverse proxy or load balancer that
+// itself sets (and overwrites any client-supplied) X-Forwarded-For --
+// infra/docker-compose.yml runs the backend as a single directly-exposed
+// process with nothing in front of it to strip a forged header, so with
+// trustForwardedFor=true here *any* anonymous caller could put a fresh,
+// arbitrary value in X-Forwarded-For on every request and get a brand
+// new token bucket each time, for free -- a complete, zero-cost bypass
+// of the limiter rather than the "casual abuse" friction item 34 was
+// meant to add. That's a materially different (and worse) threat than
+// header/source-IP rotation by a determined attacker: spoofing a
+// header costs nothing, unlike obtaining genuinely different source
+// IPs, so it must never be enabled without a proxy actually in front
+// of this service to strip client-supplied X-Forwarded-For values.
+//
+// Set TRUST_PROXY_HEADERS=true (see main.go) only if this is ever
+// redeployed behind a real reverse proxy that can be trusted to set
+// X-Forwarded-For itself.
+func ClientIP(trustForwardedFor bool) func(*http.Request) string {
+	return func(r *http.Request) string {
+		if trustForwardedFor {
+			if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+				if i := strings.IndexByte(fwd, ','); i >= 0 {
+					fwd = fwd[:i]
+				}
+				if ip := strings.TrimSpace(fwd); ip != "" {
+					return ip
+				}
+			}
 		}
-		if ip := strings.TrimSpace(fwd); ip != "" {
-			return ip
-		}
-	}
 
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			return r.RemoteAddr
+		}
+		return host
 	}
-	return host
 }

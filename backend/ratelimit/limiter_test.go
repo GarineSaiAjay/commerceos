@@ -124,26 +124,49 @@ func TestMiddlewareBlocksExcessRequestsWith429(t *testing.T) {
 	}
 }
 
-// TestClientIPPrefersXForwardedFor proves ClientIP reads the leftmost
-// X-Forwarded-For entry (trimming surrounding whitespace) over
-// RemoteAddr when present.
-func TestClientIPPrefersXForwardedFor(t *testing.T) {
+// TestClientIPPrefersXForwardedForWhenTrusted proves ClientIP(true) reads
+// the leftmost X-Forwarded-For entry (trimming surrounding whitespace)
+// over RemoteAddr when present -- the opt-in behavior for a deployment
+// that sits behind a real, trusted reverse proxy.
+func TestClientIPPrefersXForwardedForWhenTrusted(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.1:54321"
 	req.Header.Set("X-Forwarded-For", " 203.0.113.7 , 10.0.0.2")
 
-	if got := ClientIP(req); got != "203.0.113.7" {
+	if got := ClientIP(true)(req); got != "203.0.113.7" {
 		t.Errorf("expected the leftmost, trimmed X-Forwarded-For entry 203.0.113.7, got %q", got)
 	}
 }
 
 // TestClientIPFallsBackToRemoteAddr proves ClientIP uses the connection's
-// own address (host only, port stripped) when X-Forwarded-For is absent.
+// own address (host only, port stripped) when X-Forwarded-For is absent,
+// regardless of trustForwardedFor.
 func TestClientIPFallsBackToRemoteAddr(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "198.51.100.9:12345"
 
-	if got := ClientIP(req); got != "198.51.100.9" {
+	if got := ClientIP(true)(req); got != "198.51.100.9" {
 		t.Errorf("expected RemoteAddr's host 198.51.100.9, got %q", got)
+	}
+	if got := ClientIP(false)(req); got != "198.51.100.9" {
+		t.Errorf("expected RemoteAddr's host 198.51.100.9, got %q", got)
+	}
+}
+
+// TestClientIPIgnoresXForwardedForByDefault is the regression test for
+// the P1 fix: with trustForwardedFor=false (this deployment's default,
+// since infra/docker-compose.yml exposes the backend directly with no
+// trusted reverse proxy in front of it), a caller-supplied
+// X-Forwarded-For header must be completely ignored -- otherwise any
+// anonymous caller could get a fresh rate-limit bucket on every request
+// for free, just by setting a new header value, defeating llmLimiter
+// entirely.
+func TestClientIPIgnoresXForwardedForByDefault(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+
+	if got := ClientIP(false)(req); got != "10.0.0.1" {
+		t.Errorf("expected X-Forwarded-For to be ignored and RemoteAddr's host 10.0.0.1 used, got %q", got)
 	}
 }
