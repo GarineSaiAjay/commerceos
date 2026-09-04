@@ -444,10 +444,10 @@ export default function CheckoutFlow({
   // or moves money itself; accepting the proposal below just calls the
   // same addToCart the manual catalog uses, so the normal cart/policy/
   // payment pipeline still runs unchanged either way.
-  async function askAgent() {
-    if (!agentPrompt.trim()) return;
+  async function askAgent(promptOverride?: string) {
+    const prompt = (promptOverride ?? agentPrompt).trim();
+    if (!prompt) return;
     markDemoMilestone("askedAgent");
-    const prompt = agentPrompt;
     setAgentHistory((h) => [...h, { role: "user", content: prompt }]);
     setAgentPrompt("");
     setAgentLoading(true);
@@ -489,7 +489,7 @@ export default function CheckoutFlow({
           errorMessage = "The assistant is temporarily unavailable -- you can browse the catalog manually below.";
         }
         setAgentError(errorMessage);
-        setAgentHistory((h) => [...h, { role: "assistant", content: errorMessage }]);
+        setAgentHistory((h) => [...h, { role: "assistant", content: errorMessage, isError: true }]);
         return;
       }
 
@@ -517,7 +517,7 @@ export default function CheckoutFlow({
     } catch {
       const errorMessage = "The assistant is temporarily unavailable -- you can browse the catalog manually below.";
       setAgentError(errorMessage);
-      setAgentHistory((h) => [...h, { role: "assistant", content: errorMessage }]);
+      setAgentHistory((h) => [...h, { role: "assistant", content: errorMessage, isError: true }]);
     } finally {
       setAgentLoading(false);
     }
