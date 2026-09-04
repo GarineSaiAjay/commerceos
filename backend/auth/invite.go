@@ -62,7 +62,7 @@ func (s *Service) InviteOperator(ctx context.Context, inviter Operator, email st
 		return "", Invite{}, getErr
 	}
 
-	id, err := newRandomID("invite_")
+	id, err := NewRandomID("invite_")
 	if err != nil {
 		return "", Invite{}, err
 	}
@@ -174,7 +174,7 @@ func (s *Service) AcceptInvite(ctx context.Context, token, password string) (ses
 		return "", Operator{}, err
 	}
 
-	operatorID, err := newRandomID("operator_")
+	operatorID, err := NewRandomID("operator_")
 	if err != nil {
 		return "", Operator{}, err
 	}
@@ -228,13 +228,17 @@ func generateInviteToken() (token string, tokenHash string, err error) {
 	return token, hashToken(token), nil
 }
 
-// newRandomID returns a short random id with prefix, using the same
+// NewRandomID returns a short random id with prefix, using the same
 // crypto/rand source as session/invite tokens. Not a secret itself --
 // just a unique identifier -- but this environment has no database
 // sequence or UUID library wired up for these two new tables, so a
 // random suffix (rather than, say, a counter) is what's available
-// without a new Go module.
-func newRandomID(prefix string) (string, error) {
+// without a new Go module. Exported (originally invite/operator-ID-only,
+// package-private) so backend/policy can use the same unguessable,
+// crypto/rand-backed generator for mandate IDs -- see its call site's
+// doc comment for why a predictable ID there is a real vulnerability,
+// not just a cosmetic one.
+func NewRandomID(prefix string) (string, error) {
 	raw := make([]byte, 12)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("generate id for %s: %w", prefix, err)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -52,6 +51,23 @@ type createMandateRequest struct {
 
 // CreateMandate creates the explicit consent record used by the policy
 // chokepoint. Amounts are always paise.
+//
+// This endpoint has no caller authentication -- deliberately, for now:
+// this codebase has no buyer-account/session model at all (buyer is a
+// free-text field the checkout flow supplies itself, see
+// frontend/app/checkout/usePaymentFlow.ts), so there is no identity to
+// check a bearer credential against without a much larger, out-of-scope
+// architecture change. What *is* in scope, and was the real
+// vulnerability here: a mandate's ID doubles as its only access
+// control -- request_authorization/propose accept any caller who
+// supplies a valid, unexpired mandate_id, and mint an Authorization
+// against it up to its maximum_amount. Before this fix, that ID was
+// `mandate_<UnixNano>` -- a predictable, narrow-entropy timestamp an
+// attacker could enumerate/guess (especially near a known creation
+// time) to hijack someone else's mandate and spend against their
+// consent. Generating it with auth.NewRandomID instead (crypto/rand,
+// 96 bits) makes the ID itself an effectively unguessable capability
+// token, which is the actual security boundary this endpoint has.
 func (h *Handler) CreateMandate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -75,8 +91,13 @@ func (h *Handler) CreateMandate(w http.ResponseWriter, r *http.Request) {
 		}
 		expiresAt = parsed
 	}
+	mandateID, err := auth.NewRandomID("mandate_")
+	if err != nil {
+		http.Error(w, "failed to generate mandate id", http.StatusInternalServerError)
+		return
+	}
 	mandate := Mandate{
-		ID: fmt.Sprintf("mandate_%d", time.Now().UnixNano()), Buyer: req.Buyer,
+		ID: mandateID, Buyer: req.Buyer,
 		Merchant: req.Merchant, AllowedCategories: req.AllowedCategories,
 		MaximumAmount: req.MaximumAmount, Currency: req.Currency,
 		RequiresConfirmationAbove: req.RequiresConfirmationAbove,
