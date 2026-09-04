@@ -738,4 +738,3 @@ func TestCheckoutCartDecrementsVariantIndependently(t *testing.T) {
 		t.Fatalf("checkout of still-in-stock sibling variant B should succeed, got: %v", err)
 	}
 }
-
