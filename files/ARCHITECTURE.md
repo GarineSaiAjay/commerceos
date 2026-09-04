@@ -378,6 +378,8 @@ sequenceDiagram
     participant Worker as OutboxWorker
     participant Streams as Redis Streams
     participant Consumer as growth.CartEventConsumer
+    participant Logger as events.StreamConsumer
+    participant EventLog as event_log (Postgres)
 
     Buyer->>PaymentH: POST /orders/{id}/payment
     PaymentH->>Razorpay: CreatePaymentOrder
@@ -391,6 +393,8 @@ sequenceDiagram
     Worker->>Outbox: poll
     Worker->>Streams: publish to "commerceos" stream
     Streams->>Consumer: growth-suggestions-group<br/>(precomputes cross-sell off cart.item_added)
+    Streams->>Logger: commerceos-group<br/>(every event, any type)
+    Logger->>EventLog: persist (idempotent on stream_message_id)
 ```
 
 The outbox pattern (write the event in the same DB transaction as the
@@ -417,7 +421,7 @@ by bounded context:
 | Agent memory | agent_conversations, agent_plans |
 | Reviews | reviews |
 | Auth | operators, operator_invites |
-| Events | outbox_events |
+| Events | outbox_events, event_log (durable copy of every event on the Redis Streams bus, added 2026-09-04 -- see §10) |
 | Safety | safety attack/evaluation tables |
 
 **Redis 8** — two independent uses of the same instance: (1) an 8-second
