@@ -110,8 +110,27 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      # -p 1 serializes test execution across packages. Nothing in this
+      # suite is designed for cross-package concurrency -- almost every
+      # package integration-tests against the SAME live dev Postgres
+      # (this job's postgres service, no per-test schema isolation), and
+      # several packages (analytics, commerce/order, commerce/review,
+      # among others) insert/delete rows in shared tables like products
+      # as part of their own setup/cleanup. No test anywhere calls
+      # t.Parallel(), so within one package tests already run strictly
+      # sequentially -- but go test's default -p (GOMAXPROCS) runs
+      # DIFFERENT packages' test binaries concurrently, which let one
+      # package's transient product-table churn land mid-assertion in
+      # another's (observed directly: analytics/experiment_test.go's
+      # TestExperimentReproducible calls the live catalog twice
+      # expecting an unchanged product set between the two calls, and
+      # failed reproducibly -- same two lift values on repeated runs,
+      # not intermittently -- once another package's test happened to
+      # mutate products in between). -p 1 costs some wall-clock time but
+      # removes this whole class of cross-package race outright, rather
+      # than papering over one instance of it.
       - name: Run tests
-        run: go test ./...
+        run: go test -p 1 ./...
 
   frontend:
     name: Frontend
