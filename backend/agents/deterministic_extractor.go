@@ -120,7 +120,17 @@ func parseInt(s string) int {
 
 func parseCategory(lower string) string {
 	switch {
-	case strings.Contains(lower, "laptop"):
+	// "laptop" category had zero real products until the 100-product
+	// catalog expansion added MacBook/laptop accessories (sleeves,
+	// stands, hubs, Magic Keyboard/Mouse/Trackpad, docking stations,
+	// external SSDs, webcams, ...) -- these extra keywords are what a
+	// buyer naturally types instead of the literal word "laptop" itself,
+	// same reasoning as the earbuds brand-name case further below.
+	case strings.Contains(lower, "laptop") || strings.Contains(lower, "macbook") ||
+		strings.Contains(lower, "magic keyboard") || strings.Contains(lower, "magic mouse") ||
+		strings.Contains(lower, "trackpad") || strings.Contains(lower, "docking station") ||
+		strings.Contains(lower, "external ssd") || strings.Contains(lower, "webcam") ||
+		strings.Contains(lower, "usb-c hub") || strings.Contains(lower, "usb c hub"):
 		return "laptop"
 	// "charging" is a real use_cases tag on wireless-charging-pad,
 	// magsafe-charger, and lightning-usbc-cable (db/seeds/001_catalog.sql)

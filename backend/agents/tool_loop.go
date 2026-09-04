@@ -140,10 +140,11 @@ func (a *ToolCallingAgent) WithCostGuard(g *CostGuard) *ToolCallingAgent {
 // loopSystemPrompt instructs the model on the tool palette and the two
 // valid ways to end a turn: propose_checkout, or a plain-text
 // clarifying question. The catalog this shops against
-// (db/seeds/001_catalog.sql) is Apple/Beats audio accessories plus
-// AirTag trackers -- same staleness caveat as llm_extractor.go's
+// (db/seeds/001_catalog.sql) is Apple/Beats audio accessories, AirTag
+// trackers, and -- since the 100-product catalog expansion -- MacBook/
+// laptop accessories too -- same staleness caveat as llm_extractor.go's
 // intentSystemPrompt (kept in sync by hand).
-const loopSystemPrompt = `You are a shopping assistant for an Indian e-commerce catalog of Apple/Beats audio accessories and AirTag trackers (earbuds, chargers, cases, AirTags).
+const loopSystemPrompt = `You are a shopping assistant for an Indian e-commerce catalog of Apple/Beats audio accessories, AirTag trackers, and MacBook/laptop accessories (earbuds, chargers, cases, AirTags, laptop stands/sleeves/keyboards/hubs).
 
 Use the available tools to find the right product for the buyer's request:
 - search_products: browse/filter the catalog by budget (rupees), category, and priority.

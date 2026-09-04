@@ -90,10 +90,15 @@ func NewLLMExtractorFromEnv() *LLMExtractor {
 // emit JSON matching Intent; ambiguous input must set "clarify".
 //
 // The catalog this shops against (db/seeds/001_catalog.sql) is Apple/Beats
-// audio accessories plus AirTag trackers -- the category list and examples
-// below must be kept in sync with it by hand (same staleness risk already
-// hit three times elsewhere in this codebase for hardcoded product/category
-// lists: growth/simulator.go, policy/model.go, campaign/model.go). Without
+// audio accessories, AirTag trackers, and -- since the 100-product catalog
+// expansion -- MacBook/laptop accessories too (Magic Keyboard, laptop
+// stands, sleeves, hubs, chargers, ...), which is what finally gives the
+// long-declared "laptop" category real products to match against; before
+// the expansion it was a valid enum value that could never actually score
+// a hit. The category list and examples below must be kept in sync with
+// the catalog by hand (same staleness risk already hit three times
+// elsewhere in this codebase for hardcoded product/category lists:
+// growth/simulator.go, policy/model.go, campaign/model.go). Without
 // "charging"/"tracking" listed here, and without the product-name examples,
 // a real request like "beats fit pro for my sister, budget below 30k" was
 // coming back with category "" -- the model had nowhere valid to put a
@@ -109,10 +114,14 @@ Respond with ONLY a JSON object matching exactly this schema:
 - category: one of "earbuds", "laptop", "charging", "accessories",
   "tracking", or "" if unknown. Buyers name specific products, not
   categories -- map the product to its category yourself:
-  "AirPods" (any generation), "AirPods Pro", "AirPods Max", or "Beats Fit
-  Pro" -> "earbuds"; "AirTag" -> "tracking"; a charger, charging pad,
-  MagSafe charger, or Lightning/USB-C cable -> "charging"; a case,
-  AppleCare, an adapter, or ear tips -> "accessories".
+  "AirPods" (any generation), "AirPods Pro", "AirPods Max", "Beats" (any
+  model), or "EarPods" -> "earbuds"; "AirTag" (any variant) -> "tracking";
+  a charger, power adapter, power bank, charging pad/stand, or
+  Lightning/USB-C cable -> "charging"; a case, AppleCare, an adapter, ear
+  tips, cleaning kit, or gift wrap -> "accessories"; a MacBook sleeve,
+  laptop stand, laptop backpack, Magic Keyboard/Mouse/Trackpad, USB-C
+  hub, docking station, external SSD, webcam, or laptop cooling pad ->
+  "laptop".
 - priority: a feature priority like "active_noise_cancellation", "battery_life", or "".
 - recipient: "sister", "brother", or "". Casual shorthand still counts --
   "bro"/"brotha" -> "brother", "sis" -> "sister". Anyone else (mom, dad,
