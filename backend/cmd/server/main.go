@@ -731,11 +731,18 @@ func main() {
 		}
 	}()
 
-	// Placeholder stream consumer proving the event bus is wired.
+	// General-purpose event-log consumer: persists every event on the
+	// shared stream to Postgres (event_log table) instead of only ever
+	// logging it to stdout -- see events.StreamConsumer's own doc
+	// comment for why that's the real, still-missing piece here rather
+	// than a stream-driven Analytics/Notification/Audit consumer
+	// (audit_events and analytics.Service already cover those directly,
+	// with no stream in between).
 	streamConsumer := events.NewStreamConsumer(
 		redisClient,
 		events.DefaultStream,
 		"commerceos-group",
+		events.NewPostgresEventLogWriter(dbPool),
 	)
 
 	go func() {

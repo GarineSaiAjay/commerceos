@@ -21,12 +21,11 @@ import (
 // stretch goal, explicitly not required for §1-§6's fix.
 //
 // It reads "cart.item_added" events off the same Redis Stream
-// events.StreamConsumer already proves is wired end to end, as a
-// SEPARATE consumer group ("growth-suggestions-group" in main.go) --
-// Redis Streams delivers every message to every group independently,
-// so this doesn't compete with, replace, or change that placeholder
-// consumer's own log-and-ack behavior at all; both simply see the same
-// stream.
+// events.StreamConsumer already persists to event_log, as a SEPARATE
+// consumer group ("growth-suggestions-group" in main.go) -- Redis
+// Streams delivers every message to every group independently, so this
+// doesn't compete with, replace, or change events.StreamConsumer's own
+// persist-and-ack behavior at all; both simply see the same stream.
 //
 // On each cart.item_added, it precomputes the same cart-based
 // cross-sell recommendation POST /growth/suggest would compute on
@@ -82,12 +81,12 @@ func NewCartEventConsumer(
 
 // Run mirrors events.StreamConsumer.Run's polling loop (same
 // consumer-group-per-consumer shape, same 500ms/200ms cadence) --
-// duplicated rather than shared because the two consumers do genuinely
-// different jobs (log-and-ack vs. compute-and-persist), and forcing
-// both through one generic "handler function" abstraction would cost
-// more clarity than the ~15 duplicated lines are worth at this
-// codebase's size. See events/stream_consumer.go's own Run for the
-// original.
+// duplicated rather than shared because the two consumers persist
+// genuinely different things (a raw event-log row vs. a scored cross-
+// sell recommendation), and forcing both through one generic "handler
+// function" abstraction would cost more clarity than the ~15
+// duplicated lines are worth at this codebase's size. See
+// events/stream_consumer.go's own Run for the original.
 func (c *CartEventConsumer) Run(ctx context.Context) error {
 	// Ignore the AlreadyExists error on every run after the first --
 	// same as events.StreamConsumer.Run.
