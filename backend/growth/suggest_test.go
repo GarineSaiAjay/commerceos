@@ -232,17 +232,17 @@ func TestBestCandidateWeighsCompatibilityOverGenericTags(t *testing.T) {
 	// would produce for [applecare, applecare-airpods].
 	signals := map[string]bool{
 		"extended_warranty": true, "technical_support": true, // shared warranty features
-		"apple_devices": true, // generic AppleCare's own compatibility
+		"apple_devices": true,                                         // generic AppleCare's own compatibility
 		"airpods_pro_2": true, "airpods_3": true, "airpods_max": true, // AppleCare+ for AirPods' compatibility
 		"accessories": true, "protection": true, "support": true, // shared warranty use_cases
 	}
 
 	irrelevantWarranty := catalog.Product{
-		ID:           "warranty-macbook",
-		Title:        "warranty-macbook",
-		Price:        catalog.Money{Amount: 990000, Currency: "INR"},
-		Availability: 40,
-		Features:     []string{"extended_warranty", "technical_support"},
+		ID:            "warranty-macbook",
+		Title:         "warranty-macbook",
+		Price:         catalog.Money{Amount: 990000, Currency: "INR"},
+		Availability:  40,
+		Features:      []string{"extended_warranty", "technical_support"},
 		Compatibility: []string{"macbook"}, // does NOT overlap the signal set at all
 		UseCases:      []string{"accessories", "laptop", "protection", "support"},
 		Merchant:      catalog.MerchantRef{ID: "m1"},
