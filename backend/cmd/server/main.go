@@ -242,6 +242,21 @@ func main() {
 	// either way, it just has nowhere durable to log a trip until then.
 	costGuard := agents.NewCostGuardFromEnv()
 
+	// rejectionNarrator is idea #4 of files/agent-ai-integration-ideas.md
+	// (LLM-Narrated Rejection Explanations) -- an optional rephrasing
+	// pass over policy.ExplainRejection's deterministic sentence, wired
+	// into the explain_decision MCP tool below. Shares costGuard with
+	// llmExtractor/toolLoopAgent for the same reason they share it with
+	// each other (see CostGuard's own doc comment): all three use the
+	// same OPENROUTER_API_KEY, so one daily budget has to cover all of
+	// them or combined spend could run to multiples of the configured
+	// budget before any one call site noticed. A nil rejectionNarrator
+	// (no OPENROUTER_API_KEY) is a fully supported no-op -- see
+	// RejectionNarrator.Narrate's own nil-receiver handling -- so
+	// explain_decision keeps returning exactly today's deterministic
+	// sentence with zero LLM configuration, unchanged.
+	rejectionNarrator := agents.NewRejectionNarratorFromEnv().WithCostGuard(costGuard)
+
 	llmExtractor := agents.NewLLMExtractorFromEnv().WithCostGuard(costGuard)
 	deterministicExtractor := agents.NewDeterministicExtractor()
 
@@ -545,13 +560,18 @@ func main() {
 		Payment: paymentService,
 		Policy:  policyService,
 		Growth:  growthAgent,
-		Explain: func(a policy.ProposedAction, m policy.Mandate, check string) string {
+		Explain: func(ctx context.Context, a policy.ProposedAction, m policy.Mandate, check string) string {
 			// policyEngine.Config().Ceiling, not policyConfig.Ceiling: the
 			// latter is a one-time snapshot taken at startup, which item 25
 			// (P2, PLAN-05-SELLER-DASHBOARD.md §4) made stale the moment the
 			// ceiling became operator-editable at runtime via
 			// /dashboard/settings/policy.
-			return policy.ExplainRejection(check, a, m, policyEngine.Config().Ceiling)
+			deterministic := policy.ExplainRejection(check, a, m, policyEngine.Config().Ceiling)
+			// Narrate is nil-receiver-safe and has its own 3.5s race
+			// window/fallback discipline -- this always returns SOME
+			// explanation, at worst the unmodified deterministic one, and
+			// never blocks longer than that window regardless of LLM health.
+			return rejectionNarrator.Narrate(ctx, deterministic)
 		},
 	})
 	mcpHandler := mcp.NewHTTPServer(mcpServer)
