@@ -45,11 +45,42 @@ func ParseExclusions(prompt string) []string {
 	out := make([]string, 0, len(matches))
 	for _, m := range matches {
 		phrase := strings.TrimSpace(m[1])
+		phrase = trimTrailingFiller(phrase)
 		if phrase != "" {
 			out = append(out, phrase)
 		}
 	}
 	return out
+}
+
+// trailingFillerWords are conversational words that sometimes follow a
+// "not X" correction ("not the strap please", "not the case thanks") --
+// part of the buyer's sentence, but not part of the product phrase
+// being excluded. notPattern's capture group is unbounded at the end of
+// the prompt (it stops at sentence punctuation OR end-of-string, and a
+// trailing filler word has neither after it), so without this trim
+// "not the anti-lost strap please" would capture "anti-lost strap
+// please" as the excluded phrase instead of "anti-lost strap".
+var trailingFillerWords = map[string]bool{
+	"please": true,
+	"thanks": true,
+	"thank":  true,
+	"you":    true,
+	"ok":     true,
+	"okay":   true,
+}
+
+// trimTrailingFiller removes trailing filler words (see
+// trailingFillerWords) from phrase one at a time, stopping once a
+// single word remains so a phrase that is nothing but filler ("not
+// please") is never trimmed down to empty.
+func trimTrailingFiller(phrase string) string {
+	words := strings.Fields(phrase)
+	end := len(words)
+	for end > 1 && trailingFillerWords[strings.ToLower(strings.Trim(words[end-1], ".,!?;:()\"'"))] {
+		end--
+	}
+	return strings.Join(words[:end], " ")
 }
 
 // ExtractTerms pulls the buyer's own significant words out of the raw
