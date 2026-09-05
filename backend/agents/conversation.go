@@ -88,6 +88,22 @@ func mergeIntent(prev Intent, next Intent) Intent {
 		merged.Source = next.Source
 	}
 
+	// Exclude and Terms merge by UNION across turns rather than "next
+	// wins" like the four fields above. An explicit correction ("not
+	// the strap") must stay excluded for the rest of the conversation
+	// even if a later follow-up doesn't repeat it -- a buyer who
+	// corrects the agent once shouldn't have to keep repeating the
+	// correction on every subsequent turn. Terms is a purely additive
+	// grounding signal (see tools/search.go's accessoryQualifiers) that
+	// only ever helps the buyer's own literal words carry weight in
+	// ranking, never less, so accumulating it across turns is safe by
+	// construction -- unlike Category/Priority/Budget, there's no
+	// "stale value from three turns ago actively misleads this answer"
+	// failure mode for a word merely being remembered as something the
+	// buyer once said.
+	merged.Exclude = mergeUnique(prev.Exclude, next.Exclude)
+	merged.Terms = mergeUnique(prev.Terms, next.Terms)
+
 	// Clarify is never part of merged state -- it is a per-turn signal
 	// from the extractor, not something to carry forward or persist.
 	merged.Clarify = ""
@@ -112,5 +128,15 @@ func mergeIntent(prev Intent, next Intent) Intent {
 // admitting it wasn't understood (see
 // files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md, Finding A).
 func hasSignal(i Intent) bool {
-	return i.Budget > 0 || i.Category != "" || i.Priority != "" || i.Recipient != ""
+	// Terms is deliberately NOT checked here even though BuyerAgent sets
+	// it on every turn including totally-unparseable ones -- ExtractTerms
+	// pulls whatever significant words exist in ANY prompt, so including
+	// it would make hasSignal true for literally everything (e.g. "i want
+	// a pair of shoes" has Terms ["pair","shoes"]) and
+	// silently resurrect the exact stale-intent bug this function exists
+	// to prevent (files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md, Finding A).
+	// Exclude, by contrast, only gets set when the buyer used an explicit
+	// "not X" correction, which is exactly the kind of real, on-topic
+	// signal this function is meant to recognize.
+	return i.Budget > 0 || i.Category != "" || i.Priority != "" || i.Recipient != "" || len(i.Exclude) > 0
 }

@@ -98,6 +98,13 @@ func (a *BuyerAgent) PlanCheckout(
 		return CheckoutPlan{}, err
 	}
 
+	// Stamped from the raw prompt regardless of which extractor answered
+	// -- see Intent.Exclude/Intent.Terms's doc comments in intent.go for
+	// why this lives here rather than inside DeterministicExtractor or
+	// LLMExtractor themselves.
+	intent.Exclude = ParseExclusions(prompt)
+	intent.Terms = ExtractTerms(prompt)
+
 	// Ambiguous intent → safe no-op (clarification), never a guess.
 	if intent.Clarify != "" {
 		return CheckoutPlan{}, ErrAmbiguousIntent
@@ -149,6 +156,14 @@ func (a *BuyerAgent) PlanCheckoutInConversation(
 	if err != nil && !errors.Is(err, ErrAmbiguousIntent) {
 		return CheckoutPlan{}, err
 	}
+
+	// Same stamping as PlanCheckout above, done before hasSignal/
+	// mergeIntent below ever look at newIntent so an explicit "not X"
+	// correction with no other recognizable field (e.g. a bare "no, not
+	// that one") still counts as on-topic signal worth merging -- see
+	// hasSignal's updated doc comment in conversation.go.
+	newIntent.Exclude = ParseExclusions(prompt)
+	newIntent.Terms = ExtractTerms(prompt)
 
 	prevIntent, hadPrev, histErr := a.conversations.LastKnownIntent(ctx, cartID)
 	if histErr != nil {
@@ -241,13 +256,16 @@ func (a *BuyerAgent) recordAssistantTurn(ctx context.Context, cartID, content st
 func (a *BuyerAgent) planFromIntent(ctx context.Context, intent Intent, merchant string) (CheckoutPlan, error) {
 	// Search's parameter is tools.SearchFilter, not agents.Intent (see
 	// backend/agents/search.go's doc comment) -- Intent's Clarify field
-	// has no meaning to a search, so this only ever carries the four
-	// fields the two types actually share.
+	// has no meaning to a search, so this only ever carries the fields
+	// the two types actually share (everything on Intent except Clarify
+	// and Source).
 	results, err := a.searcher.Search(ctx, tools.SearchFilter{
 		Budget:    intent.Budget,
 		Category:  intent.Category,
 		Priority:  intent.Priority,
 		Recipient: intent.Recipient,
+		Exclude:   intent.Exclude,
+		Terms:     intent.Terms,
 	})
 	if err != nil {
 		return CheckoutPlan{}, err
@@ -306,6 +324,17 @@ func (a *BuyerAgent) planFromIntent(ctx context.Context, intent Intent, merchant
 		)
 	}
 
+	// Surfaces every honored "not X" correction right in the sentence
+	// the buyer reads, not just in the audit trail below -- a buyer who
+	// just corrected the agent needs to see that correction actually
+	// landed, not silently trust that it did. This is also what makes
+	// the fix demoable: it's the visible difference between "picked the
+	// same wrong thing again" and "picked the right thing, and told you
+	// why."
+	if len(intent.Exclude) > 0 {
+		reasoning += fmt.Sprintf(" (Excluded as requested: %s.)", strings.Join(intent.Exclude, "; "))
+	}
+
 	return CheckoutPlan{
 		Intent:         intent,
 		Proposal:       proposal,
@@ -329,12 +358,17 @@ func (a *BuyerAgent) planFromIntent(ctx context.Context, intent Intent, merchant
 func buildReasoningTrail(intent Intent, alternatives []AlternativeProduct, reasoning string) []policy.RunStep {
 	now := time.Now()
 
+	intentDetail := fmt.Sprintf(
+		"category=%s budget=₹%d priority=%s recipient=%s source=%s",
+		orDash(intent.Category), intent.Budget, orDash(intent.Priority), orDash(intent.Recipient), orDash(intent.Source),
+	)
+	if len(intent.Exclude) > 0 {
+		intentDetail += " excluded=" + strings.Join(intent.Exclude, "; ")
+	}
+
 	steps := []policy.RunStep{{
-		Stage: "intent_extracted",
-		Detail: fmt.Sprintf(
-			"category=%s budget=₹%d priority=%s recipient=%s source=%s",
-			orDash(intent.Category), intent.Budget, orDash(intent.Priority), orDash(intent.Recipient), orDash(intent.Source),
-		),
+		Stage:     "intent_extracted",
+		Detail:    intentDetail,
 		Timestamp: now,
 	}}
 
