@@ -14,6 +14,30 @@ type Intent struct {
 	Priority  string `json:"priority"`
 	Recipient string `json:"recipient"`
 	Clarify   string `json:"clarify,omitempty"`
+	// Exclude holds literal phrases the buyer explicitly ruled out --
+	// "not X" / "not the X" -- e.g. "i want a airtag not airtag anti
+	// lost strap" excludes "airtag anti lost strap". Populated by
+	// BuyerAgent (ParseExclusions, prompt_signals.go) from the RAW
+	// prompt after extraction, not by DeterministicExtractor or
+	// LLMExtractor themselves: negation is a catalog-agnostic text
+	// operation on the buyer's own words, the same for every extractor,
+	// so it deliberately isn't part of rawIntent's JSON schema. Consumed
+	// as a hard filter by tools.SearchFilter.Exclude -- an excluded
+	// product is removed from candidates entirely, never merely
+	// down-ranked, because an explicit correction must always win over
+	// whatever the soft category/priority signals alone would pick.
+	Exclude []string `json:"exclude,omitempty"`
+	// Terms holds the buyer's own significant words from the raw prompt
+	// (ExtractTerms, prompt_signals.go), also stamped by BuyerAgent for
+	// the same reason as Exclude above. Consumed as a soft grounding
+	// signal by tools.SearchFilter.Terms -- see accessoryQualifiers'
+	// doc comment in tools/search.go for what it's for: telling an
+	// accessory FOR a product (a case, a strap) apart from the product
+	// itself, which bare category/use_cases matching alone cannot do
+	// (both are tagged the same category, and the accessory is
+	// typically cheaper, so price-proximity scoring always preferred it
+	// over the product every buyer actually meant).
+	Terms []string `json:"terms,omitempty"`
 	// Source identifies which extractor actually produced this Intent --
 	// "llm" or "deterministic". Set by the concrete extractors
 	// (DeterministicExtractor, LLMExtractor) themselves, never by

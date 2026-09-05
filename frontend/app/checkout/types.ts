@@ -200,6 +200,16 @@ export interface Intent {
   // broken one. See backend/agents/intent.go's Intent.Source doc
   // comment and files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md, Finding C.
   source?: string;
+  // Phrases the buyer explicitly ruled out this turn ("not the anti-lost
+  // strap") and the buyer's own significant words from the prompt, used
+  // server-side to hard-exclude and to tell an accessory apart from the
+  // product it's for (backend/agents/intent.go's Intent.Exclude/Intent.Terms
+  // doc comments; backend/tools/search.go's accessoryQualifiers). Not
+  // separately rendered here -- already surfaced in `reasoning` as
+  // "(Excluded as requested: ...)" when non-empty, same reasoning as
+  // reasoning_trail not duplicating what Reasoning already told the buyer.
+  exclude?: string[];
+  terms?: string[];
 }
 
 export interface AlternativeProduct {
