@@ -32,12 +32,12 @@ coverage.html
 # gap audits, phased build plans, the pre-build vision doc) -- useful
 # during the build, not meant to ship in the judged submission. The
 # curated, judge-facing doc set is what README.md's own "Docs" section
-# links to (files/AUTH.md, GIT-WORKFLOW.md, agent-commerce-contract.md,
-# trust-boundary.md, pitch-one-pager.md, demo-script.md); none of those
-# are affected. Note: dozens of code comments across backend/ and
-# frontend/ still cite these filenames (e.g. "PLAN-05-SELLER-DASHBOARD.md
-# §4") as internal design notes -- those citations are now unresolvable
-# from inside the repo, a deliberate tradeoff for a cleaner file tree.
+# links to (files/AUTH.md, agent-commerce-contract.md, trust-boundary.md,
+# pitch-one-pager.md, demo-script.md); none of those are affected. Note:
+# dozens of code comments across backend/ and frontend/ still cite these
+# filenames (e.g. "PLAN-05-SELLER-DASHBOARD.md §4") as internal design
+# notes -- those citations are now unresolvable from inside the repo, a
+# deliberate tradeoff for a cleaner file tree.
 files/BUGS.md
 files/AUDIT-2026-08-29.md
 files/REALITY-CHECK-2026-08-30.md
@@ -50,3 +50,17 @@ files/PLAN-03-PROACTIVE-GROWTH-AGENT.md
 files/PLAN-04-UI-UX-AND-LATENCY.md
 files/PLAN-05-SELLER-DASHBOARD.md
 files/PLAN-06-ADDITIONAL-OPPORTUNITIES.md
+
+# Same rationale as above, added later: GIT-WORKFLOW.md documents this
+# repo's own internal branch/commit/PR process -- accurate and useful for
+# working on this project, but reads as process scaffolding rather than
+# submission material, so it moved from the judge-facing set into this
+# internal-only list. agent-ai-integration-ideas.md is a brainstorm of
+# 10 candidate agent/AI features graded against the real codebase, not a
+# claim that all 10 are built -- also internal-only. Both stay on disk
+# locally (git rm --cached, not rm); the ~7 code comments citing
+# agent-ai-integration-ideas.md by name (e.g. "idea #4 of files/
+# agent-ai-integration-ideas.md") become unresolvable-from-outside
+# citations, the same accepted tradeoff as the PLAN docs above.
+files/GIT-WORKFLOW.md
+files/agent-ai-integration-ideas.md

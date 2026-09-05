@@ -148,7 +148,6 @@ directory's own README before running it.
 ## Docs
 
 - `files/AUTH.md` — operator auth: demo credentials, what's gated vs. guest-accessible, and the PBKDF2 trade-off.
-- `files/GIT-WORKFLOW.md` — branching, commit, and PR conventions for this repo.
 - `files/agent-commerce-contract.md` — the agent API contract.
 - `files/trust-boundary.md` — the untrusted → trusted data flow and what re-validates each input.
 - `files/pitch-one-pager.md` — the one-page pitch.
