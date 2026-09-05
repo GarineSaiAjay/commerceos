@@ -9,7 +9,9 @@ this project's own culture (see `backend/orchestrator/README.md`,
 paper over them, and this doc follows the same rule.
 
 Every diagram below is Mermaid, so it renders directly on GitHub and in any
-Mermaid-aware Markdown viewer.
+Mermaid-aware Markdown viewer. Diagram nodes are deliberately kept short
+(a title plus at most one short clarifier line) — the full explanation
+always lives in the prose around the diagram, never crammed into a box.
 
 ---
 
@@ -19,9 +21,9 @@ One Go binary (`backend/cmd/server/main.go`), one Postgres database, one
 Redis instance, one Next.js frontend. The binary listens on four ports
 (`8080`–`8083`) that were originally meant to be four separate services —
 API Gateway, Commerce, Agent API, Dashboard API — but today three of those
-four muxes are near-empty stubs and **every real route lives on the
-Commerce Service, port 8081**. This is a documented, deliberate choice, not
-an oversight:
+four muxes only ever answer their own health check, and **every real route
+lives on the Commerce Service, port 8081**. This is a documented,
+deliberate choice, not an oversight:
 
 > "collapsing four network hops into one process for a prototype this size
 > is a feature, not a gap — splitting them now would be exactly the 'seven
@@ -32,53 +34,62 @@ So: **CommerceOS is a modular monolith**, structured internally like
 several services (clean package boundaries, one Go package per bounded
 context) but deployed as one process. The diagram below reflects that
 honestly — the "four services" are four `http.ServeMux` values inside one
-`main()`, not four deployables.
+`main()`, not four deployables. The three health-check-only muxes are
+labeled that way rather than called "stubs": nothing about them is
+unfinished, they're a deliberate seam kept ready in case the monolith is
+ever split later.
 
 ```mermaid
 flowchart TB
     subgraph Client["Clients"]
         Buyer["Buyer browser<br/>(checkout UI)"]
-        Merchant["Merchant browser<br/>(dashboard, authenticated)"]
-        ExternalAgent["External MCP client<br/>(judge tooling / any MCP-speaking agent)"]
+        Merchant["Merchant browser<br/>(dashboard)"]
+        ExternalAgent["External MCP client<br/>(judge tooling / any agent)"]
     end
 
-    subgraph Frontend["frontend/ — Next.js (port 3000)"]
-        FE["App Router pages<br/>checkout, dashboard/*, trust"]
+    subgraph Frontend["frontend/ — Next.js, port 3000"]
+        FE["App Router pages"]
     end
 
-    subgraph Backend["backend/cmd/server — one Go binary, one process"]
+    subgraph Backend["backend/cmd/server — one binary, one process"]
         direction TB
-        GW["API Gateway mux<br/>:8080 — /health only"]
-        Commerce["Commerce Service mux<br/>:8081 — every real route"]
-        AgentAPI["Agent API mux<br/>:8082 — /health only (stub)"]
-        DashAPI["Dashboard API mux<br/>:8083 — /health only (stub)"]
+        GW["API Gateway mux<br/>:8080, health-check only"]
+        Commerce["Commerce Service mux<br/>:8081, every real route"]
+        AgentAPI["Agent API mux<br/>:8082, health-check only"]
+        DashAPI["Dashboard API mux<br/>:8083, health-check only"]
     end
 
     subgraph Stores["Data plane"]
-        PG[("PostgreSQL 17<br/>catalog, cart, order, payment,\npolicy, audit, growth, campaign, auth...")]
-        Redis[("Redis 8<br/>product cache + Streams event bus")]
+        PG[("PostgreSQL 17")]
+        Redis[("Redis 8")]
     end
 
     subgraph External["External services"]
-        Razorpay["Razorpay<br/>(test mode)"]
-        OpenRouter["OpenRouter<br/>(LLM, optional)"]
+        Razorpay["Razorpay (test mode)"]
+        OpenRouter["OpenRouter (optional)"]
     end
 
     Buyer --> FE
     Merchant --> FE
-    FE -->|"server-side fetch,\nCOMMERCE_SERVICE_URL"| Commerce
-    Buyer -.->|"browser fetch,\nNEXT_PUBLIC_COMMERCE_URL"| Commerce
-    ExternalAgent -->|"POST /mcp,\nGET /.well-known/agent-commerce.json"| Commerce
+    FE -->|server-side fetch| Commerce
+    Buyer -.->|browser fetch| Commerce
+    ExternalAgent -->|MCP + manifest| Commerce
 
     Commerce --> PG
     Commerce --> Redis
     Commerce --> Razorpay
-    Commerce -.->|"only if OPENROUTER_API_KEY set"| OpenRouter
+    Commerce -.->|if key set| OpenRouter
 
-    GW -. "not used for real traffic today" .- Commerce
-    AgentAPI -. "stub" .- Commerce
-    DashAPI -. "stub" .- Commerce
+    GW -. "by design, see prose" .- Commerce
+    AgentAPI -. "by design, see prose" .- Commerce
+    DashAPI -. "by design, see prose" .- Commerce
 ```
+
+The frontend reaches the backend two different ways depending on where the
+code runs: server-side page rendering calls `COMMERCE_SERVICE_URL`
+(`http://backend:8081` inside the Compose network), while the browser's own
+client-side fetches use `NEXT_PUBLIC_COMMERCE_URL` (the host's published
+`localhost:8081`) — see §12.
 
 ---
 
@@ -98,7 +109,7 @@ few routes are deliberately public for judge/agent inspection.
 | Payment | `POST /orders/{id}/payment`, `POST /orders/{id}/payment/verify`, `GET /orders/{id}/payment`, `/orders/{id}/recovery*`, `GET /adapter/calls`, `POST /webhooks/razorpay` | Open (guest checkout) / webhook signed by Razorpay |
 | Buyer agent | `POST /agent/checkout` (single-shot), `POST /agent/loop` (bounded tool-calling) | Open, both rate-limited (§5) |
 | Growth / cross-sell | `POST /growth/evaluate`, `GET /growth/recommend/{id}`, `POST /growth/suggest`, `/growth/suggest/product`, `/growth/suggest/order`, `/growth/suggest/dismiss`, `/growth/suggest/accept` | Open |
-| Policy & mandates | `POST /policy/mandates`, `POST /policy/propose`, `GET /approval-requests`, `/approval-requests/{id}[/approve\|reject]`, `POST /audit/verify` | Mixed — see §6 |
+| Policy & mandates | `POST /policy/mandates`, `POST /policy/propose`, `GET /approval-requests`, `/approval-requests/{id}[/approve\|reject]`, `POST /audit/verify` | Mixed — see §7 |
 | Campaigns | `/campaigns*` (propose, list, export, get, approve, reject) | Operator-only |
 | Safety / red-team | `/safety/attacks*`, `/safety/evaluations*` | Operator-only |
 | Trust (public) | `GET /trust/summary`, `POST /trust/run-suite` | **Public, no login** — judge-facing mirror of `/audit/verify` + `/safety/evaluations/run` |
@@ -106,7 +117,7 @@ few routes are deliberately public for judge/agent inspection.
 | Auth | `/auth/login`, `/auth/logout`, `/auth/invites*`, `/auth/operators*` | Mixed |
 | Dashboard | `/dashboard/overview`, `/dashboard/metrics`, `/dashboard/experiment[s]`, `/dashboard/settings/policy`, `/dashboard/growth`, `/dashboard/orders[/export]` | Operator-only |
 | MCP | `POST /mcp`, `GET /.well-known/agent-commerce.json` | Public (agent-facing by design) |
-| x402 demo | `POST /x402/priority-support` | Public, standalone test-mode stub — does not touch orders/policy/audit |
+| x402 demo | `POST /x402/priority-support` | Public, standalone test-mode demo — deliberately does not touch orders/policy/audit (see §14) |
 
 ---
 
@@ -121,10 +132,10 @@ coordination abstraction.
 
 ```mermaid
 flowchart LR
-    A["Buyer Agent<br/>(intent → cart)"] --> B["Growth Agent<br/>(cross-sell EV scoring)"]
+    A["Buyer Agent<br/>(intent to cart)"] --> B["Growth Agent<br/>(cross-sell EV)"]
     B --> C["Policy Engine<br/>(permission)"]
     C --> D["Authorization<br/>(consent / mandate)"]
-    D --> E["Payment Service<br/>(execution via Razorpay)"]
+    D --> E["Payment Service<br/>(via Razorpay)"]
 ```
 
 ---
@@ -132,18 +143,18 @@ flowchart LR
 ## 4. Shopping agent — single-shot pipeline (`POST /agent/checkout`)
 
 `BuyerAgent.PlanCheckoutInConversation` (`backend/agents/buyer_agent.go`) is
-a fixed pipeline: extract intent → merge with cart memory → search catalog
-→ propose one product. It is **not** a multi-turn tool-calling loop — see
-§5 for the one that is.
+a fixed pipeline: extract intent, merge with cart memory, search the
+catalog, propose one product. It is **not** a multi-turn tool-calling loop
+— see §5 for the one that is.
 
 ```mermaid
 sequenceDiagram
     participant Buyer
     participant Handler as agents.Handler
     participant Racing as RacingExtractor
-    participant LLM as LLMExtractor<br/>(OpenRouter)
+    participant LLM as LLMExtractor (OpenRouter)
     participant Det as DeterministicExtractor
-    participant Memory as ConversationStore<br/>(Postgres)
+    participant Memory as ConversationStore (Postgres)
     participant Searcher as agents.Searcher
     participant Catalog as catalog.Service
 
@@ -155,15 +166,15 @@ sequenceDiagram
         Racing->>Det: Extract(prompt)
     end
     Racing-->>Handler: Intent{budget, category,<br/>priority, recipient, source}
-    Note over Racing: LLM timeout/error/no key →<br/>falls back to Det's result.<br/>Intent.Source records which one won.
+    Note over Racing: LLM timeout/error/no key falls back to Det.<br/>Intent.Source records which one answered.
 
     Handler->>Memory: LastKnownIntent(cart_id)
     Memory-->>Handler: previous Intent (if any)
 
     alt hasSignal(new intent)
-        Handler->>Handler: mergeIntent(previous, new)<br/>(field-level slot filling)
+        Handler->>Handler: mergeIntent(previous, new)
     else new turn parsed nothing new
-        Handler->>Handler: keep previous intent unchanged<br/>(fix: no longer overwrites memory<br/>with a zero-signal turn — see<br/>files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md)
+        Handler->>Handler: keep previous intent unchanged
     end
 
     Handler->>Searcher: Search(merged intent)
@@ -172,15 +183,15 @@ sequenceDiagram
     Searcher-->>Handler: best match (or none)
 
     Handler->>Memory: AppendTurn(cart_id, prompt, merged intent)
-    Handler-->>Buyer: AgentPlan{proposal, reasoning_trail, intent.source}
+    Handler-->>Buyer: AgentPlan{proposal, reasoning_trail, source}
 ```
 
 Key correctness property (fixed 2026-09-04, see
 `files/AGENTIC-INTEGRITY-AUDIT-2026-09-04.md`): a follow-up prompt that
 extracts **no new signal at all** (e.g. an off-topic or garbled message)
 no longer silently clobbers the cart's remembered intent with an empty
-one — `hasSignal()` gates the merge, and `conversation_test.go` regression-
-tests the exact incident this fixed.
+one — `hasSignal()` gates the merge in the `alt` block above, and
+`conversation_test.go` regression-tests the exact incident this fixed.
 
 ---
 
@@ -195,7 +206,7 @@ at all, not because of a runtime check:
 
 ```mermaid
 flowchart TB
-    subgraph Shared["backend/tools — shared tool layer"]
+    subgraph Shared["backend/tools — shared layer"]
         T1[search_products]
         T2[get_product]
         T3[create_cart]
@@ -204,7 +215,7 @@ flowchart TB
         T6[recommend_bundle]
     end
 
-    subgraph MCPOnly["backend/mcp/tools.go — MCP-only, never shared"]
+    subgraph MCPOnly["backend/mcp/tools.go — MCP only"]
         M1[request_authorization]
         M2[create_checkout]
         M3[execute_authorized_checkout]
@@ -212,11 +223,11 @@ flowchart TB
         M5[explain_decision]
     end
 
-    Loop["ToolCallingAgent<br/>(/agent/loop, in-app)"] --> Shared
-    MCPServer["mcp.Server<br/>(/mcp, external agents)"] --> Shared
+    Loop["ToolCallingAgent<br/>(/agent/loop)"] --> Shared
+    MCPServer["mcp.Server<br/>(/mcp)"] --> Shared
     MCPServer --> MCPOnly
 
-    Loop -. "structurally impossible:<br/>these functions don't exist<br/>in backend/tools" .-> MCPOnly
+    Loop -. "structurally impossible" .-> MCPOnly
 ```
 
 `backend/tools`'s own package doc comment states the intent directly:
@@ -238,7 +249,7 @@ first 6 are the shared layer from §5; the last 5 are MCP-exclusive:
 
 ```mermaid
 flowchart LR
-    Agent["External MCP client"] -->|JSON-RPC over POST /mcp| Server[mcp.Server]
+    Agent["External MCP client"] -->|JSON-RPC| Server[mcp.Server]
     Server --> search_products
     Server --> get_product
     Server --> create_cart
@@ -251,11 +262,16 @@ flowchart LR
     Server --> get_payment_status
     Server --> explain_decision
 
-    request_authorization --> PolicyEngine["policy.Engine<br/>(same engine every other<br/>checkout path uses)"]
+    request_authorization --> PolicyEngine["policy.Engine"]
     create_checkout --> PolicyEngine
-    execute_authorized_checkout --> PaymentService["payment.Service<br/>→ Razorpay"]
-    explain_decision --> RejectionNarrator["rejection_narrator<br/>(LLM-polished, deterministic fallback)"]
+    execute_authorized_checkout --> PaymentService["payment.Service"]
+    explain_decision --> RejectionNarrator["rejection_narrator"]
 ```
+
+`PolicyEngine` here is the exact same engine every other checkout path
+(§7) uses — no separate MCP-only copy. `RejectionNarrator` LLM-polishes a
+deterministic rejection sentence and falls back to the unmodified sentence
+on any LLM failure.
 
 `GET /.well-known/agent-commerce.json` serves a live manifest
 (`mcp.ManifestHandler`) that reads `policyEngine.Config()` at request time
@@ -274,30 +290,30 @@ sequenceDiagram
     participant Caller as Agent / Buyer
     participant Policy as policy.Engine
     participant Risk as policy.RiskEngine
-    participant DB as Postgres<br/>(policy_evaluations, mandates)
+    participant DB as Postgres (mandates)
     participant Audit as audit.PostgresWriter
 
-    Caller->>Policy: ProposedAction{amount, currency,<br/>merchant, items, cart_id}
+    Caller->>Policy: ProposedAction{amount, merchant,<br/>items, cart_id}
     Policy->>Policy: CheckMerchantAllowlisted
     Policy->>Policy: CheckCurrencyAllowed
     Policy->>Policy: CheckAmountCeiling
-    Policy->>Policy: CheckProductPermitted<br/>(live catalog lookup, not a static list)
+    Policy->>Policy: CheckProductPermitted (live catalog)
     Policy->>Policy: CheckBudgetTolerance
     Policy->>Policy: CheckNoDuplicate
-    Policy->>Policy: CheckMandateNotExpired / Bound / CartBound
+    Policy->>Policy: CheckMandateNotExpired / Bound
     Policy->>Risk: score risk (Level 1/2/3)
     alt Level 1 — low risk
         Policy-->>Caller: APPROVED
     else Level 2/3 — needs human approval
         Policy->>DB: create approval_request (PENDING)
         Policy-->>Caller: PENDING_HUMAN_APPROVAL
-        Note over DB: operator later calls<br/>POST /approval-requests/{id}/approve or /reject
+        Note over DB: operator later approves or rejects
     else any check fails
-        Policy-->>Caller: REJECTED + ExplainRejection(check, ...)
+        Policy-->>Caller: REJECTED + reason
     end
     Policy->>Audit: Write(actor, action, entity, detail)
     Audit->>Audit: event_hash = SHA256(content + prev_hash)
-    Note over Audit: pg_advisory_xact_lock serializes writes —<br/>one hash chain (audit_events), strictly ordered
+    Note over Audit: one hash chain (audit_events),<br/>writes serialized by an advisory lock
 ```
 
 Verification (`GET /audit/verify`, and the public `GET /trust/summary`)
@@ -310,36 +326,43 @@ the offending row ID.
 ## 8. Growth / cross-sell pipeline
 
 Three HTTP entry points (cart-based, product-detail-based, post-checkout-
-based) all funnel through **one** scoring function,
-`bestCandidate` — the package's own doc comment is explicit that this is
-deliberate: "One scoring function, ... call sites — no duplicated logic."
+based) plus one async event consumer all funnel through **one** scoring
+function, `bestCandidate` — the package's own doc comment is explicit that
+this is deliberate: "One scoring function, ... call sites — no duplicated
+logic."
 
 ```mermaid
 flowchart TB
-    E1["POST /growth/suggest<br/>(cart-based)"] --> BS[buildSignals]
-    E2["POST /growth/suggest/product<br/>(product-detail-based)"] --> BS
-    E3["POST /growth/suggest/order<br/>(post-checkout-based)"] --> BS
-    E4["growth.CartEventConsumer<br/>(async, off cart.item_added<br/>Redis Stream event)"] --> BS
+    E1["POST /growth/suggest<br/>(cart-based)"] --> BS
+    E2["POST /growth/suggest/product"] --> BS
+    E3["POST /growth/suggest/order<br/>(post-checkout)"] --> BS
+    E4["CartEventConsumer<br/>(async, cart.item_added)"] --> BS
 
-    BS["buildSignals()<br/>aggregate UseCases + Compatibility<br/>+ Features tags into one signal set"] --> BC
+    BS["buildSignals()<br/>tags to one signal set"] --> BC
+    BC["bestCandidate()<br/>weighted tag-overlap score"] --> EV
+    EV["EvaluateCandidate()<br/>deterministic EV formula"] --> Budget
+    Budget["Budget check<br/>vs. mandate ceiling"]
+    Budget -->|eligible| Decision["Decision: RECOMMEND"]
+    Budget -->|ineligible| Reject["Decision: REJECT"]
 
-    BC["bestCandidate()<br/>score = Σ UseCases match (×1)<br/>+ Σ Compatibility match (×4)<br/>+ Σ Features match (×1)<br/>skip: excluded / wrong merchant / OOS<br/>tie-break: cheaper item wins"]
-
-    BC --> EV["GrowthAgent.EvaluateCandidate<br/>ExpectedValue =<br/>P(purchase) × incremental_margin<br/>× confidence − risk_cost"]
-    EV --> Budget["Budget check:<br/>new cart total ≤ mandate ceiling?"]
-    Budget -->|eligible| Decision["Decision: RECOMMEND<br/>(routed through the same Policy Engine<br/>as any other proposed action — no shortcut)"]
-    Budget -->|ineligible| Reject["Decision: REJECT<br/>→ feeds Campaign Orchestrator's<br/>rejected-demand signal (§9)"]
-
-    Decision --> Impressions["ImpressionStore<br/>(frequency cap + acceptance tracking,\nsuggestion_impressions / _acceptances)"]
+    Decision --> Impressions["ImpressionStore<br/>(frequency cap + tracking)"]
+    Reject -.-> CampaignSignal["feeds §9's<br/>rejected-demand signal"]
 ```
 
-The `compatibilityMatchWeight = 4` weighting (fixed 2026-09-04) exists
-because every warranty/protection SKU in the catalog (AppleCare family)
-shares near-identical `features`/`use_cases` tags regardless of which
-device it covers — only `Compatibility` encodes real device fit, so it has
-to dominate the generic, broadly-shared tags rather than being drowned out
-by them. See `backend/growth/suggest.go`'s doc comment on that constant for
-the full incident this fixed.
+Two formulas power this, both pure functions with no LLM call:
+
+- **`bestCandidate` score** = 1 point per matching `UseCases` tag, **4**
+  points per matching `Compatibility` tag (`compatibilityMatchWeight`), 1
+  point per matching `Features` tag; ties break toward the cheaper item.
+  The 4x weight (fixed 2026-09-04) exists because every warranty SKU in
+  the catalog (the AppleCare family) shares near-identical
+  `features`/`use_cases` tags regardless of which device it covers — only
+  `Compatibility` encodes real device fit, so it has to dominate the
+  generic, broadly-shared tags instead of being drowned out by them. See
+  `backend/growth/suggest.go`'s doc comment on `compatibilityMatchWeight`
+  for the live incident this fixed.
+- **`ExpectedValue`** (`backend/growth/ev.go`) = `P(purchase) ×
+  incremental_margin × confidence − risk_cost`.
 
 ---
 
@@ -351,17 +374,20 @@ discount campaign.
 
 ```mermaid
 flowchart LR
-    RejectedRecs[("growth recommendations<br/>with Decision = REJECT")] --> Demand["RejectedDemandByProduct()<br/>backend/growth/demand.go"]
+    RejectedRecs[("recommendations<br/>Decision = REJECT")] --> Demand["RejectedDemandByProduct()"]
     Demand --> CampaignAgent["campaign.CampaignAgent"]
-    CampaignAgent -->|"sufficient demand +\nwithin bounds"| Engine["campaign.Engine<br/>deterministic checks:\ndiscount %, budget cap,\nmerchant budget ceiling,\nduration, product allowlist"]
+    CampaignAgent -->|sufficient demand| Engine["campaign.Engine<br/>deterministic bound checks"]
     Engine -->|PROPOSED| Operator["Operator reviews<br/>/dashboard/campaigns"]
-    Operator -->|approve| Active["ACTIVE campaign<br/>discount applied at checkout"]
+    Operator -->|approve| Active["ACTIVE campaign"]
     Operator -->|reject| Rejected2["REJECTED"]
-    Active --> Checkout["order.CheckoutCart<br/>applies campaign_discount,\nwrites audit event"]
+    Active --> Checkout["order.CheckoutCart<br/>applies discount"]
 ```
 
-Same "deterministic gate, never the LLM" posture as the checkout Policy
-Engine — `campaign`'s own package doc comment says this explicitly.
+`campaign.Engine`'s bound checks are: discount-percent bounded, budget-cap
+bounded, merchant budget ceiling, duration bounded, and product
+allowlisted — the same "deterministic gate, never the LLM" posture as the
+checkout Policy Engine (`campaign`'s own package doc comment says this
+explicitly).
 
 ---
 
@@ -379,29 +405,34 @@ sequenceDiagram
     participant Streams as Redis Streams
     participant Consumer as growth.CartEventConsumer
     participant Logger as events.StreamConsumer
-    participant EventLog as event_log (Postgres)
 
     Buyer->>PaymentH: POST /orders/{id}/payment
     PaymentH->>Razorpay: CreatePaymentOrder
     Razorpay-->>Buyer: checkout widget (test mode)
     Buyer->>Razorpay: completes payment
     Razorpay->>Webhook: POST /webhooks/razorpay (signed)
-    Webhook->>Webhook: verify signature (RAZORPAY_WEBHOOK_SECRET)
+    Webhook->>Webhook: verify signature
     Webhook->>Applier: apply verified event
-    Applier->>Applier: statemachine: legal transition only<br/>(Created→Pending→Authorized→Captured...)
-    Applier->>Outbox: enqueue domain event (same txn as state change)
+    Applier->>Applier: statemachine: legal transition only
+    Applier->>Outbox: enqueue event (same txn as state change)
     Worker->>Outbox: poll
-    Worker->>Streams: publish to "commerceos" stream
-    Streams->>Consumer: growth-suggestions-group<br/>(precomputes cross-sell off cart.item_added)
-    Streams->>Logger: commerceos-group<br/>(every event, any type)
-    Logger->>EventLog: persist (idempotent on stream_message_id)
+    Worker->>Streams: publish to "commerceos.events"
+    Streams->>Consumer: growth-suggestions-group<br/>(cart.item_added only)
+    Streams->>Logger: commerceos-group<br/>(every event)
+    Logger->>Logger: persist to event_log (Postgres)
 ```
 
 The outbox pattern (write the event in the same DB transaction as the
 state change, publish asynchronously) is what makes the Redis Streams
 publish step crash-safe — a worker crash between commit and publish just
 means a delayed publish on restart, never a lost or duplicated state
-change.
+change. `Consumer` and `Logger` are two independent consumer groups on the
+same stream (Redis Streams delivers every message to every group), doing
+genuinely different jobs: `Consumer` reacts only to `cart.item_added` to
+precompute a cross-sell recommendation (§8); `Logger` persists every event
+of any type to `event_log` for durability, idempotent on
+`(stream, stream_message_id)` since consumer-group delivery is
+at-least-once.
 
 ---
 
@@ -421,14 +452,14 @@ by bounded context:
 | Agent memory | agent_conversations, agent_plans |
 | Reviews | reviews |
 | Auth | operators, operator_invites |
-| Events | outbox_events, event_log (durable copy of every event on the Redis Streams bus, added 2026-09-04 -- see §10) |
+| Events | outbox_events, event_log (durable event-bus copy, §10) |
 | Safety | safety attack/evaluation tables |
 
 **Redis 8** — two independent uses of the same instance: (1) an 8-second
 TTL cache in front of `GET /products` (`catalog.NewRedisProductsCache`,
 invalidated on every catalog mutation), and (2) the Streams-based event
 bus (`events.NewRedisStreamBus`) carrying `cart.item_added` and other
-domain events to the outbox worker's consumers.
+domain events to two independent consumer groups (§10).
 
 ---
 
@@ -437,17 +468,17 @@ domain events to the outbox worker's consumers.
 ```mermaid
 flowchart TB
     subgraph Compose["docker compose -f infra/docker-compose.yml"]
-        PG["postgres:17<br/>:5433→5432"]
-        RD["redis:8<br/>:6379→6379"]
-        MG["migrate<br/>(one-shot, runs goose migrations,\nmust complete before backend starts)"]
-        BE["backend<br/>(Dockerfile)<br/>:8080-8083, env_file: infra/.env"]
-        FE["frontend<br/>(Dockerfile)<br/>:3000, COMMERCE_SERVICE_URL=http://backend:8081"]
+        PG["postgres:17<br/>:5433 to 5432"]
+        RD["redis:8<br/>:6379 to 6379"]
+        MG["migrate<br/>(one-shot, runs migrations)"]
+        BE["backend<br/>:8080-8083"]
+        FE["frontend<br/>:3000"]
     end
 
-    PG -->|service_healthy| MG
-    MG -->|service_completed_successfully| BE
-    PG -->|service_healthy| BE
-    RD -->|service_healthy| BE
+    PG -->|healthy| MG
+    MG -->|completed| BE
+    PG -->|healthy| BE
+    RD -->|healthy| BE
     BE --> FE
 ```
 
@@ -465,6 +496,11 @@ Two notable fixes baked into this file (both dated 2026-09-04, see
 - Explicit `depends_on: condition: service_healthy` (Postgres/Redis) and
   `condition: service_completed_successfully` (migrate) — removes a
   first-run crash-loop on a genuinely fresh `docker compose up`.
+
+The `migrate` service has `restart: "no"`, so a new migration file (like
+`event_log`'s, §10/§11) doesn't automatically re-apply on a plain
+`docker compose up` once it has already run once — it needs an explicit
+`docker compose run --rm migrate` to re-trigger.
 
 ---
 
@@ -489,24 +525,35 @@ Two notable fixes baked into this file (both dated 2026-09-04, see
 
 ---
 
-## 14. Known architectural gaps (stated plainly, not hidden)
+## 14. Deliberate scope boundaries and known gaps (stated plainly)
 
 In the same spirit as `backend/orchestrator/README.md` documenting its own
-absence, these are real, current limitations worth knowing before treating
-any diagram above as more finished than it is:
+absence, this section separates two different things: reasoned decisions
+that look like gaps but aren't, and real limitations worth knowing before
+treating any diagram above as more finished than it is.
 
-- **Four "services," one process.** The API Gateway (`:8080`), Agent API
-  (`:8082`), and Dashboard API (`:8083`) muxes exist and each pass their
-  own health check, but carry no real traffic — every actual route is on
-  the Commerce Service (`:8081`). Splitting them apart would be one config
-  change, but hasn't been done, and the project's own position (§1) is
-  that it shouldn't be, at this size.
-- **`backend/orchestrator` is an empty marker directory** — there is no
-  standalone orchestration layer; the Buyer→Growth→Policy→Payment sequence
-  in §3 is direct interface calls between handlers, by design.
+**Deliberate, documented scope boundaries — not stubs, not bugs:**
+
+- The three health-check-only muxes (§1) and `backend/orchestrator`'s
+  empty marker directory (§3) are permanent-by-design, not unfinished
+  work — see each one's own doc comment for the reasoning.
+- The x402 demo endpoint (§2) is explicitly scoped to one fixed resource
+  and does not touch orders, the Policy Engine, mandates, or the audit
+  chain — its own doc comment calls wiring it into the real checkout flow
+  "a materially bigger project than a buildathon-scoped stub."
+- `growth/suggest.go`'s heuristic EV inputs (§8) are correctly gated on a
+  purchase-history table that doesn't exist yet in this project; a real
+  learned model has no data to train on until then.
+- `backend/mcp`'s HTTP transport is request/response only (no
+  server-initiated SSE stream) — disclosed directly in the live manifest
+  (`GET /.well-known/agent-commerce.json`) rather than hidden, and no tool
+  in the current 11-tool surface needs server push.
+
+**Real, current limitations:**
+
 - **The single-shot agent (`/agent/checkout`) is not a tool-calling loop.**
-  It's a fixed extract→search→propose pipeline (§4). The genuinely
-  multi-step agent is the separate, newer `/agent/loop` path (§5).
+  It's a fixed extract-search-propose pipeline (§4). The genuinely
+  multi-step agent is the separate `/agent/loop` path (§5).
 - **LLM-backed features degrade to deterministic behavior silently when
   `OPENROUTER_API_KEY` is unset** — by design (nil-receiver-safe `WithX`
   pattern throughout `main.go`), but this means "no visible AI reasoning"
@@ -517,6 +564,7 @@ any diagram above as more finished than it is:
 ---
 
 *Generated from a direct read of the codebase (`backend/cmd/server/main.go`,
-package doc comments, and migration/seed files) on 2026-09-04. If the
-wiring changes, this file will drift — treat `main.go` itself as the
-ground truth and this as a snapshot of it.*
+package doc comments, and migration/seed files) on 2026-09-04, updated
+2026-09-04 after the event_log consumer landed. If the wiring changes,
+this file will drift — treat `main.go` itself as the ground truth and this
+as a snapshot of it.*
